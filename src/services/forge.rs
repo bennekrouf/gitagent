@@ -1,0 +1,336 @@
+//! Which hosting platform a repository lives on, and what it needs from you
+//! before a run can finish.
+//!
+//! Pull requests are the one part of the flow that is not plain git: GitHub
+//! wants `gh pr create`, Azure DevOps wants `az repos pr create`, and each has
+//! its own idea of authentication. Detecting the forge from the remote URL up
+//! front means the run fails in the first node with an actionable message,
+//! rather than in the last one after it has already committed and pushed.
+
+use super::git;
+use super::graph::Remedy;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Forge {
+    GitHub,
+    AzureDevOps,
+    /// A remote we can push to but cannot open a pull request on.
+    Unsupported(String),
+    /// No `origin` at all.
+    None,
+}
+
+impl Forge {
+    pub fn label(&self) -> String {
+        match self {
+            Forge::GitHub => "GitHub".into(),
+            Forge::AzureDevOps => "Azure DevOps".into(),
+            Forge::Unsupported(host) => format!("unsupported ({host})"),
+            Forge::None => "no remote".into(),
+        }
+    }
+
+    pub fn as_key(&self) -> String {
+        match self {
+            Forge::GitHub => "github".into(),
+            Forge::AzureDevOps => "azure".into(),
+            Forge::Unsupported(h) => format!("unsupported:{h}"),
+            Forge::None => "none".into(),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Forge {
+        match key {
+            "github" => Forge::GitHub,
+            "azure" => Forge::AzureDevOps,
+            "none" => Forge::None,
+            other => Forge::Unsupported(other.trim_start_matches("unsupported:").to_string()),
+        }
+    }
+}
+
+/// Classifies a remote URL. Handles both SSH (`git@host:path`,
+/// `ssh://git@host/path`) and HTTPS forms.
+pub fn detect(remote_url: &str) -> Forge {
+    let url = remote_url.trim();
+    if url.is_empty() {
+        return Forge::None;
+    }
+    let lower = url.to_lowercase();
+
+    if lower.contains("github.com") {
+        return Forge::GitHub;
+    }
+    // Azure DevOps has three live URL shapes: the modern dev.azure.com, the
+    // legacy {org}.visualstudio.com, and the SSH host ssh.dev.azure.com.
+    if lower.contains("dev.azure.com") || lower.contains("visualstudio.com") {
+        return Forge::AzureDevOps;
+    }
+
+    Forge::Unsupported(host_of(&lower))
+}
+
+/// Best-effort host extraction, for the "unsupported" message only.
+fn host_of(url: &str) -> String {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    // SSH short form: git@host:org/repo
+    let after_user = after_scheme
+        .split_once('@')
+        .map(|(_, rest)| rest)
+        .unwrap_or(after_scheme);
+    after_user
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Check {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+    /// Present only when the failure has an exact, non-interactive fix.
+    pub fix: Option<Remedy>,
+}
+
+impl Check {
+    fn pass(name: &str, detail: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ok: true,
+            detail: detail.into(),
+            fix: None,
+        }
+    }
+    fn fail(name: &str, detail: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ok: false,
+            detail: detail.into(),
+            fix: None,
+        }
+    }
+
+    /// A failure the app can repair itself, given a button press.
+    fn fixable(name: &str, detail: impl Into<String>, fix: Remedy) -> Self {
+        Self {
+            name: name.into(),
+            ok: false,
+            detail: detail.into(),
+            fix: Some(fix),
+        }
+    }
+}
+
+/// Everything that must be true before a run can reach `open_pr`.
+pub async fn check_credentials(forge: &Forge) -> Vec<Check> {
+    match forge {
+        Forge::GitHub => {
+            if !git::has_gh().await {
+                return vec![Check::fail("gh CLI", "not installed — `brew install gh`")];
+            }
+            match git::run(".", "gh", &["auth", "status"]).await {
+                Ok(out) => vec![Check::pass(
+                    "gh auth",
+                    out.lines()
+                        .find(|l| l.contains("Logged in"))
+                        .unwrap_or("authenticated")
+                        .trim(),
+                )],
+                // Deliberately not fixable in-app: `gh auth login` needs a
+                // terminal to show the device code and take the answer.
+                Err(_) => vec![Check::fail(
+                    "gh auth",
+                    "not authenticated — run `gh auth login`, or set GH_TOKEN",
+                )],
+            }
+        }
+        Forge::AzureDevOps => {
+            let mut checks = vec![];
+            match git::run(".", "az", &["version"]).await {
+                Ok(_) => checks.push(Check::pass("az CLI", "installed")),
+                Err(_) => {
+                    checks.push(Check::fail(
+                        "az CLI",
+                        "not installed — `brew install azure-cli`",
+                    ));
+                    return checks;
+                }
+            }
+            match git::run(".", "az", &["extension", "show", "--name", "azure-devops"]).await {
+                Ok(_) => checks.push(Check::pass("azure-devops extension", "installed")),
+                Err(_) => checks.push(Check::fixable(
+                    "azure-devops extension",
+                    "missing",
+                    Remedy::new(
+                        "Add the azure-devops extension",
+                        "az",
+                        &["extension", "add", "--name", "azure-devops"],
+                    ),
+                )),
+            }
+            match git::run(
+                ".",
+                "az",
+                &["account", "show", "--query", "user.name", "-o", "tsv"],
+            )
+            .await
+            {
+                Ok(user) => checks.push(Check::pass("az login", user.trim())),
+                Err(_) => checks.push(Check::fail(
+                    "az login",
+                    "not signed in — run `az login`, or set AZURE_DEVOPS_EXT_PAT",
+                )),
+            }
+            checks
+        }
+        Forge::Unsupported(host) => vec![Check::fail(
+            "forge",
+            format!(
+                "{host} is not supported — GitHub and Azure DevOps only. \
+                     Everything up to and including the push still works."
+            ),
+        )],
+        Forge::None => vec![Check::fail(
+            "remote",
+            "this repository has no `origin` remote",
+        )],
+    }
+}
+
+/// Opens the pull request on whichever forge this repository lives on.
+/// Returns the PR URL.
+pub async fn create_pr(
+    forge: &Forge,
+    repo: &str,
+    base: &str,
+    head: &str,
+    title: &str,
+    body: &str,
+) -> Result<String, String> {
+    match forge {
+        Forge::GitHub => git::gh_pr_create(repo, base, head, title, body).await,
+        Forge::AzureDevOps => {
+            // `--detect true` is the default: az reads the org, project and
+            // repository straight off the git remote.
+            let out = git::run(
+                repo,
+                "az",
+                &[
+                    "repos",
+                    "pr",
+                    "create",
+                    "--source-branch",
+                    head,
+                    "--target-branch",
+                    base,
+                    "--title",
+                    title,
+                    "--description",
+                    body,
+                    "--output",
+                    "json",
+                ],
+            )
+            .await?;
+            Ok(azure_pr_url(&out).unwrap_or_else(|| out.trim().to_string()))
+        }
+        Forge::Unsupported(host) => Err(format!(
+            "cannot open a pull request on {host}. The branch is pushed — open it by hand."
+        )),
+        Forge::None => Err("no `origin` remote to open a pull request against".into()),
+    }
+}
+
+/// `az repos pr create` returns the PR object; the browsable URL has to be
+/// assembled from the repository web URL and the PR id.
+fn azure_pr_url(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let id = value.get("pullRequestId")?.as_i64()?;
+    let web = value.get("repository")?.get("webUrl")?.as_str()?;
+    Some(format!("{web}/pullrequest/{id}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_ssh_and_https_are_both_recognised() {
+        assert_eq!(
+            detect("git@github.com:bennekrouf/ais-runner.git"),
+            Forge::GitHub
+        );
+        assert_eq!(
+            detect("https://github.com/bennekrouf/ais-runner.git"),
+            Forge::GitHub
+        );
+    }
+
+    #[test]
+    fn all_three_azure_url_shapes_are_recognised() {
+        assert_eq!(
+            detect("https://dev.azure.com/org/project/_git/repo"),
+            Forge::AzureDevOps
+        );
+        assert_eq!(
+            detect("git@ssh.dev.azure.com:v3/org/project/repo"),
+            Forge::AzureDevOps
+        );
+        assert_eq!(
+            detect("https://org.visualstudio.com/project/_git/repo"),
+            Forge::AzureDevOps
+        );
+    }
+
+    #[test]
+    fn an_unknown_host_is_named_in_the_error_not_silently_treated_as_github() {
+        assert_eq!(
+            detect("git@gitlab.com:group/repo.git"),
+            Forge::Unsupported("gitlab.com".into())
+        );
+    }
+
+    #[test]
+    fn an_empty_remote_is_none_not_unsupported() {
+        assert_eq!(detect(""), Forge::None);
+        assert_eq!(detect("   "), Forge::None);
+    }
+
+    #[test]
+    fn the_forge_survives_a_round_trip_through_the_artifact_map() {
+        for forge in [Forge::GitHub, Forge::AzureDevOps, Forge::None] {
+            assert_eq!(Forge::from_key(&forge.as_key()), forge);
+        }
+    }
+
+    #[test]
+    fn a_remedy_renders_the_command_the_user_would_have_typed() {
+        let r = Remedy::new(
+            "Add it",
+            "az",
+            &["extension", "add", "--name", "azure-devops"],
+        );
+        assert_eq!(r.display, "az extension add --name azure-devops");
+        assert!(!r.done);
+    }
+
+    #[test]
+    fn an_azure_pr_response_yields_a_browsable_url() {
+        let json = r#"{
+            "pullRequestId": 4211,
+            "repository": { "webUrl": "https://dev.azure.com/oryx/energy/_git/pricing" }
+        }"#;
+        assert_eq!(
+            azure_pr_url(json).unwrap(),
+            "https://dev.azure.com/oryx/energy/_git/pricing/pullrequest/4211"
+        );
+    }
+
+    #[test]
+    fn a_malformed_azure_response_does_not_panic() {
+        assert!(azure_pr_url("not json").is_none());
+        assert!(azure_pr_url(r#"{"pullRequestId": 1}"#).is_none());
+    }
+}

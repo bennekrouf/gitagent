@@ -1,0 +1,6 @@
+[application]
+name = "gitagent"
+default_platform = "desktop"
+
+[web.app]
+title = "GitAgent"
