@@ -81,17 +81,11 @@ pub struct RepoEntry {
     pub detail: String,
     /// `None` until the remote has been read.
     pub forge: Option<Forge>,
-    /// The checked-out branch. Shown only when it is not a default one —
-    /// "on master" is the assumption, so it is not worth a line; being parked
-    /// on a topic branch is the thing you want to notice.
+    /// The checked-out branch, shown under the repo name whenever it is
+    /// known — which branch a repository is parked on is worth seeing at a
+    /// glance, protected or not.
     pub branch: String,
     pub phase: Phase,
-}
-
-impl RepoEntry {
-    pub fn shows_branch(&self) -> bool {
-        !self.branch.is_empty() && !crate::services::git::is_protected(&self.branch)
-    }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -173,7 +167,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             }
                             span { class: "sidebar-main",
                                 span { class: "sidebar-label", "{entry.label}" }
-                                if entry.shows_branch() {
+                                if !entry.branch.is_empty() {
                                     span { class: "sidebar-branch", "⑂ {entry.branch}" }
                                 }
                             }
@@ -209,36 +203,6 @@ mod tests {
         let mut s = RunState::fresh(&commit_and_pr_flow());
         s.started = true;
         s
-    }
-
-    fn entry(branch: &str) -> RepoEntry {
-        RepoEntry {
-            path: "/p".into(),
-            label: "r".into(),
-            wants: None,
-            detail: String::new(),
-            forge: None,
-            branch: branch.into(),
-            phase: Phase::Idle,
-        }
-    }
-
-    #[test]
-    fn a_default_branch_is_not_worth_a_line() {
-        for name in ["master", "main", "develop"] {
-            assert!(!entry(name).shows_branch(), "{name}");
-        }
-    }
-
-    #[test]
-    fn a_topic_branch_is_worth_noticing() {
-        assert!(entry("feat/US-14932-ignite-api").shows_branch());
-        assert!(entry("chore/enforce-rustfmt").shows_branch());
-    }
-
-    #[test]
-    fn an_unprobed_repository_shows_no_branch_at_all() {
-        assert!(!entry("").shows_branch());
     }
 
     #[test]

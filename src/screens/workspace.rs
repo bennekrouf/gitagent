@@ -17,7 +17,7 @@ use crate::components::repo_sidebar::{phase_of, Phase, RepoEntry, RepoSidebar};
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
-use crate::services::flowdef::FlowBook;
+use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
 use crate::services::probe::{self, RepoStatus};
@@ -39,6 +39,28 @@ pub struct WorkspaceProps {
 
 fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
     states.read().get(key).cloned().unwrap_or_default()
+}
+
+/// Where to land when a repository is picked: the first step, in the first
+/// runnable flow, that is waiting on the person looking at the screen — or,
+/// if nothing is, the first runnable flow's first step.
+fn default_selection(book: &FlowBook, states: &States, repo: &str) -> (String, String) {
+    let runnable = book.runnable();
+    for flow in &runnable {
+        let Some(run) = states.get(&(repo.to_string(), flow.id.clone())) else {
+            continue;
+        };
+        let awaiting = flowdef::topological_order(flow)
+            .into_iter()
+            .find(|id| run.status(id) == NodeStatus::AwaitingApproval);
+        if let Some(node_id) = awaiting {
+            return (flow.id.clone(), node_id);
+        }
+    }
+    runnable
+        .first()
+        .map(|f| (f.id.clone(), f.first_node()))
+        .unwrap_or_default()
 }
 
 /// Walks one flow, for one repository, to completion.
@@ -521,8 +543,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         refresh_all(repos, statuses, probing, picked, selected_repo, selected_flow, book);
                     },
                     on_select: move |path: String| {
+                        let (flow_id, node_id) =
+                            default_selection(&book.read(), &states.read(), &path);
                         selected_repo.set(Some(path));
-                        selected_node.set(String::new());
+                        if !flow_id.is_empty() {
+                            selected_flow.set(flow_id);
+                        }
+                        selected_node.set(node_id);
                     },
                     on_change_workspace: move |_| props.on_change_workspace.call(()),
                     width: *sidebar_w.read(),
