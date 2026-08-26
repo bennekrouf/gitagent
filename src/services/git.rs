@@ -252,46 +252,39 @@ pub async fn push(repo: &str, branch: &str) -> Result<String, String> {
     run(repo, "git", &["push", "-u", "origin", branch]).await
 }
 
-/// Runs a remedy command anywhere on the machine, returning success plus the
-/// combined output. Unlike `run`, the output is wanted either way — a failed
-/// `brew install` explains itself in stdout as often as in stderr.
-pub async fn run_command(program: &str, args: &[String]) -> (bool, String) {
-    match Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .await
-    {
-        Ok(out) => {
-            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-            text.push_str(&String::from_utf8_lossy(&out.stderr));
-            (out.status.success(), cap(text.trim()))
-        }
-        Err(e) => (false, format!("could not run `{program}`: {e}")),
+/// Spawns `program args...` — in `cwd` when given — writes `stdin` to it
+/// first if non-empty, and streams combined stdout+stderr to `on_line` one
+/// line at a time as it arrives, not only once the process exits. Every
+/// other runner in this module is a thin wrapper over this with a no-op
+/// callback, so there is exactly one place that spawns a child and reads its
+/// output — a live "Running…" log and a final captured one are the same
+/// data, read at a different time.
+pub async fn run_streaming(
+    program: &str,
+    args: &[String],
+    cwd: Option<&str>,
+    stdin: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> (bool, String) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::sync::mpsc;
+
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
     }
-}
+    cmd.stdin(if stdin.is_empty() {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    });
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
-/// Runs a shell command in `repo`, optionally writing `stdin` to it first.
-/// Returns success plus the combined output — a failing script explains itself
-/// in stdout at least as often as in stderr.
-pub async fn run_shell(repo: &str, command: &str, stdin: &str) -> (bool, String) {
-    use tokio::io::AsyncWriteExt;
-
-    let mut child = match Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(repo)
-        .stdin(if stdin.is_empty() {
-            Stdio::null()
-        } else {
-            Stdio::piped()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+    let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) => return (false, format!("could not start `{command}`: {e}")),
+        Err(e) => return (false, format!("could not run `{program}`: {e}")),
     };
 
     if !stdin.is_empty() {
@@ -305,48 +298,71 @@ pub async fn run_shell(repo: &str, command: &str, stdin: &str) -> (bool, String)
         }
     }
 
-    match child.wait_with_output().await {
-        Ok(out) => {
-            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-            text.push_str(&String::from_utf8_lossy(&out.stderr));
-            (out.status.success(), cap(text.trim()))
+    // Both streams feed one channel so a line reaches `on_line` in the order
+    // it actually arrived, rather than all of stdout followed by all of
+    // stderr the way a single buffered `.output()` read would show it.
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let out_tx = tx.clone();
+    let out_task = tokio::spawn(async move {
+        if let Some(out) = stdout {
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = out_tx.send(line);
+            }
         }
-        Err(e) => (false, format!("`{command}` did not finish: {e}")),
+    });
+    let err_task = tokio::spawn(async move {
+        if let Some(err) = stderr {
+            let mut lines = BufReader::new(err).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = tx.send(line);
+            }
+        }
+    });
+
+    let mut collected = String::new();
+    while let Some(line) = rx.recv().await {
+        on_line(&line);
+        if !collected.is_empty() {
+            collected.push('\n');
+        }
+        collected.push_str(&line);
     }
+    let _ = out_task.await;
+    let _ = err_task.await;
+
+    let ok = matches!(child.wait().await, Ok(status) if status.success());
+    (ok, cap(collected.trim()))
 }
 
-/// `run_command`, but writing `stdin` to the child first.
-pub async fn run_command_with_stdin(program: &str, args: &[String], stdin: &str) -> (bool, String) {
-    use tokio::io::AsyncWriteExt;
+/// Runs a remedy command anywhere on the machine, returning success plus the
+/// combined output. Unlike `run`, the output is wanted either way — a failed
+/// `brew install` explains itself in stdout as often as in stderr.
+pub async fn run_command(program: &str, args: &[String]) -> (bool, String) {
+    run_streaming(program, args, None, "", &mut |_| {}).await
+}
 
-    let mut child = match Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) => return (false, format!("could not run `{program}`: {e}")),
-    };
-
-    if let Some(mut pipe) = child.stdin.take() {
-        let mut answer = stdin.to_string();
-        if !answer.ends_with('\n') {
-            answer.push('\n');
-        }
-        let _ = pipe.write_all(answer.as_bytes()).await;
-        let _ = pipe.shutdown().await;
-    }
-
-    match child.wait_with_output().await {
-        Ok(out) => {
-            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
-            text.push_str(&String::from_utf8_lossy(&out.stderr));
-            (out.status.success(), cap(text.trim()))
-        }
-        Err(e) => (false, format!("`{program}` did not finish: {e}")),
-    }
+/// Runs a shell command in `repo`, optionally writing `stdin` to it first,
+/// reporting each line of output as it arrives — a step that streams into
+/// the run's live log, rather than only showing it once the command
+/// finishes. Returns success plus the full combined output either way.
+pub async fn run_shell_streaming(
+    repo: &str,
+    command: &str,
+    stdin: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> (bool, String) {
+    run_streaming(
+        "sh",
+        &["-c".to_string(), command.to_string()],
+        Some(repo),
+        stdin,
+        on_line,
+    )
+    .await
 }
 
 pub async fn has_gh() -> bool {

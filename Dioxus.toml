@@ -2,5 +2,12 @@
 name = "gitagent"
 default_platform = "desktop"
 
+[desktop]
+title = "GitAgent"
+
+[bundle]
+identifier = "com.gitagent.app"
+icon = ["assets/icon.png"]
+
 [web.app]
 title = "GitAgent"

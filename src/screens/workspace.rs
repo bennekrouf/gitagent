@@ -115,7 +115,27 @@ async fn drive(
 
         let state = snapshot(&states, &key);
         let cfg_snapshot = cfg.read().clone();
-        let result = flow::execute(&node, &repo, &cfg_snapshot, &state).await;
+
+        // Fills in the node's log as its command's output arrives, rather
+        // than only once the whole thing finishes — the point of streaming
+        // at all. `result`'s own `outcome.log`/`failure.message` still wins
+        // once the step settles, so formatting (a placeholder for empty
+        // output, the failing command echoed back) stays exactly as before.
+        let mut push_line = {
+            let mut states = states;
+            let key = key.clone();
+            let node_id = node.id.clone();
+            move |line: &str| {
+                let mut w = states.write();
+                let entry = w.entry(key.clone()).or_default();
+                let run = entry.runs.entry(node_id.clone()).or_default();
+                if !run.log.is_empty() {
+                    run.log.push('\n');
+                }
+                run.log.push_str(line);
+            }
+        };
+        let result = flow::execute(&node, &repo, &cfg_snapshot, &state, &mut push_line).await;
 
         let mut w = states.write();
         let entry = w.entry(key.clone()).or_default();
@@ -294,6 +314,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut running = use_signal(BTreeSet::<Key>::new);
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
+    // Which flows the *current* repository has chosen not to see — a filter
+    // on top of the shared flow list, not a copy of it. `flows.toml` never
+    // changes when a flow is hidden here.
+    let mut repo_flows = use_signal(store::load_repo_flows);
+    let mut confirm_hide = use_signal(|| Option::<(String, String)>::None);
+    let mut hidden_open = use_signal(|| false);
 
     // Pane widths, dragged by the dividers and remembered on disk.
     let saved = use_signal(store::load_layout);
@@ -543,6 +569,28 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let pr_url = state.artifact("pr_url").to_string();
                         let finished = state.started && state.is_finished(&graph);
 
+                        let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
+                        let visible_tabs: Vec<(String, String)> = runnable
+                            .iter()
+                            .filter(|(id, _)| !hidden_here.contains(id))
+                            .cloned()
+                            .collect();
+                        // A label for a hidden flow can vanish from `runnable`
+                        // entirely (deleted in Setup, or now invalid) — fall
+                        // back to the id so the restore list never disappears
+                        // silently for a flow that still exists in flows.toml
+                        // but currently fails validation.
+                        let hidden_tabs: Vec<(String, String)> = hidden_here
+                            .iter()
+                            .map(|id| {
+                                let label = flows
+                                    .get(id)
+                                    .map(|f| f.label.clone())
+                                    .unwrap_or_else(|| id.clone());
+                                (id.clone(), label)
+                            })
+                            .collect();
+
                         rsx! {
                             div { class: "graph-col", style: "width: {middle_w}px;",
                                 div { class: "col-head",
@@ -571,23 +619,72 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 }
 
                                 div { class: "flow-tabs",
-                                    for (id, label) in runnable.iter().cloned() {
-                                        button {
+                                    for (id, label) in visible_tabs.iter().cloned() {
+                                        div {
                                             key: "{id}",
                                             class: if id == flow_id { "flow-tab flow-tab-on" } else { "flow-tab" },
-                                            onclick: {
-                                                let id = id.clone();
-                                                let first = flows.get(&id)
-                                                    .map(|f| f.first_node())
-                                                    .unwrap_or_default();
-                                                move |_| {
-                                                    selected_flow.set(id.clone());
-                                                    selected_node.set(first.clone());
+                                            button {
+                                                class: "flow-tab-main",
+                                                onclick: {
+                                                    let id = id.clone();
+                                                    let first = flows.get(&id)
+                                                        .map(|f| f.first_node())
+                                                        .unwrap_or_default();
+                                                    move |_| {
+                                                        selected_flow.set(id.clone());
+                                                        selected_node.set(first.clone());
+                                                    }
+                                                },
+                                                "{label}"
+                                                if running.read().contains(&(repo.clone(), id.clone())) {
+                                                    span { class: "flow-tab-dot" }
                                                 }
+                                            }
+                                            button {
+                                                class: "flow-tab-hide",
+                                                title: "Hide \"{label}\" for {repo_list.iter().find(|r| r.path == repo).map(|r| r.label.clone()).unwrap_or_else(|| repo.clone())}",
+                                                onclick: {
+                                                    let repo = repo.clone();
+                                                    let id = id.clone();
+                                                    move |e: Event<MouseData>| {
+                                                        e.stop_propagation();
+                                                        confirm_hide.set(Some((repo.clone(), id.clone())));
+                                                    }
+                                                },
+                                                "×"
+                                            }
+                                        }
+                                    }
+                                    if !hidden_tabs.is_empty() {
+                                        button {
+                                            class: "flow-tab-hidden-count",
+                                            title: "Flows hidden for this repository",
+                                            onclick: move |_| {
+                                                let now = *hidden_open.read();
+                                                hidden_open.set(!now);
                                             },
-                                            "{label}"
-                                            if running.read().contains(&(repo.clone(), id.clone())) {
-                                                span { class: "flow-tab-dot" }
+                                            "{hidden_tabs.len()} hidden"
+                                        }
+                                    }
+                                }
+
+                                if *hidden_open.read() && !hidden_tabs.is_empty() {
+                                    div { class: "hidden-flows",
+                                        for (id, label) in hidden_tabs.iter().cloned() {
+                                            div { key: "{id}", class: "hidden-flow",
+                                                span { class: "hidden-flow-label", "{label}" }
+                                                button {
+                                                    class: "btn",
+                                                    onclick: {
+                                                        let repo = repo.clone();
+                                                        let id = id.clone();
+                                                        move |_| {
+                                                            repo_flows.write().show(&repo, &id);
+                                                            store::save_repo_flows(&repo_flows.read());
+                                                        }
+                                                    },
+                                                    "Show"
+                                                }
                                             }
                                         }
                                     }
@@ -723,6 +820,77 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             SettingsPanel {
                 llm_config: props.llm_config,
                 on_close: move |_| settings_open.set(false),
+            }
+        }
+
+        if let Some((repo, id)) = confirm_hide.read().clone() {
+            {
+                let label = book.read().get(&id).map(|f| f.label.clone()).unwrap_or(id.clone());
+                let repo_label = repos.read().iter()
+                    .find(|r| r.path == repo)
+                    .map(|r| r.label.clone())
+                    .unwrap_or_else(|| repo.clone());
+                rsx! {
+                    div { class: "modal-backdrop", onclick: move |_| confirm_hide.set(None),
+                        div {
+                            class: "modal",
+                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                            div { class: "modal-head",
+                                span { "Hide this flow?" }
+                                button {
+                                    class: "modal-close",
+                                    onclick: move |_| confirm_hide.set(None),
+                                    "×"
+                                }
+                            }
+                            div { class: "modal-body",
+                                p { class: "field-note",
+                                    "\"{label}\" will no longer show as a tab for {repo_label}. \
+                                     It still exists — every other repository keeps seeing it, \
+                                     and you can bring it back from the \"hidden\" list next to \
+                                     the tabs."
+                                }
+                                div { class: "approval-actions",
+                                    button {
+                                        class: "btn btn-danger",
+                                        onclick: {
+                                            let repo = repo.clone();
+                                            let id = id.clone();
+                                            move |_| {
+                                                repo_flows.write().hide(&repo, &id);
+                                                store::save_repo_flows(&repo_flows.read());
+                                                // Hiding the flow on screen must not leave the
+                                                // graph column showing a tab that no longer exists.
+                                                if selected_repo.read().as_deref() == Some(repo.as_str())
+                                                    && *selected_flow.read() == id
+                                                {
+                                                    let still_hidden = repo_flows.read();
+                                                    let next = book.read().runnable().iter()
+                                                        .find(|f| !still_hidden.is_hidden(&repo, &f.id))
+                                                        .map(|f| f.id.clone())
+                                                        .unwrap_or_default();
+                                                    drop(still_hidden);
+                                                    let first_node = book.read().get(&next)
+                                                        .map(|f| f.first_node())
+                                                        .unwrap_or_default();
+                                                    selected_flow.set(next);
+                                                    selected_node.set(first_node);
+                                                }
+                                                confirm_hide.set(None);
+                                            }
+                                        },
+                                        "Hide"
+                                    }
+                                    button {
+                                        class: "btn",
+                                        onclick: move |_| confirm_hide.set(None),
+                                        "Cancel"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

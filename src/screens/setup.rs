@@ -12,6 +12,7 @@ use crate::components::dag_view::DagView;
 use crate::services::catalogue::{self, CATALOGUE};
 use crate::services::flowdef::{can_depend_on, default_deps, validate, FlowBook, NodeDef};
 use crate::services::graph::NodeKind;
+use crate::services::remote;
 use crate::services::store::{self, Layout};
 
 #[derive(Props, Clone, PartialEq)]
@@ -34,6 +35,11 @@ pub fn Setup(props: SetupProps) -> Element {
     let mut confirm_restore = use_signal(|| false);
     let mut testing = use_signal(|| false);
     let mut test_result = use_signal(|| Option::<Result<String, String>>::None);
+    // Private keys found in ~/.ssh, offered as one-click picks for the
+    // "Identity file" field on a run_remote step. Read once: a key added
+    // mid-session shows up next time Setup opens, which is a fine trade for
+    // not re-scanning the filesystem on every render.
+    let identities = use_signal(remote::discover_identities);
 
     // Same dividers as the workspace, sharing the same saved widths.
     let saved = use_signal(store::load_layout);
@@ -425,20 +431,85 @@ pub fn Setup(props: SetupProps) -> Element {
                                                                 },
                                                             }
                                                         } else {
-                                                            input {
-                                                                value: "{def.setting(field.key)}",
-                                                                placeholder: "{field.placeholder}",
-                                                                oninput: {
-                                                                    let (id, key) = (def.id.clone(), field.key);
-                                                                    move |e: Event<FormData>| {
-                                                                        let (id, value) = (id.clone(), e.value());
-                                                                        edit_flow(&move |f| {
-                                                                            if let Some(n) = f.nodes.iter_mut().find(|n| n.id == id) {
-                                                                                n.config.insert(key.to_string(), value.clone());
+                                                            div { class: "field-row",
+                                                                input {
+                                                                    class: "field-grow",
+                                                                    value: "{def.setting(field.key)}",
+                                                                    placeholder: "{field.placeholder}",
+                                                                    oninput: {
+                                                                        let (id, key) = (def.id.clone(), field.key);
+                                                                        move |e: Event<FormData>| {
+                                                                            let (id, value) = (id.clone(), e.value());
+                                                                            edit_flow(&move |f| {
+                                                                                if let Some(n) = f.nodes.iter_mut().find(|n| n.id == id) {
+                                                                                    n.config.insert(key.to_string(), value.clone());
+                                                                                }
+                                                                            });
+                                                                        }
+                                                                    },
+                                                                }
+                                                                if field.key == "identity" {
+                                                                    button {
+                                                                        class: "btn",
+                                                                        title: "Pick a private key file — starts in ~/.ssh",
+                                                                        onclick: {
+                                                                            let id = def.id.clone();
+                                                                            move |_| {
+                                                                                let id = id.clone();
+                                                                                spawn(async move {
+                                                                                    let start = dirs::home_dir()
+                                                                                        .map(|h| h.join(".ssh"))
+                                                                                        .unwrap_or_default();
+                                                                                    let Some(handle) = rfd::AsyncFileDialog::new()
+                                                                                        .set_title("Pick a private key")
+                                                                                        .set_directory(&start)
+                                                                                        .pick_file()
+                                                                                        .await
+                                                                                    else {
+                                                                                        return;
+                                                                                    };
+                                                                                    // The public half is never the right pick — steer
+                                                                                    // towards its private sibling instead of silently
+                                                                                    // accepting a key that can never authenticate.
+                                                                                    let mut path = handle.path().to_string_lossy().to_string();
+                                                                                    if let Some(stripped) = path.strip_suffix(".pub") {
+                                                                                        path = stripped.to_string();
+                                                                                    }
+                                                                                    edit_flow(&move |f| {
+                                                                                        if let Some(n) = f.nodes.iter_mut().find(|n| n.id == id) {
+                                                                                            n.config.insert("identity".into(), path.clone());
+                                                                                        }
+                                                                                    });
+                                                                                });
                                                                             }
-                                                                        });
+                                                                        },
+                                                                        "Browse…"
                                                                     }
-                                                                },
+                                                                }
+                                                            }
+                                                        }
+                                                        if field.key == "identity" && !identities.read().is_empty() {
+                                                            div { class: "identity-picks",
+                                                                for path in identities.read().iter().cloned() {
+                                                                    button {
+                                                                        key: "{path}",
+                                                                        class: "identity-pick",
+                                                                        r#type: "button",
+                                                                        title: "Use {path}",
+                                                                        onclick: {
+                                                                            let (id, path) = (def.id.clone(), path.clone());
+                                                                            move |_| {
+                                                                                let (id, path) = (id.clone(), path.clone());
+                                                                                edit_flow(&move |f| {
+                                                                                    if let Some(n) = f.nodes.iter_mut().find(|n| n.id == id) {
+                                                                                        n.config.insert("identity".into(), path.clone());
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        },
+                                                                        "{path}"
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                         p { class: "field-note", "{field.help}" }

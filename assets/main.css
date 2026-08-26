@@ -259,21 +259,49 @@ body {
     flex-shrink: 0;
 }
 .flow-tab {
-    flex: 1; font-family: var(--mono); font-size: 11px;
-    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    flex: 1; border-radius: 6px; cursor: pointer;
     background: transparent; color: var(--text3);
     border: 1px solid transparent;
-    display: flex; align-items: center; justify-content: center; gap: 5px;
+    display: flex; align-items: center;
 }
 .flow-tab:hover { color: var(--text1); background: var(--bg1); }
 .flow-tab-on {
     background: var(--bg2); color: var(--text1); border-color: var(--border);
+}
+.flow-tab-main {
+    flex: 1; font-family: var(--mono); font-size: 11px;
+    padding: 6px 8px; border: none; background: transparent; color: inherit;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
 }
 .flow-tab-dot {
     width: 5px; height: 5px; border-radius: 50%;
     background: var(--blue);
     animation: pulse 1s ease-in-out infinite;
 }
+.flow-tab-hide {
+    flex-shrink: 0; border: none; background: transparent; color: var(--text3);
+    font-size: 12px; line-height: 1; cursor: pointer;
+    padding: 0 7px 0 0; opacity: 0; transition: opacity 0.12s, color 0.12s;
+}
+.flow-tab:hover .flow-tab-hide { opacity: 1; }
+.flow-tab-hide:hover { color: var(--red); }
+.flow-tab-hidden-count {
+    flex-shrink: 0; font-family: var(--mono); font-size: 10px;
+    padding: 6px 9px; border-radius: 6px; cursor: pointer;
+    background: transparent; color: var(--text3); border: 1px dashed var(--border2);
+}
+.flow-tab-hidden-count:hover { color: var(--text1); border-color: var(--border); }
+
+.hidden-flows {
+    padding: 6px 10px; display: flex; flex-direction: column; gap: 4px;
+    border-bottom: 1px solid var(--border2); background: var(--bg1);
+}
+.hidden-flow {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 11px; color: var(--text2);
+}
+.hidden-flow-label { font-family: var(--mono); }
 
 .col-scroll { flex: 1; overflow-y: auto; padding: 10px; min-height: 0; }
 
@@ -505,7 +533,18 @@ body {
 }
 .field input:focus { outline: none; border-color: var(--green); }
 .field-row { display: flex; gap: 8px; }
+.field-row .field-grow { flex: 1; min-width: 0; }
 .field-note { font-size: 11px; color: var(--text3); line-height: 1.6; }
+
+.identity-picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.identity-pick {
+    font-family: var(--mono); font-size: 11px;
+    padding: 4px 9px; border-radius: 999px;
+    background: var(--bg2); color: var(--text2);
+    border: 1px solid var(--border2); cursor: pointer;
+    transition: border-color 0.12s, color 0.12s;
+}
+.identity-pick:hover { border-color: var(--green); color: var(--text1); }
 
 .seg {
     flex: 1; font-family: var(--mono); font-size: 12px;

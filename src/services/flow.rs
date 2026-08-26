@@ -192,6 +192,7 @@ pub async fn execute(
     repo: &str,
     cfg: &LlmConfig,
     state: &RunState,
+    on_line: &mut dyn FnMut(&str),
 ) -> Result<StepOutcome, StepFailure> {
     match node.step {
         Step::Preflight => preflight(repo, cfg).await,
@@ -206,8 +207,11 @@ pub async fn execute(
         Step::FindPr | Step::PrStatus | Step::PrDiff | Step::Analyse | Step::Merge | Step::Sync => {
             super::review::execute(node.step, repo, cfg, state).await
         }
-        Step::RunScript => run_script(node, repo).await,
-        Step::RunRemote => run_remote(node).await,
+        // Only these two shell out to a process that can run long enough for
+        // live output to matter — everything else above finishes fast enough
+        // that a final log is all "streaming" would ever show anyway.
+        Step::RunScript => run_script(node, repo, on_line).await,
+        Step::RunRemote => run_remote(node, on_line).await,
     }
 }
 
@@ -222,7 +226,7 @@ pub async fn execute(
 /// the approval step, and showed the exact command it was asking about.
 /// Runs a command on another machine. See `services::remote` for why no key
 /// ever reaches this app.
-async fn run_remote(node: &NodeSpec) -> Result<StepOutcome, StepFailure> {
+async fn run_remote(node: &NodeSpec, on_line: &mut dyn FnMut(&str)) -> Result<StepOutcome, StepFailure> {
     let host = node.setting("host").trim().to_string();
     let command = node.setting("command").trim().to_string();
     if host.is_empty() || command.is_empty() {
@@ -231,12 +235,13 @@ async fn run_remote(node: &NodeSpec) -> Result<StepOutcome, StepFailure> {
         ));
     }
 
-    let (ok, output) = remote::run(
+    let (ok, output) = remote::run_streaming(
         &host,
         node.setting("port"),
         node.setting("identity"),
         &command,
         node.setting("stdin"),
+        on_line,
     )
     .await;
 
@@ -261,7 +266,11 @@ async fn run_remote(node: &NodeSpec) -> Result<StepOutcome, StepFailure> {
     })
 }
 
-async fn run_script(node: &NodeSpec, repo: &str) -> Result<StepOutcome, StepFailure> {
+async fn run_script(
+    node: &NodeSpec,
+    repo: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<StepOutcome, StepFailure> {
     let command = node.setting("command").trim().to_string();
     if command.is_empty() {
         return Err(StepFailure::from(
@@ -269,7 +278,8 @@ async fn run_script(node: &NodeSpec, repo: &str) -> Result<StepOutcome, StepFail
         ));
     }
 
-    let (ok, output) = git::run_shell(repo, &command, node.setting("stdin")).await;
+    let (ok, output) =
+        git::run_shell_streaming(repo, &command, node.setting("stdin"), on_line).await;
     if !ok {
         return Err(StepFailure::from(format!(
             "`{command}` failed.\n\n{output}"
