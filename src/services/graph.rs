@@ -36,6 +36,8 @@ pub enum Step {
     Analyse,
     Merge,
     Sync,
+    // ── Generic ──
+    RunScript,
 }
 
 /// Whether the node spends a model call. Shown in the UI, and the thing to
@@ -65,6 +67,15 @@ pub struct NodeSpec {
     pub writes: Vec<String>,
     /// Anything that touches git history or the remote waits for approval.
     pub requires_approval: bool,
+    /// Per-node settings for steps that take them — the command a script step
+    /// runs, and so on. Empty for steps that are fully specified by their code.
+    pub config: std::collections::BTreeMap<String, String>,
+}
+
+impl NodeSpec {
+    pub fn setting(&self, key: &str) -> &str {
+        self.config.get(key).map(|s| s.as_str()).unwrap_or("")
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -76,6 +87,10 @@ pub enum NodeStatus {
     /// Work is prepared and described; waiting for the human to approve.
     AwaitingApproval,
     Done,
+    /// Ran, found nothing to do, and said so. Not an error — but nothing
+    /// downstream can proceed, because the artifacts it would have produced do
+    /// not exist.
+    Skipped,
     Failed,
     /// The human declined this node.
     Rejected,
@@ -87,7 +102,11 @@ impl NodeStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            NodeStatus::Done | NodeStatus::Failed | NodeStatus::Rejected | NodeStatus::Blocked
+            NodeStatus::Done
+                | NodeStatus::Skipped
+                | NodeStatus::Failed
+                | NodeStatus::Rejected
+                | NodeStatus::Blocked
         )
     }
 
@@ -98,6 +117,7 @@ impl NodeStatus {
             NodeStatus::Running => "running",
             NodeStatus::AwaitingApproval => "awaiting",
             NodeStatus::Done => "done",
+            NodeStatus::Skipped => "skipped",
             NodeStatus::Failed => "failed",
             NodeStatus::Rejected => "rejected",
             NodeStatus::Blocked => "blocked",
@@ -110,6 +130,7 @@ impl NodeStatus {
             NodeStatus::Running => "running",
             NodeStatus::AwaitingApproval => "needs approval",
             NodeStatus::Done => "done",
+            NodeStatus::Skipped => "skipped",
             NodeStatus::Failed => "failed",
             NodeStatus::Rejected => "rejected",
             NodeStatus::Blocked => "blocked",
@@ -269,7 +290,10 @@ impl RunState {
                 let dead = node.deps.iter().any(|d| {
                     matches!(
                         self.status(d),
-                        NodeStatus::Failed | NodeStatus::Rejected | NodeStatus::Blocked
+                        NodeStatus::Skipped
+                            | NodeStatus::Failed
+                            | NodeStatus::Rejected
+                            | NodeStatus::Blocked
                     )
                 });
                 if dead {
@@ -323,6 +347,7 @@ mod tests {
             reads: vec![],
             writes: vec![],
             requires_approval: false,
+            config: Default::default(),
         }
     }
 
@@ -409,6 +434,17 @@ mod tests {
         s.set_status("a", NodeStatus::Rejected);
         s.propagate_block(&g);
         assert!(s.is_finished(&g));
+    }
+
+    #[test]
+    fn a_step_with_nothing_to_do_stops_the_run_without_failing_it() {
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        s.set_status("a", NodeStatus::Skipped);
+        s.propagate_block(&g);
+        assert!(s.is_finished(&g));
+        assert_eq!(s.status("b"), NodeStatus::Blocked);
+        assert_ne!(s.status("a"), NodeStatus::Failed, "not an error");
     }
 
     #[test]

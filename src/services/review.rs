@@ -22,81 +22,8 @@ use serde_json::json;
 use super::flow::{StepFailure, StepOutcome};
 use super::forge::Forge;
 use super::git;
-use super::graph::{Graph, NodeKind, RunState, Step};
+use super::graph::{RunState, Step};
 use super::llm::{complete_json, LlmConfig};
-
-pub fn review_and_merge_flow() -> Graph {
-    use super::flow::node;
-    Graph {
-        nodes: vec![
-            node(
-                "find_pr",
-                "Find the pull request",
-                "The open PR for this branch",
-                Step::FindPr,
-                NodeKind::Deterministic,
-            )
-            .writes(&["pr_number", "pr_title", "pr_url", "pr_base", "pr_head"])
-            .done(),
-            node(
-                "pr_status",
-                "CI status",
-                "Checks and mergeability, from the forge",
-                Step::PrStatus,
-                NodeKind::Deterministic,
-            )
-            .after(&["find_pr"])
-            .reads(&["pr_number"])
-            .writes(&["checks_summary", "checks_state", "merge_state"])
-            .done(),
-            node(
-                "pr_diff",
-                "Fetch the diff",
-                "git diff base...head — no forge involved",
-                Step::PrDiff,
-                NodeKind::Deterministic,
-            )
-            .after(&["find_pr"])
-            .reads(&["pr_base", "pr_head"])
-            .writes(&["pr_diff", "pr_stat"])
-            .done(),
-            node(
-                "analyse",
-                "Analyse for regressions",
-                "Model call — what could this break?",
-                Step::Analyse,
-                NodeKind::Model,
-            )
-            .after(&["pr_diff"])
-            .reads(&["pr_diff", "pr_stat", "pr_title"])
-            .writes(&["verdict", "analysis", "finding_count"])
-            .done(),
-            node(
-                "merge",
-                "Merge",
-                "Squash and delete the branch",
-                Step::Merge,
-                NodeKind::Deterministic,
-            )
-            .after(&["pr_status", "analyse"])
-            .reads(&["pr_number", "checks_summary", "verdict", "analysis"])
-            .writes(&["merge_output"])
-            .gated()
-            .done(),
-            node(
-                "sync",
-                "Back to base",
-                "Checkout the base branch and pull",
-                Step::Sync,
-                NodeKind::Deterministic,
-            )
-            .after(&["merge"])
-            .reads(&["pr_base"])
-            .writes(&["sync_output"])
-            .done(),
-        ],
-    }
-}
 
 /// The merge approval is the whole point of this flow: both signals, stated
 /// plainly, with the disagreement visible when there is one.
@@ -105,11 +32,12 @@ pub fn proposal(step: Step, state: &RunState) -> String {
         Step::Merge => format!(
             "gh pr merge {} --squash --delete-branch\n\n\
              ── CI ────────────────────────────────\n{}\n\
-             merge state: {}\n\n\
+             merge state: {}\n{}\n\
              ── Model ─────────────────────────────\nverdict: {}\n\n{}",
             state.artifact("pr_number"),
             state.artifact("checks_summary"),
             state.artifact("merge_state"),
+            state.artifact("checks_detail"),
             state.artifact("verdict"),
             state.artifact("analysis"),
         ),
@@ -187,6 +115,7 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
                     ("pr_base".into(), base),
                     ("pr_head".into(), head),
                 ],
+                nothing_to_do: false,
             })
         }
         Forge::AzureDevOps => {
@@ -233,6 +162,7 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
                     ("pr_base".into(), base),
                     ("pr_head".into(), branch),
                 ],
+                nothing_to_do: false,
             })
         }
         other => Err(StepFailure::from(format!(
@@ -240,6 +170,62 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
             other.label()
         ))),
     }
+}
+
+/// The job id out of a check's `detailsUrl`
+/// (`…/actions/runs/<run>/job/<job>`).
+fn job_id(details_url: &str) -> Option<&str> {
+    details_url
+        .rsplit_once("/job/")
+        .map(|(_, id)| id)
+        .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Boils a GitHub Actions job log down to the failure.
+///
+/// `gh run view --log-failed` returns the entire job — over a megabyte of
+/// runner boilerplate, with post-job cleanup *after* the error. Neither the
+/// head nor the tail is the interesting part. The `##[error]` line is, so this
+/// keeps that line and the lines leading up to it, which is where the compiler
+/// output, the failing assertion or the rustfmt diff actually is.
+fn distil_log(raw: &str, context: usize) -> String {
+    let lines: Vec<String> = raw
+        .lines()
+        .map(|line| {
+            // Rows arrive as `job\tstep\t<ISO timestamp> text`.
+            let text = line.rsplit('\t').next().unwrap_or(line);
+            match text.split_once(' ') {
+                Some((first, rest))
+                    if first.len() > 19 && first.ends_with('Z') && first.contains('T') =>
+                {
+                    rest.to_string()
+                }
+                _ => text.to_string(),
+            }
+        })
+        .map(|line| line.trim_start_matches('\u{feff}').to_string())
+        .filter(|line| {
+            let l = line.trim();
+            !l.is_empty()
+                && !l.starts_with("##[group]")
+                && !l.starts_with("##[endgroup]")
+                && !l.starts_with("##[warning]")
+        })
+        .collect();
+
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let end = lines
+        .iter()
+        .position(|l| l.contains("##[error]"))
+        .unwrap_or(lines.len().saturating_sub(1));
+    let start = end.saturating_sub(context);
+
+    lines[start..=end.min(lines.len().saturating_sub(1))]
+        .join("\n")
+        .replace("##[error]", "")
 }
 
 async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
@@ -260,6 +246,7 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
                 ("checks_state".into(), "unknown".into()),
                 ("merge_state".into(), "unknown".into()),
             ],
+            nothing_to_do: false,
         });
     }
 
@@ -278,6 +265,7 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
         serde_json::from_str(&out).map_err(|e| format!("could not read the gh response: {e}"))?;
 
     let mut lines = vec![];
+    let mut failing: Vec<(String, String)> = vec![];
     let (mut pass, mut fail, mut pending) = (0, 0, 0);
     if let Some(checks) = value["statusCheckRollup"].as_array() {
         for check in checks {
@@ -299,6 +287,10 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
                 "pass"
             } else {
                 fail += 1;
+                failing.push((
+                    name.to_string(),
+                    check["detailsUrl"].as_str().unwrap_or_default().to_string(),
+                ));
                 "fail"
             };
             lines.push(format!("  {verdict:<8} {name}"));
@@ -323,14 +315,49 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
         lines.join("\n")
     );
 
+    // Only for checks that actually failed, and only the first few: each one is
+    // a separate round-trip that downloads the whole job log.
+    let mut detail = String::new();
+    for (name, url) in failing.iter().take(3) {
+        detail.push_str(&format!("\n── {name} ──\n"));
+        match job_id(url) {
+            Some(id) => {
+                let (_, raw) = git::run_command(
+                    "gh",
+                    &[
+                        "run".into(),
+                        "view".into(),
+                        "--job".into(),
+                        id.to_string(),
+                        "--log-failed".into(),
+                    ],
+                )
+                .await;
+                let boiled = distil_log(&raw, 30);
+                detail.push_str(if boiled.trim().is_empty() {
+                    "(could not read the log)"
+                } else {
+                    &boiled
+                });
+                detail.push('\n');
+            }
+            None => detail.push_str("(no job log for this check)\n"),
+        }
+        if !url.is_empty() {
+            detail.push_str(&format!("{url}\n"));
+        }
+    }
+
     Ok(StepOutcome {
         summary: format!("{state_word} · {merge_state}"),
-        log: format!("{summary}\n\nmergeable:   {mergeable}\nmerge state: {merge_state}"),
+        log: format!("{summary}\n\nmergeable:   {mergeable}\nmerge state: {merge_state}\n{detail}"),
         artifacts: vec![
             ("checks_summary".into(), summary),
+            ("checks_detail".into(), detail),
             ("checks_state".into(), state_word.into()),
             ("merge_state".into(), merge_state),
         ],
+        nothing_to_do: false,
     })
 }
 
@@ -361,6 +388,7 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
             ("pr_diff".into(), git::cap(&diff)),
             ("pr_stat".into(), stat.trim().to_string()),
         ],
+        nothing_to_do: false,
     })
 }
 
@@ -456,6 +484,7 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
             ("analysis".into(), analysis),
             ("finding_count".into(), kept.len().to_string()),
         ],
+        nothing_to_do: false,
     })
 }
 
@@ -508,6 +537,7 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
             out.clone()
         },
         artifacts: vec![("merge_output".into(), out)],
+        nothing_to_do: false,
     })
 }
 
@@ -519,77 +549,69 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
         summary: format!("on {base}, up to date"),
         log: log.trim().to_string(),
         artifacts: vec![("sync_output".into(), log)],
+        nothing_to_do: false,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::graph::NodeStatus;
 
     #[test]
-    fn every_dependency_names_a_node_that_exists() {
-        let g = review_and_merge_flow();
-        for n in &g.nodes {
-            for d in &n.deps {
-                assert!(g.get(d).is_some(), "{} depends on unknown node {d}", n.id);
-            }
-        }
+    fn a_job_id_is_read_out_of_the_details_url() {
+        assert_eq!(
+            job_id("https://github.com/o/r/actions/runs/32857682937/job/97833574009"),
+            Some("97833574009")
+        );
+        assert_eq!(job_id("https://example.com/no-job-here"), None);
+        assert_eq!(job_id(""), None);
     }
 
     #[test]
-    fn the_ci_check_and_the_diff_do_not_wait_on_each_other() {
-        let g = review_and_merge_flow();
-        let status = g.get("pr_status").unwrap();
-        let diff = g.get("pr_diff").unwrap();
-        assert!(!status.deps.contains(&"pr_diff".to_string()));
-        assert!(!diff.deps.contains(&"pr_status".to_string()));
+    fn the_log_is_cut_down_to_the_failure_and_what_led_to_it() {
+        let raw = "\
+fmt\tUNKNOWN STEP\t2026-08-25T14:08:59.4479744Z Current runner version: '2.336.0'
+fmt\tUNKNOWN STEP\t2026-08-25T14:08:59.4505213Z ##[group]Runner Image Provisioner
+fmt\tUNKNOWN STEP\t2026-08-25T14:09:12.9480177Z -const RELEASES_URL: &str =
+fmt\tUNKNOWN STEP\t2026-08-25T14:09:12.9480622Z +const RELEASES_URL: &str = \"…\";
+fmt\tUNKNOWN STEP\t2026-08-25T14:09:12.9490017Z ##[error]Process completed with exit code 1.
+fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0464818Z Post job cleanup.
+fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
+
+        let out = distil_log(raw, 3);
+        assert!(out.contains("Process completed with exit code 1"));
+        assert!(
+            out.contains("-const RELEASES_URL"),
+            "the rustfmt diff is the point"
+        );
+        assert!(
+            !out.contains("Post job cleanup"),
+            "nothing after the failure"
+        );
+        assert!(!out.contains("##[group]"), "group markers stripped");
+        assert!(!out.contains("2026-08-25T"), "timestamps stripped");
+        assert!(!out.contains("##[error]"), "the marker itself is noise");
     }
 
     #[test]
-    fn the_merge_decision_waits_for_both_signals() {
-        let g = review_and_merge_flow();
-        let merge = g.get("merge").unwrap();
-        assert!(merge.deps.contains(&"pr_status".to_string()));
-        assert!(merge.deps.contains(&"analyse".to_string()));
+    fn only_the_lines_asked_for_are_kept() {
+        let raw = (0..100)
+            .map(|i| format!("j\ts\t2026-08-25T14:09:12.9480177Z line {i}"))
+            .chain(["j\ts\t2026-08-25T14:09:12.9490017Z ##[error]boom".to_string()])
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(distil_log(&raw, 5).lines().count(), 6);
     }
 
     #[test]
-    fn merging_is_the_only_gated_step() {
-        let g = review_and_merge_flow();
-        for node in &g.nodes {
-            assert_eq!(
-                node.requires_approval,
-                node.id == "merge",
-                "{} gating is wrong",
-                node.id
-            );
-        }
+    fn a_log_with_no_error_marker_still_yields_its_tail() {
+        let raw = "j\ts\t2026-08-25T14:09:12.9480177Z something went sideways";
+        assert!(distil_log(raw, 10).contains("something went sideways"));
     }
 
     #[test]
-    fn the_flow_ends_by_returning_to_the_base_branch() {
-        let g = review_and_merge_flow();
-        let mut s = RunState::fresh(&g);
-        let mut order = vec![];
-        while let Some(n) = s.next_ready(&g) {
-            order.push(n.id.clone());
-            s.set_status(&n.id, NodeStatus::Done);
-        }
-        assert_eq!(order.first().unwrap(), "find_pr");
-        assert_eq!(order.last().unwrap(), "sync");
-    }
-
-    #[test]
-    fn declining_the_merge_leaves_the_branch_checked_out() {
-        let g = review_and_merge_flow();
-        let mut s = RunState::fresh(&g);
-        for id in ["find_pr", "pr_status", "pr_diff", "analyse"] {
-            s.set_status(id, NodeStatus::Done);
-        }
-        s.set_status("merge", NodeStatus::Rejected);
-        s.propagate_block(&g);
-        assert_eq!(s.status("sync"), NodeStatus::Blocked);
+    fn an_empty_log_does_not_panic() {
+        assert_eq!(distil_log("", 10), "");
     }
 
     #[test]
@@ -608,5 +630,19 @@ mod tests {
         assert!(text.contains("UNSTABLE"));
         assert!(text.contains("worth_a_look"));
         assert!(text.contains("the lockfile moved"));
+    }
+
+    #[test]
+    fn only_the_merge_step_proposes_anything() {
+        let s = RunState::default();
+        for step in [
+            Step::FindPr,
+            Step::PrStatus,
+            Step::PrDiff,
+            Step::Analyse,
+            Step::Sync,
+        ] {
+            assert!(proposal(step, &s).is_empty());
+        }
     }
 }
