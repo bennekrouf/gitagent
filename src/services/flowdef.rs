@@ -556,6 +556,28 @@ mod tests {
     }
 
     #[test]
+    fn duplicating_a_flow_copies_its_nodes_under_a_free_id() {
+        let mut book = FlowBook::defaults();
+        let new_id = book.duplicate("commit_and_pr").unwrap();
+        assert_eq!(new_id, "commit_and_pr_copy");
+        let copy = book.get(&new_id).unwrap();
+        assert_eq!(copy.nodes, book.get("commit_and_pr").unwrap().nodes);
+
+        assert_eq!(
+            book.duplicate("commit_and_pr").unwrap(),
+            "commit_and_pr_copy_2"
+        );
+    }
+
+    #[test]
+    fn default_deps_attaches_to_the_selected_node_or_else_every_leaf() {
+        let f = commit_flow();
+        // open_pr is the only leaf.
+        assert_eq!(default_deps(&f, ""), vec!["open_pr".to_string()]);
+        assert_eq!(default_deps(&f, "scan"), vec!["scan".to_string()]);
+    }
+
+    #[test]
     fn a_cycle_is_reported_rather_than_hanging_the_executor() {
         let mut f = commit_flow();
         f.nodes[0].deps = vec!["open_pr".into()];

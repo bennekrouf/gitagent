@@ -21,7 +21,7 @@ use crate::components::repo_sidebar::{phase_of, Phase, RepoEntry, RepoSidebar};
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
-use crate::services::flowdef::FlowBook;
+use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
 use crate::services::probe::{self, RepoStatus};
@@ -47,6 +47,34 @@ pub struct WorkspaceProps {
 
 fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
     states.read().get(key).cloned().unwrap_or_default()
+}
+
+/// Where to land when a repository is picked: the first step, in the first
+/// runnable flow, that is waiting on the person looking at the screen — or,
+/// if nothing is, the first runnable flow's first step.
+fn default_selection(book: &FlowBook, states: &States, repo: &str) -> (String, String, String) {
+    let runnable = book.runnable();
+    for flow in &runnable {
+        // Any PR-scoped run for this repo+flow, not just a no-PR one — an
+        // awaiting review under a specific PR must not be missed just
+        // because it isn't the "current branch" slot.
+        let awaiting_run = states
+            .iter()
+            .filter(|((r, f, _), _)| r == repo && f == &flow.id)
+            .find_map(|((_, _, pr), run)| {
+                flowdef::topological_order(flow)
+                    .into_iter()
+                    .find(|id| run.status(id) == NodeStatus::AwaitingApproval)
+                    .map(|node_id| (node_id, pr.clone()))
+            });
+        if let Some((node_id, pr_id)) = awaiting_run {
+            return (flow.id.clone(), node_id, pr_id);
+        }
+    }
+    runnable
+        .first()
+        .map(|f| (f.id.clone(), f.first_node(), String::new()))
+        .unwrap_or_default()
 }
 
 /// Walks one flow, for one repository, to completion.
@@ -557,9 +585,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         refresh_all(repos, statuses, probing, picked, selected_repo, selected_flow, book);
                     },
                     on_select: move |path: String| {
+                        let (flow_id, node_id, pr_id) =
+                            default_selection(&book.read(), &states.read(), &path);
                         selected_repo.set(Some(path));
-                        selected_node.set(String::new());
-                        selected_pr.set(String::new());
+                        if !flow_id.is_empty() {
+                            selected_flow.set(flow_id);
+                        }
+                        selected_node.set(node_id);
+                        selected_pr.set(pr_id);
                     },
                     on_change_workspace: move |_| props.on_change_workspace.call(()),
                     width: *sidebar_w.read(),
