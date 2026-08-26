@@ -81,8 +81,13 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
 
             if awaiting {
                 div { class: "approval",
-                    div { class: "approval-head", "This will run:" }
-                    pre { class: "approval-body", "{run.proposal}" }
+                    if run.preview_diff.is_empty() {
+                        div { class: "approval-head", "This will run:" }
+                        pre { class: "approval-body", "{run.proposal}" }
+                    } else {
+                        div { class: "approval-head", "Diff to review:" }
+                        DiffView { diff: run.preview_diff.clone(), is_light: props.is_light }
+                    }
 
                     if !run.items.is_empty() {
                         div { class: "items-head",

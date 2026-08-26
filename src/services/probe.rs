@@ -105,7 +105,18 @@ pub struct RepoStatus {
     pub branch: String,
     pub changes: usize,
     pub forge: Forge,
+    /// The PR for the checked-out branch specifically — what the "Commit /
+    /// Review" affordance and the top-of-column `PrCard` react to.
     pub pr: Option<PrBrief>,
+    /// Every open PR on the repository, branch-independent — what lets the
+    /// sidebar offer a choice of which one to review, not just the one HEAD
+    /// happens to point at right now.
+    pub prs: Vec<PrBrief>,
+    /// Commits on this branch not yet on its upstream, and vice versa. Both
+    /// `0` whenever there's nothing to report — no upstream configured, or
+    /// the branch is caught up — not just "unpushed work exists".
+    pub ahead: usize,
+    pub behind: usize,
 }
 
 impl RepoStatus {
@@ -177,6 +188,7 @@ pub fn affordance(
     status: Option<&RepoStatus>,
     probing: bool,
     already_ran: bool,
+    selected_pr: &str,
 ) -> Affordance {
     let Some(status) = status else {
         return if probing {
@@ -204,6 +216,13 @@ pub fn affordance(
             1 => Affordance::go(again("Commit 1 file".into())),
             n => Affordance::go(again(format!("Commit {n} files"))),
         },
+        // A PR picked from the sidebar's list always enables the run — it
+        // does not have to be the one for the checked-out branch. Only fall
+        // back to "does the checked-out branch have one" when nothing was
+        // explicitly picked, which keeps the old single-PR behaviour intact.
+        REVIEW_FLOW if !selected_pr.is_empty() => {
+            Affordance::go(again(format!("Review #{selected_pr}")))
+        }
         REVIEW_FLOW => match &status.pr {
             None => Affordance::stop(
                 "No pull request",
@@ -224,36 +243,135 @@ pub async fn probe(repo: &str) -> RepoStatus {
         .map(|url| forge::detect(&url))
         .unwrap_or(Forge::None);
     let pr = open_pr(repo, &forge).await;
+    let prs = list_open_prs(repo, &forge).await;
+    let (ahead, behind) = ahead_behind(repo).await;
 
     RepoStatus {
         branch,
         changes,
         forge,
         pr,
+        prs,
+        ahead,
+        behind,
+    }
+}
+
+/// How far the checked-out branch and its upstream have diverged. `(0, 0)`
+/// when there is no upstream to compare against — a branch that has never
+/// been pushed reports no changes here, not a false "3 behind".
+async fn ahead_behind(repo: &str) -> (usize, usize) {
+    let Ok(out) = git::run(
+        repo,
+        "git",
+        &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+    )
+    .await
+    else {
+        return (0, 0);
+    };
+    parse_ahead_behind(&out)
+}
+
+/// `git rev-list --left-right --count upstream...HEAD` prints
+/// "<behind>\t<ahead>" — split out so the parsing has no subprocess to mock.
+fn parse_ahead_behind(out: &str) -> (usize, usize) {
+    let mut parts = out.trim().split_whitespace();
+    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (ahead, behind)
+}
+
+/// One GitHub PR JSON object (from either `pr view` or `pr list`, same
+/// field names either way) into a `PrBrief`.
+fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> {
+    Some(PrBrief {
+        number: value["number"].as_i64()?.to_string(),
+        title: value["title"].as_str().unwrap_or_default().to_string(),
+        url: value["url"].as_str().unwrap_or_default().to_string(),
+        checks: rollup(&value["statusCheckRollup"]),
+        files: value["changedFiles"].as_u64().unwrap_or(0) as usize,
+        additions: value["additions"].as_u64().unwrap_or(0) as usize,
+        deletions: value["deletions"].as_u64().unwrap_or(0) as usize,
+        commits: value["commits"].as_array().map(|a| a.len()).unwrap_or(0),
+    })
+}
+
+const PR_FIELDS: &str =
+    "number,title,url,statusCheckRollup,changedFiles,additions,deletions,commits";
+
+/// Every open pull request on the repository — not scoped to the checked-out
+/// branch, unlike `open_pr` below. What lets the sidebar offer a choice of
+/// which PR to review instead of only ever "whichever one HEAD happens to
+/// point at".
+async fn list_open_prs(repo: &str, forge: &Forge) -> Vec<PrBrief> {
+    match forge {
+        Forge::GitHub => {
+            let Ok(out) = git::run(
+                repo,
+                "gh",
+                &["pr", "list", "--state", "open", "--json", PR_FIELDS],
+            )
+            .await
+            else {
+                return vec![];
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&out) else {
+                return vec![];
+            };
+            value
+                .as_array()
+                .map(|prs| prs.iter().filter_map(github_pr_from_json).collect())
+                .unwrap_or_default()
+        }
+        Forge::AzureDevOps => {
+            let Ok(out) = git::run(
+                repo,
+                "az",
+                &[
+                    "repos", "pr", "list", "--status", "active", "--output", "json",
+                ],
+            )
+            .await
+            else {
+                return vec![];
+            };
+            let Ok(list) = serde_json::from_str::<serde_json::Value>(&out) else {
+                return vec![];
+            };
+            list.as_array()
+                .map(|prs| {
+                    prs.iter()
+                        .filter_map(|pr| {
+                            let number = pr["pullRequestId"].as_i64()?.to_string();
+                            let web = pr["repository"]["webUrl"].as_str().unwrap_or_default();
+                            Some(PrBrief {
+                                number: number.clone(),
+                                title: pr["title"].as_str().unwrap_or_default().to_string(),
+                                url: format!("{web}/pullrequest/{number}"),
+                                checks: Checks::Unknown,
+                                files: 0,
+                                additions: 0,
+                                deletions: 0,
+                                commits: 0,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        _ => vec![],
     }
 }
 
 async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
     match forge {
         Forge::GitHub => {
-            let out = git::run(
-                repo,
-                "gh",
-                &["pr", "view", "--json", "number,title,url,statusCheckRollup"],
-            )
-            .await
-            .ok()?;
+            let out = git::run(repo, "gh", &["pr", "view", "--json", PR_FIELDS])
+                .await
+                .ok()?;
             let value: serde_json::Value = serde_json::from_str(&out).ok()?;
-            Some(PrBrief {
-                number: value["number"].as_i64()?.to_string(),
-                title: value["title"].as_str().unwrap_or_default().to_string(),
-                url: value["url"].as_str().unwrap_or_default().to_string(),
-                checks: rollup(&value["statusCheckRollup"]),
-                files: value["changedFiles"].as_u64().unwrap_or(0) as usize,
-                additions: value["additions"].as_u64().unwrap_or(0) as usize,
-                deletions: value["deletions"].as_u64().unwrap_or(0) as usize,
-                commits: value["commits"].as_array().map(|a| a.len()).unwrap_or(0),
-            })
+            github_pr_from_json(&value)
         }
         Forge::AzureDevOps => {
             let branch = git::current_branch(repo).await.ok()?;
@@ -347,7 +465,55 @@ mod tests {
                 deletions: 4,
                 commits: 1,
             }),
+            prs: vec![],
+            ahead: 0,
+            behind: 0,
         }
+    }
+
+    #[test]
+    fn a_github_pr_json_object_carries_its_size_and_checks() {
+        let value = json!({
+            "number": 7,
+            "title": "Add diff view",
+            "url": "https://github.com/o/r/pull/7",
+            "changedFiles": 5,
+            "additions": 120,
+            "deletions": 30,
+            "commits": [{}, {}],
+            "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+        });
+        let pr = github_pr_from_json(&value).unwrap();
+        assert_eq!(pr.number, "7");
+        assert_eq!(pr.title, "Add diff view");
+        assert_eq!(pr.files, 5);
+        assert_eq!(pr.additions, 120);
+        assert_eq!(pr.deletions, 30);
+        assert_eq!(pr.commits, 2);
+        assert_eq!(pr.checks, Checks::Passing);
+    }
+
+    #[test]
+    fn a_pr_json_object_missing_a_number_is_rejected_rather_than_faked() {
+        assert!(github_pr_from_json(&json!({"title": "no number"})).is_none());
+    }
+
+    #[test]
+    fn ahead_and_behind_are_parsed_in_the_order_git_prints_them() {
+        // rev-list prints "<behind>\t<ahead>" for `upstream...HEAD` — behind
+        // first, which is easy to swap by accident.
+        assert_eq!(parse_ahead_behind("2\t3"), (3, 2));
+    }
+
+    #[test]
+    fn a_branch_caught_up_with_its_upstream_reports_nothing() {
+        assert_eq!(parse_ahead_behind("0\t0\n"), (0, 0));
+    }
+
+    #[test]
+    fn unparsable_output_defaults_to_nothing_rather_than_panicking() {
+        assert_eq!(parse_ahead_behind(""), (0, 0));
+        assert_eq!(parse_ahead_behind("garbage"), (0, 0));
     }
 
     #[test]
@@ -416,10 +582,10 @@ mod tests {
     #[test]
     fn committing_is_offered_only_when_there_is_something_to_commit() {
         let clean = status(0, None);
-        assert!(!affordance(COMMIT_FLOW, Some(&clean), false, false).enabled);
+        assert!(!affordance(COMMIT_FLOW, Some(&clean), false, false, "").enabled);
 
         let dirty = status(3, None);
-        let a = affordance(COMMIT_FLOW, Some(&dirty), false, false);
+        let a = affordance(COMMIT_FLOW, Some(&dirty), false, false, "");
         assert!(a.enabled);
         assert_eq!(a.label, "Commit 3 files");
     }
@@ -428,7 +594,7 @@ mod tests {
     fn the_button_counts_one_file_in_the_singular() {
         let one = status(1, None);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&one), false, false).label,
+            affordance(COMMIT_FLOW, Some(&one), false, false, "").label,
             "Commit 1 file"
         );
     }
@@ -436,34 +602,45 @@ mod tests {
     #[test]
     fn reviewing_is_offered_only_when_a_pull_request_exists() {
         let none = status(0, None);
-        let a = affordance(REVIEW_FLOW, Some(&none), false, false);
+        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "");
         assert!(!a.enabled);
         assert!(a.reason.contains("master"), "says which branch");
 
         let open = status(0, Some(Checks::Passing));
-        let b = affordance(REVIEW_FLOW, Some(&open), false, false);
+        let b = affordance(REVIEW_FLOW, Some(&open), false, false, "");
         assert!(b.enabled);
         assert_eq!(b.label, "Review #2");
+    }
+
+    #[test]
+    fn picking_a_pr_from_the_list_enables_review_even_off_its_branch() {
+        // The checked-out branch has nothing open (`none`), but a PR was
+        // explicitly picked from the sidebar's list — Start must not stay
+        // disabled just because HEAD points somewhere else.
+        let none = status(0, None);
+        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "9");
+        assert!(a.enabled);
+        assert_eq!(a.label, "Review #9");
     }
 
     #[test]
     fn the_same_repository_can_offer_one_flow_and_refuse_the_other() {
         // Committed and pushed: nothing left to commit, a PR now to review.
         let after = status(0, Some(Checks::Passing));
-        assert!(!affordance(COMMIT_FLOW, Some(&after), false, false).enabled);
-        assert!(affordance(REVIEW_FLOW, Some(&after), false, false).enabled);
+        assert!(!affordance(COMMIT_FLOW, Some(&after), false, false, "").enabled);
+        assert!(affordance(REVIEW_FLOW, Some(&after), false, false, "").enabled);
 
         // And the other way round, before any of that happened.
         let before = status(4, None);
-        assert!(affordance(COMMIT_FLOW, Some(&before), false, false).enabled);
-        assert!(!affordance(REVIEW_FLOW, Some(&before), false, false).enabled);
+        assert!(affordance(COMMIT_FLOW, Some(&before), false, false, "").enabled);
+        assert!(!affordance(REVIEW_FLOW, Some(&before), false, false, "").enabled);
     }
 
     #[test]
     fn a_second_run_says_again() {
         let dirty = status(2, None);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&dirty), false, true).label,
+            affordance(COMMIT_FLOW, Some(&dirty), false, true, "").label,
             "Commit 2 files again"
         );
     }
@@ -471,7 +648,7 @@ mod tests {
     #[test]
     fn a_flow_built_in_setup_is_never_second_guessed() {
         let clean = status(0, None);
-        let a = affordance("release", Some(&clean), false, false);
+        let a = affordance("release", Some(&clean), false, false, "");
         assert!(
             a.enabled,
             "only its author knows when a custom flow applies"
@@ -480,9 +657,9 @@ mod tests {
 
     #[test]
     fn an_unprobed_repository_waits_rather_than_guessing() {
-        assert!(!affordance(COMMIT_FLOW, None, true, false).enabled);
+        assert!(!affordance(COMMIT_FLOW, None, true, false, "").enabled);
         // But a probe that never returned must not lock the button forever.
-        assert!(affordance(COMMIT_FLOW, None, false, false).enabled);
+        assert!(affordance(COMMIT_FLOW, None, false, false, "").enabled);
     }
 
     #[test]

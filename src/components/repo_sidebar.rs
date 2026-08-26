@@ -43,6 +43,21 @@ impl Phase {
             Phase::Failed => "failed",
         }
     }
+
+    /// Lower sorts first. Used to pick the single phase to show for a
+    /// repository that has several PR-scoped runs going at once — a person
+    /// being waited on always wins, the same precedence `phase_of` already
+    /// applies within one run.
+    pub fn priority(self) -> u8 {
+        match self {
+            Phase::NeedsApproval => 0,
+            Phase::Failed => 1,
+            Phase::Running => 2,
+            Phase::Nothing => 3,
+            Phase::Done => 4,
+            Phase::Idle => 5,
+        }
+    }
 }
 
 /// One repository's run, reduced to the single thing worth showing in a list.
@@ -86,6 +101,10 @@ pub struct RepoEntry {
     /// on a topic branch is the thing you want to notice.
     pub branch: String,
     pub phase: Phase,
+    /// Commits on `branch` not yet on its upstream, and vice versa. Both `0`
+    /// when there's nothing to report — no upstream, or fully caught up.
+    pub ahead: usize,
+    pub behind: usize,
 }
 
 impl RepoEntry {
@@ -173,8 +192,18 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             }
                             span { class: "sidebar-main",
                                 span { class: "sidebar-label", "{entry.label}" }
-                                if entry.shows_branch() {
-                                    span { class: "sidebar-branch", "⑂ {entry.branch}" }
+                                if entry.shows_branch() || entry.ahead > 0 || entry.behind > 0 {
+                                    span { class: "sidebar-branch",
+                                        if entry.shows_branch() {
+                                            "⑂ {entry.branch} "
+                                        }
+                                        if entry.ahead > 0 {
+                                            span { class: "sync-badge sync-ahead", title: "{entry.ahead} commit(s) not pushed", "↑{entry.ahead}" }
+                                        }
+                                        if entry.behind > 0 {
+                                            span { class: "sync-badge sync-behind", title: "{entry.behind} commit(s) not pulled", "↓{entry.behind}" }
+                                        }
+                                    }
                                 }
                             }
                             // A run in progress outranks anything the probe found:
@@ -205,6 +234,13 @@ mod tests {
     use super::*;
     use crate::services::flow::commit_and_pr_flow;
 
+    #[test]
+    fn a_person_being_waited_on_outranks_a_failure_or_a_run_in_progress() {
+        assert!(Phase::NeedsApproval.priority() < Phase::Failed.priority());
+        assert!(Phase::Failed.priority() < Phase::Running.priority());
+        assert!(Phase::Running.priority() < Phase::Idle.priority());
+    }
+
     fn started() -> RunState {
         let mut s = RunState::fresh(&commit_and_pr_flow());
         s.started = true;
@@ -220,6 +256,8 @@ mod tests {
             forge: None,
             branch: branch.into(),
             phase: Phase::Idle,
+            ahead: 0,
+            behind: 0,
         }
     }
 

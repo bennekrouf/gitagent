@@ -1,10 +1,14 @@
 //! The workspace screen: repositories on the left, the selected flow in the
 //! middle, the selected node on the right.
 //!
-//! Run state is keyed by `(repository, flow)`. That is what lets you leave one
-//! repository parked at an approval, look at another, come back and find it
-//! where it was — and what lets a repository hold a half-finished commit flow
-//! and a review flow at the same time without them treading on each other.
+//! Run state is keyed by `(repository, flow, pull request)`. That is what
+//! lets you leave one repository parked at an approval, look at another, come
+//! back and find it where it was; what lets a repository hold a half-finished
+//! commit flow and a review flow at the same time without them treading on
+//! each other; and what lets two different pull requests on the same
+//! repository each sit mid-review independently, rather than the second
+//! overwriting the first's progress. The PR slot is empty for anything that
+//! isn't PR-scoped review.
 
 use dioxus::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,8 +28,12 @@ use crate::services::probe::{self, RepoStatus};
 use crate::services::store::Layout;
 use crate::services::{git, store};
 
-/// One run per repository per flow, the flow named by its id in the book.
-type Key = (String, String);
+/// One run per repository, per flow, per pull request — the third slot is
+/// empty for anything that isn't PR-scoped review. That is what lets you
+/// review PR #7 and PR #5 on the same repository at once without one
+/// overwriting the other's progress, the same way two different repositories
+/// already don't tread on each other.
+type Key = (String, String, String);
 type States = BTreeMap<Key, RunState>;
 
 #[derive(Props, Clone, PartialEq)]
@@ -48,6 +56,7 @@ fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
 /// the next link in a chain — so making this concurrent is a change to this
 /// function alone. Across repositories it already is concurrent: each call gets
 /// its own task and writes only its own key.
+#[allow(clippy::too_many_arguments)]
 async fn drive(
     graph: Graph,
     key: Key,
@@ -56,6 +65,7 @@ async fn drive(
     mut selected_node: Signal<String>,
     selected_repo: Signal<Option<String>>,
     selected_flow: Signal<String>,
+    selected_pr: Signal<String>,
 ) {
     let repo = key.0.clone();
 
@@ -68,7 +78,8 @@ async fn drive(
         // Only steer the selection when this run is the one on screen;
         // otherwise a background run would yank the view around.
         let viewing = selected_repo.read().as_deref() == Some(repo.as_str())
-            && *selected_flow.read() == key.1;
+            && *selected_flow.read() == key.1
+            && *selected_pr.read() == key.2;
         if viewing {
             selected_node.set(node.id.clone());
         }
@@ -76,12 +87,14 @@ async fn drive(
         if node.requires_approval {
             let proposal = flow::proposal(&node, &state);
             let items = flow::proposal_items(&node, &state);
+            let preview_diff = flow::diff_preview(&node, &repo).await.unwrap_or_default();
             {
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();
                 let run = entry.runs.entry(node.id.clone()).or_default();
                 run.proposal = proposal;
                 run.items = items;
+                run.preview_diff = preview_diff;
                 run.status = NodeStatus::AwaitingApproval;
             }
 
@@ -200,6 +213,7 @@ fn retry_node(
     selected_node: Signal<String>,
     selected_repo: Signal<Option<String>>,
     selected_flow: Signal<String>,
+    selected_pr: Signal<String>,
     cfg: Signal<LlmConfig>,
     statuses: Signal<BTreeMap<String, RepoStatus>>,
     graph: Graph,
@@ -225,6 +239,7 @@ fn retry_node(
             selected_node,
             selected_repo,
             selected_flow,
+            selected_pr,
         )
         .await;
         running.write().remove(&key);
@@ -310,6 +325,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         .map(|f| f.id.clone())
         .unwrap_or_default();
     let mut selected_flow = use_signal(|| first_flow);
+    // Which open PR a review run is scoped to. Empty means "whatever the
+    // checked-out branch has open" — the same default behaviour as before
+    // this existed. Set by picking a specific PR from the sidebar's list.
+    let mut selected_pr = use_signal(String::new);
     let mut selected_node = use_signal(String::new);
     let mut running = use_signal(BTreeSet::<Key>::new);
     let mut settings_open = use_signal(|| false);
@@ -385,10 +404,17 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 .map(|s| s.summary())
                 .unwrap_or_default(),
             forge: forge_map.get(&repo.path).cloned(),
+            // Several PR-scoped runs can be in flight for this repo+flow at
+            // once — the sidebar shows whichever most needs a look, the same
+            // way `phase_of` already picks the most urgent status within one.
             phase: states_snapshot
-                .get(&(repo.path.clone(), flow_id.clone()))
-                .map(phase_of)
+                .iter()
+                .filter(|((r, f, _), _)| *r == repo.path && *f == flow_id)
+                .map(|(_, s)| phase_of(s))
+                .min_by_key(|p| p.priority())
                 .unwrap_or(Phase::Idle),
+            ahead: status_map.get(&repo.path).map(|s| s.ahead).unwrap_or(0),
+            behind: status_map.get(&repo.path).map(|s| s.behind).unwrap_or(0),
         })
         .collect();
 
@@ -407,13 +433,22 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let Some(def) = book.read().get(&id).cloned() else {
             return;
         };
-        let key: Key = (repo.clone(), id);
+        let pr = selected_pr.read().clone();
+        let key: Key = (repo.clone(), id, pr.clone());
         if running.read().contains(&key) {
             return;
         }
         let graph = def.to_graph();
         let mut fresh = RunState::fresh(&graph);
         fresh.started = true;
+        if !pr.is_empty() {
+            // Read by `find_pr`, so this run reviews the PR that was
+            // actually picked rather than falling back to "whatever the
+            // checked-out branch has open".
+            fresh
+                .artifacts
+                .insert("selected_pr_number".into(), pr.clone());
+        }
         states.write().insert(key.clone(), fresh);
         selected_node.set(def.first_node());
         running.write().insert(key.clone());
@@ -427,6 +462,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 selected_node,
                 selected_repo,
                 selected_flow,
+                selected_pr,
             )
             .await;
             running.write().remove(&key);
@@ -523,6 +559,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     on_select: move |path: String| {
                         selected_repo.set(Some(path));
                         selected_node.set(String::new());
+                        selected_pr.set(String::new());
                     },
                     on_change_workspace: move |_| props.on_change_workspace.call(()),
                     width: *sidebar_w.read(),
@@ -547,7 +584,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         }
                     },
                     Some(repo) => {
-                        let key: Key = (repo.clone(), flow_id.clone());
+                        let pr_id = selected_pr.read().clone();
+                        let key: Key = (repo.clone(), flow_id.clone(), pr_id.clone());
                         let state = states_snapshot.get(&key).cloned().unwrap_or_default();
                         let node_id = {
                             let chosen = selected_node.read().clone();
@@ -563,6 +601,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             status_map.get(&repo),
                             *probing.read() > 0,
                             state.started,
+                            &pr_id,
                         );
                         // Both flows end with a pull request worth linking to:
                         // the one just opened, or the one just merged.
@@ -633,10 +672,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                     move |_| {
                                                         selected_flow.set(id.clone());
                                                         selected_node.set(first.clone());
+                                                        // A tab is a flow, not one particular PR review
+                                                        // within it — leaving a PR selected here would
+                                                        // silently scope the next "Start" to it.
+                                                        selected_pr.set(String::new());
                                                     }
                                                 },
                                                 "{label}"
-                                                if running.read().contains(&(repo.clone(), id.clone())) {
+                                                if running.read().iter().any(|(r, f, _)| r == &repo && f == &id) {
                                                     span { class: "flow-tab-dot" }
                                                 }
                                             }
@@ -690,9 +733,40 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     }
                                 }
 
-                                // What this repository's pull request actually
-                                // contains, before committing to a run.
-                                if let Some(pr) = status_map.get(&repo).and_then(|s| s.pr.clone()) {
+                                // Every open pull request on this repository —
+                                // not just the one for whatever branch happens
+                                // to be checked out — so reviewing #7 today and
+                                // #5 tomorrow needs no `git checkout` between.
+                                if flow_id == probe::REVIEW_FLOW {
+                                    {
+                                        let prs = status_map.get(&repo).map(|s| s.prs.clone()).unwrap_or_default();
+                                        if prs.is_empty() {
+                                            rsx! {}
+                                        } else {
+                                            rsx! {
+                                                div { class: "pr-list-head",
+                                                    "{prs.len()} open pull request" if prs.len() != 1 { "s" }
+                                                }
+                                                div { class: "pr-list",
+                                                    for pr in prs.iter().cloned() {
+                                                        div {
+                                                            key: "{pr.number}",
+                                                            class: if pr.number == pr_id { "pr-list-item pr-list-item-on" } else { "pr-list-item" },
+                                                            onclick: {
+                                                                let number = pr.number.clone();
+                                                                move |_| {
+                                                                    selected_pr.set(number.clone());
+                                                                    selected_node.set(String::new());
+                                                                }
+                                                            },
+                                                            PrCard { pr: pr.clone() }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if let Some(pr) = status_map.get(&repo).and_then(|s| s.pr.clone()) {
                                     PrCard { pr }
                                 }
 
@@ -794,7 +868,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                 if ok {
                                                     retry_node(
                                                         states, running, selected_node,
-                                                        selected_repo, selected_flow,
+                                                        selected_repo, selected_flow, selected_pr,
                                                         llm_config, statuses, retry_graph,
                                                         key, &node,
                                                     );
@@ -808,7 +882,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         move |node: String| {
                                             retry_node(
                                                 states, running, selected_node,
-                                                selected_repo, selected_flow,
+                                                selected_repo, selected_flow, selected_pr,
                                                 llm_config, statuses, retry_graph.clone(),
                                                 key.clone(), &node,
                                             );

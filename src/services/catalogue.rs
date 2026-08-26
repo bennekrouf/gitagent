@@ -85,6 +85,28 @@ pub const CATALOGUE: &[StepInfo] = &[
             "file_notes",
             "untracked",
         ],
+        gate_by_default: true,
+        config: &[],
+        testable: false,
+    },
+    StepInfo {
+        step: Step::ScanChanges,
+        key: "scan_changes_auto",
+        title: "Scan changes (auto)",
+        subtitle: "Read the working tree, no approval",
+        about: "The same scan as \"Scan changes\" — same diff, same artifacts — but \
+                does not stop for a look first. For a flow where reviewing the \
+                diff up front adds nothing you don't already know.",
+        kind: NodeKind::Deterministic,
+        reads: &["base"],
+        writes: &[
+            "branch",
+            "stat",
+            "diff",
+            "commit_paths",
+            "file_notes",
+            "untracked",
+        ],
         gate_by_default: false,
         config: &[],
         testable: false,
@@ -379,11 +401,9 @@ mod tests {
             Step::RunScript,
             Step::RunRemote,
         ];
-        assert_eq!(
-            all.len(),
-            CATALOGUE.len(),
-            "a Step is missing from the catalogue"
-        );
+        // A `Step` can back more than one catalogue entry — e.g. a gated and
+        // an ungated variant of the same execution — so this only checks
+        // that none is missing, not a 1:1 count.
         for step in all {
             let _ = info(step);
         }
@@ -472,14 +492,27 @@ mod tests {
 
     #[test]
     fn read_only_steps_are_not_gated_by_default() {
-        for key in [
-            "preflight",
-            "scan_changes",
-            "pr_status",
-            "pr_diff",
-            "analyse",
-        ] {
+        for key in ["preflight", "pr_status", "pr_diff", "analyse"] {
             assert!(!by_key(key).unwrap().gate_by_default, "{key}");
         }
+    }
+
+    #[test]
+    fn scan_changes_is_gated_so_the_diff_is_reviewed_before_anything_drafts_from_it() {
+        // Read-only in the sense that it touches no remote, but its output is
+        // the diff every later step works from — worth a look before the
+        // flow moves on, unlike the other read-only steps above.
+        assert!(by_key("scan_changes").unwrap().gate_by_default);
+    }
+
+    #[test]
+    fn an_ungated_variant_of_scan_changes_runs_the_same_execution_without_asking() {
+        let gated = by_key("scan_changes").unwrap();
+        let auto = by_key("scan_changes_auto").unwrap();
+        assert_eq!(gated.step, auto.step, "same execution, same artifacts");
+        assert_eq!(gated.reads, auto.reads);
+        assert_eq!(gated.writes, auto.writes);
+        assert!(gated.gate_by_default);
+        assert!(!auto.gate_by_default);
     }
 }
