@@ -223,7 +223,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         kind: NodeKind::Deterministic,
         reads: &["pr_base", "pr_head"],
         writes: &["pr_diff", "pr_stat"],
-        gate_by_default: false,
+        gate_by_default: true,
         config: &[],
         testable: false,
     },
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn read_only_steps_are_not_gated_by_default() {
-        for key in ["preflight", "pr_status", "pr_diff", "analyse"] {
+        for key in ["preflight", "pr_status", "analyse"] {
             assert!(!by_key(key).unwrap().gate_by_default, "{key}");
         }
     }
@@ -503,6 +503,14 @@ mod tests {
         // the diff every later step works from — worth a look before the
         // flow moves on, unlike the other read-only steps above.
         assert!(by_key("scan_changes").unwrap().gate_by_default);
+    }
+
+    #[test]
+    fn pr_diff_is_gated_so_the_code_is_reviewed_before_analysis_runs() {
+        // Same reasoning as scan_changes above: it's the diff every later
+        // step in the review flow works from, worth a look before the model
+        // gets to it.
+        assert!(by_key("pr_diff").unwrap().gate_by_default);
     }
 
     #[test]
