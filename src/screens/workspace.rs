@@ -443,6 +443,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 .unwrap_or(Phase::Idle),
             ahead: status_map.get(&repo.path).map(|s| s.ahead).unwrap_or(0),
             behind: status_map.get(&repo.path).map(|s| s.behind).unwrap_or(0),
+            open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
         })
         .collect();
 

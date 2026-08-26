@@ -105,6 +105,11 @@ pub struct RepoEntry {
     /// when there's nothing to report — no upstream, or fully caught up.
     pub ahead: usize,
     pub behind: usize,
+    /// Every open PR on the repository, branch-independent — `wants`/`note`
+    /// above only ever reflect the checked-out branch's own PR, so a repo
+    /// sitting on `main` with three open PRs elsewhere would otherwise show
+    /// nothing here at all.
+    pub open_pr_count: usize,
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -185,7 +190,16 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                 None => rsx! { span { class: "forge-icon-gap" } },
                             }
                             span { class: "sidebar-main",
-                                span { class: "sidebar-label", "{entry.label}" }
+                                span { class: "sidebar-label-row",
+                                    span { class: "sidebar-label", "{entry.label}" }
+                                    if entry.open_pr_count > 0 {
+                                        span {
+                                            class: "pr-count-badge",
+                                            title: "{entry.open_pr_count} open pull request(s) — select this repo, then Review \u{2192} Merge, to pick one",
+                                            "{entry.open_pr_count} PR" if entry.open_pr_count != 1 { "s" }
+                                        }
+                                    }
+                                }
                                 if !entry.branch.is_empty() || entry.ahead > 0 || entry.behind > 0 {
                                     span { class: "sidebar-branch",
                                         if !entry.branch.is_empty() {

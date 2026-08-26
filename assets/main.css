@@ -219,9 +219,17 @@ body {
 .sync-ahead { color: var(--orange); background: color-mix(in srgb, var(--orange) 16%, transparent); }
 .sync-behind { color: var(--blue); background: color-mix(in srgb, var(--blue) 16%, transparent); }
 
+.sidebar-label-row { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .sidebar-label {
     min-width: 0; font-size: 12px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pr-count-badge {
+    flex-shrink: 0;
+    font-size: 9px; font-weight: 700;
+    padding: 1px 5px; border-radius: 999px;
+    background: color-mix(in srgb, var(--yellow) 22%, transparent);
+    color: var(--yellow);
 }
 .sidebar-note { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; }
 .sidebar-detail {
