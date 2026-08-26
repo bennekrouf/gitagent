@@ -520,6 +520,13 @@ body {
        long lines could burn the entire vertical budget wrapping
        character-by-character, leaving almost nothing else visible. */
     overflow-x: auto; overflow-y: hidden;
+    /* `.diff-view` is a column flexbox with overflow-y: auto — but a flex
+       item whose own overflow isn't `visible` gets an automatic *minimum*
+       height of 0 by spec, so once every file's combined height passed
+       70vh, flexbox was squashing them all to fit instead of letting the
+       container scroll. This was the actual bug behind "no vertical
+       scrollbar, everything compressed". */
+    flex-shrink: 0;
 }
 .diff-file-head {
     padding: 7px 12px;
