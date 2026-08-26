@@ -18,9 +18,17 @@ pub fn NodeCard(props: NodeCardProps) -> Element {
     let status = props.run.status;
     let id = spec.id.clone();
 
+    let awaiting = status == crate::services::graph::NodeStatus::AwaitingApproval;
+    let class = match (props.selected, awaiting) {
+        (true, true) => "node-card node-selected node-awaiting",
+        (true, false) => "node-card node-selected",
+        (false, true) => "node-card node-awaiting",
+        (false, false) => "node-card",
+    };
+
     rsx! {
         div {
-            class: if props.selected { "node-card node-selected" } else { "node-card" },
+            class,
             onclick: move |_| props.on_select.call(id.clone()),
 
             div { class: "node-head",
@@ -30,7 +38,9 @@ pub fn NodeCard(props: NodeCardProps) -> Element {
                     class: if spec.kind == NodeKind::Model { "tag tag-model" } else { "tag tag-det" },
                     if spec.kind == NodeKind::Model { "model" } else { "code" }
                 }
-                if spec.requires_approval {
+                if awaiting {
+                    span { class: "tag tag-gate tag-gate-live", "⏸ needs you" }
+                } else if spec.requires_approval {
                     span { class: "tag tag-gate", "gated" }
                 }
             }

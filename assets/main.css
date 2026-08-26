@@ -300,6 +300,16 @@ body {
 }
 .node-card:hover { background: var(--bg2); }
 .node-selected { border-color: var(--green); border-left-color: var(--green); background: var(--bg2); }
+.node-awaiting {
+    border-left-color: var(--yellow);
+    background: color-mix(in srgb, var(--yellow) 10%, var(--bg1));
+    animation: awaiting-glow 1.4s ease-in-out infinite;
+}
+.node-awaiting.node-selected { border-color: var(--yellow); border-left-color: var(--yellow); }
+@keyframes awaiting-glow {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 0 1px var(--yellow); }
+}
 
 .node-head { display: flex; align-items: center; gap: 7px; }
 .node-title { font-weight: 600; flex: 1; }
@@ -339,6 +349,7 @@ body {
 .tag-model { background: var(--purple); color: #fff; }
 .tag-det   { background: var(--bg3); color: var(--text2); }
 .tag-gate  { background: var(--yellow); color: #241c00; }
+.tag-gate-live { animation: pulse 1.4s ease-in-out infinite; font-weight: 700; }
 
 /* ── Detail pane ──────────────────────────────────────────────────── */
 .detail { padding: 16px 18px; }

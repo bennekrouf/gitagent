@@ -312,6 +312,26 @@ pub fn can_depend_on(flow: &FlowDef, node: &str, candidate: &str) -> bool {
     node != candidate && !ancestors(flow, candidate).contains(node)
 }
 
+/// Where a newly added node should attach. With a node selected, it branches
+/// off that one; with nothing selected, it attaches after every step nothing
+/// else depends on, so the flow keeps growing at its end.
+pub fn default_deps(flow: &FlowDef, selected: &str) -> Vec<String> {
+    if !selected.is_empty() && flow.nodes.iter().any(|n| n.id == selected) {
+        return vec![selected.to_string()];
+    }
+    let depended_on: HashSet<&str> = flow
+        .nodes
+        .iter()
+        .flat_map(|n| n.deps.iter().map(|d| d.as_str()))
+        .collect();
+    flow.nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .filter(|id| !depended_on.contains(id))
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Every flow the app knows, and the file they live in.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct FlowBook {
@@ -431,6 +451,16 @@ impl FlowBook {
             .filter(|f| validate(f).is_empty())
             .collect()
     }
+
+    /// Copies a flow's nodes into a new flow, `_copy`/`_copy_2`/... suffixed.
+    /// Returns the new id, or `None` if `id` does not name an existing flow.
+    pub fn duplicate(&mut self, id: &str) -> Option<String> {
+        let mut copy = self.get(id)?.clone();
+        let new_id = self.free_flow_id(&format!("{id}_copy"));
+        copy.id = new_id.clone();
+        self.flows.push(copy);
+        Some(new_id)
+    }
 }
 
 fn dep(mut node: NodeDef, deps: &[&str]) -> NodeDef {
@@ -523,6 +553,28 @@ mod tests {
         let book = FlowBook::defaults();
         assert_eq!(book.free_flow_id("commit_and_pr"), "commit_and_pr_2");
         assert_eq!(book.free_flow_id("release"), "release");
+    }
+
+    #[test]
+    fn duplicating_a_flow_copies_its_nodes_under_a_free_id() {
+        let mut book = FlowBook::defaults();
+        let new_id = book.duplicate("commit_and_pr").unwrap();
+        assert_eq!(new_id, "commit_and_pr_copy");
+        let copy = book.get(&new_id).unwrap();
+        assert_eq!(copy.nodes, book.get("commit_and_pr").unwrap().nodes);
+
+        assert_eq!(
+            book.duplicate("commit_and_pr").unwrap(),
+            "commit_and_pr_copy_2"
+        );
+    }
+
+    #[test]
+    fn default_deps_attaches_to_the_selected_node_or_else_every_leaf() {
+        let f = commit_flow();
+        // open_pr is the only leaf.
+        assert_eq!(default_deps(&f, ""), vec!["open_pr".to_string()]);
+        assert_eq!(default_deps(&f, "scan"), vec!["scan".to_string()]);
     }
 
     #[test]
