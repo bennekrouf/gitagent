@@ -111,6 +111,15 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
             Reads the working tree and produces the diff every later step \
             works from. Nothing is written to git — this only looks."
             .to_string(),
+        Step::PrDiff => format!(
+            "git fetch origin {} {}\ngit diff origin/{}...origin/{}\n\n\
+            Reads the pull request's diff from git — nothing is written, \
+            this only looks. Worth a look before the model analyses it.",
+            state.artifact("pr_base"),
+            state.artifact("pr_head"),
+            state.artifact("pr_base"),
+            state.artifact("pr_head"),
+        ),
         Step::RunRemote => format!(
             "ssh {} '{}'\n\nThis runs on another machine.{}",
             node.setting("host"),
