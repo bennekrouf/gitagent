@@ -413,6 +413,48 @@ mod tests {
         assert!(out.contains("truncated"));
     }
 
+    /// No built-in step may ever discard local work. `git checkout` and
+    /// `git pull --ff-only` already refuse rather than overwrite, and that is
+    /// the only shape a step is allowed to take — this pins it down so a
+    /// future step cannot quietly reach for a hard reset, a forced clean, a
+    /// forced checkout, a forced push, or force-deleting a branch instead.
+    ///
+    /// This only covers steps gitagent itself runs. A "Run a script" or
+    /// "Run on a server" step executes whatever command the user configured,
+    /// which can be anything — that is its whole point, and no scan of this
+    /// crate can constrain it.
+    ///
+    /// The banned flags are assembled at runtime, not written out literally —
+    /// otherwise this test's own source would flag itself when it scans
+    /// `git.rs`.
+    #[test]
+    fn no_builtin_step_ever_runs_a_destructive_git_command() {
+        let dash = "-";
+        let banned: Vec<String> = vec![
+            format!("reset {dash}{dash}hard"),
+            format!("clean {dash}f"),
+            format!("clean {dash}x"),
+            format!("checkout {dash}f"),
+            format!("checkout {dash}{dash}force"),
+            format!("push {dash}{dash}force"),
+            format!("push {dash}f"),
+            format!("branch {dash}D"),
+            format!("branch {dash}{dash}delete {dash}{dash}force"),
+        ];
+        for (path, source) in [
+            ("src/services/git.rs", include_str!("git.rs")),
+            ("src/services/flow.rs", include_str!("flow.rs")),
+            ("src/services/review.rs", include_str!("review.rs")),
+        ] {
+            for flag in &banned {
+                assert!(
+                    !source.contains(flag.as_str()),
+                    "{path} contains `{flag}` — a built-in step must never discard local work"
+                );
+            }
+        }
+    }
+
     #[test]
     fn porcelain_codes_read_as_words_in_the_approval_list() {
         let cases = [
