@@ -120,6 +120,47 @@ pub fn save_registry(registry: &Registry) {
     write(REPOS_FILE, registry);
 }
 
+/// Pane widths, in pixels. Persisted so a layout you set once survives a
+/// restart rather than snapping back every launch.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Layout {
+    pub sidebar: f64,
+    /// The middle column: the flow list in the workspace, the editor in Setup.
+    pub middle: f64,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            sidebar: 224.0,
+            middle: 330.0,
+        }
+    }
+}
+
+impl Layout {
+    /// Keeps a drag inside sane bounds — a pane dragged to nothing is a pane
+    /// you cannot grab again.
+    pub fn clamp_sidebar(width: f64) -> f64 {
+        width.clamp(150.0, 480.0)
+    }
+
+    pub fn clamp_middle(width: f64) -> f64 {
+        width.clamp(220.0, 640.0)
+    }
+}
+
+const LAYOUT_FILE: &str = "layout.json";
+
+pub fn load_layout() -> Layout {
+    let content = std::fs::read_to_string(data_dir().join(LAYOUT_FILE)).unwrap_or_default();
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+pub fn save_layout(layout: &Layout) {
+    write(LAYOUT_FILE, layout);
+}
+
 pub fn load_settings() -> LlmConfig {
     let content = std::fs::read_to_string(data_dir().join(SETTINGS_FILE)).unwrap_or_default();
     serde_json::from_str(&content).unwrap_or_default()
@@ -180,6 +221,25 @@ mod tests {
     #[test]
     fn discovery_of_a_folder_that_does_not_exist_is_empty_not_a_panic() {
         assert!(discover_repos("/nope/does/not/exist").is_empty());
+    }
+
+    #[test]
+    fn a_pane_cannot_be_dragged_out_of_existence() {
+        assert_eq!(Layout::clamp_sidebar(0.0), 150.0);
+        assert_eq!(Layout::clamp_sidebar(-500.0), 150.0);
+        assert_eq!(Layout::clamp_middle(10_000.0), 640.0);
+    }
+
+    #[test]
+    fn a_width_inside_the_bounds_is_left_alone() {
+        assert_eq!(Layout::clamp_sidebar(300.0), 300.0);
+        assert_eq!(Layout::clamp_middle(400.0), 400.0);
+    }
+
+    #[test]
+    fn a_corrupt_layout_file_falls_back_to_the_defaults() {
+        let layout: Layout = serde_json::from_str("{{ broken").unwrap_or_default();
+        assert_eq!(layout, Layout::default());
     }
 
     #[test]

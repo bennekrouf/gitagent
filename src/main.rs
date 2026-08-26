@@ -128,16 +128,6 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                     llm_config,
                     is_light,
                     theme_overridden,
-                    on_open: move |path: String| {
-                        let name = std::path::Path::new(&path)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| path.clone());
-                        dioxus::desktop::window().set_title(&format!(
-                            "GitAgent {} — {}", env!("CARGO_PKG_VERSION"), name
-                        ));
-                        workspace.set(Some(path));
-                    },
                 }
             },
             Some(path) => rsx! {

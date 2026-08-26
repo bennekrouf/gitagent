@@ -26,6 +26,25 @@ pub struct PrBrief {
     pub title: String,
     pub url: String,
     pub checks: Checks,
+    /// Size, which is what actually tells two pull requests apart when their
+    /// titles and check states are identical.
+    pub files: usize,
+    pub additions: usize,
+    pub deletions: usize,
+    pub commits: usize,
+}
+
+impl PrBrief {
+    /// "115 files  +9297  −4567"
+    pub fn size(&self) -> String {
+        format!(
+            "{} file{}  +{}  −{}",
+            self.files,
+            if self.files == 1 { "" } else { "s" },
+            self.additions,
+            self.deletions
+        )
+    }
 }
 
 /// What the repository wants from you, most urgent first.
@@ -109,6 +128,7 @@ impl RepoStatus {
     /// One line for the sidebar.
     pub fn summary(&self) -> String {
         match (&self.pr, self.changes) {
+            (Some(pr), _) if pr.files > 0 => format!("#{} · {}f", pr.number, pr.files),
             (Some(pr), _) => format!("#{}", pr.number),
             (None, 0) => String::new(),
             (None, n) => n.to_string(),
@@ -229,6 +249,10 @@ async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
                 title: value["title"].as_str().unwrap_or_default().to_string(),
                 url: value["url"].as_str().unwrap_or_default().to_string(),
                 checks: rollup(&value["statusCheckRollup"]),
+                files: value["changedFiles"].as_u64().unwrap_or(0) as usize,
+                additions: value["additions"].as_u64().unwrap_or(0) as usize,
+                deletions: value["deletions"].as_u64().unwrap_or(0) as usize,
+                commits: value["commits"].as_array().map(|a| a.len()).unwrap_or(0),
             })
         }
         Forge::AzureDevOps => {
@@ -261,6 +285,10 @@ async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
                 // Azure policy evaluation is a different shape; saying we did
                 // not look beats reporting a green build nobody checked.
                 checks: Checks::Unknown,
+                files: 0,
+                additions: 0,
+                deletions: 0,
+                commits: 0,
             })
         }
         _ => None,
@@ -314,6 +342,10 @@ mod tests {
                 title: "t".into(),
                 url: "u".into(),
                 checks,
+                files: 3,
+                additions: 10,
+                deletions: 4,
+                commits: 1,
             }),
         }
     }
@@ -451,6 +483,40 @@ mod tests {
         assert!(!affordance(COMMIT_FLOW, None, true, false).enabled);
         // But a probe that never returned must not lock the button forever.
         assert!(affordance(COMMIT_FLOW, None, false, false).enabled);
+    }
+
+    #[test]
+    fn the_sidebar_says_how_big_a_pull_request_is() {
+        // Four pull requests all reading "ready to merge" are indistinguishable;
+        // their size is what tells them apart.
+        let s = status(0, Some(Checks::Passing));
+        assert_eq!(s.summary(), "#2 · 3f");
+    }
+
+    #[test]
+    fn a_pull_request_of_unknown_size_still_shows_its_number() {
+        let mut s = status(0, Some(Checks::Passing));
+        s.pr.as_mut().unwrap().files = 0;
+        assert_eq!(s.summary(), "#2");
+    }
+
+    #[test]
+    fn the_size_line_gets_the_plural_right() {
+        let mut pr = PrBrief {
+            number: "1".into(),
+            title: "t".into(),
+            url: "u".into(),
+            checks: Checks::Passing,
+            files: 1,
+            additions: 2,
+            deletions: 0,
+            commits: 1,
+        };
+        assert_eq!(pr.size(), "1 file  +2  −0");
+        pr.files = 115;
+        pr.additions = 9297;
+        pr.deletions = 4567;
+        assert_eq!(pr.size(), "115 files  +9297  −4567");
     }
 
     #[test]

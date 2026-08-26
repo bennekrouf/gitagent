@@ -10,8 +10,9 @@ use dioxus::prelude::*;
 
 use crate::components::dag_view::DagView;
 use crate::services::catalogue::{self, CATALOGUE};
-use crate::services::flowdef::{can_depend_on, validate, FlowBook, NodeDef};
+use crate::services::flowdef::{can_depend_on, default_deps, validate, FlowBook, NodeDef};
 use crate::services::graph::NodeKind;
+use crate::services::store::{self, Layout};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SetupProps {
@@ -30,6 +31,16 @@ pub fn Setup(props: SetupProps) -> Element {
     let mut flow_id = use_signal(|| first);
     let mut node_id = use_signal(String::new);
     let mut adding = use_signal(|| false);
+    let mut confirm_restore = use_signal(|| false);
+    let mut testing = use_signal(|| false);
+    let mut test_result = use_signal(|| Option::<Result<String, String>>::None);
+
+    // Same dividers as the workspace, sharing the same saved widths.
+    let saved = use_signal(store::load_layout);
+    let mut sidebar_w = use_signal(|| saved.read().sidebar);
+    let mut editor_w = use_signal(|| saved.read().middle);
+    let mut dragging = use_signal(|| 0u8);
+    let mut drag_from = use_signal(|| (0.0f64, 0.0f64));
 
     let snapshot = book.read().clone();
     let current_id = flow_id.read().clone();
@@ -59,13 +70,7 @@ pub fn Setup(props: SetupProps) -> Element {
                 div { class: "topbar-right",
                     button {
                         class: "btn btn-ghost",
-                        onclick: move |_| {
-                            let restored = FlowBook::defaults();
-                            restored.save();
-                            flow_id.set(restored.flows[0].id.clone());
-                            node_id.set(String::new());
-                            book.set(restored);
-                        },
+                        onclick: move |_| confirm_restore.set(true),
                         "Restore defaults"
                     }
                     button {
@@ -76,9 +81,43 @@ pub fn Setup(props: SetupProps) -> Element {
                 }
             }
 
-            div { class: "body",
+            div {
+                class: if *dragging.read() > 0 { "body body-dragging" } else { "body" },
+                onmousemove: move |e| {
+                    let which = *dragging.read();
+                    if which == 0 {
+                        return;
+                    }
+                    let (start_x, start_w) = *drag_from.read();
+                    let delta = e.client_coordinates().x - start_x;
+                    if which == 1 {
+                        sidebar_w.set(Layout::clamp_sidebar(start_w + delta));
+                    } else {
+                        // The editor is on the right, so dragging right shrinks it.
+                        editor_w.set(Layout::clamp_middle(start_w - delta));
+                    }
+                },
+                onmouseup: move |_| {
+                    if *dragging.read() > 0 {
+                        dragging.set(0);
+                        store::save_layout(&Layout {
+                            sidebar: *sidebar_w.read(),
+                            middle: *editor_w.read(),
+                        });
+                    }
+                },
+                onmouseleave: move |_| {
+                    if *dragging.read() > 0 {
+                        dragging.set(0);
+                        store::save_layout(&Layout {
+                            sidebar: *sidebar_w.read(),
+                            middle: *editor_w.read(),
+                        });
+                    }
+                },
+
                 // ── Flows ────────────────────────────────────────────────
-                div { class: "sidebar",
+                div { class: "sidebar", style: "width: {sidebar_w}px;",
                     div { class: "sidebar-head",
                         div { class: "sidebar-title", "Flows" }
                     }
@@ -126,6 +165,14 @@ pub fn Setup(props: SetupProps) -> Element {
                     }
                 }
 
+                div {
+                    class: "divider",
+                    onmousedown: move |e| {
+                        drag_from.set((e.client_coordinates().x, *sidebar_w.read()));
+                        dragging.set(1);
+                    },
+                }
+
                 match current.clone() {
                     None => rsx! {
                         div { class: "placeholder",
@@ -145,6 +192,24 @@ pub fn Setup(props: SetupProps) -> Element {
                                             let value = e.value();
                                             edit_flow(&move |f| f.label = value.clone());
                                         },
+                                    }
+                                    button {
+                                        class: "btn",
+                                        title: "Copy this flow, steps and all",
+                                        onclick: move |_| {
+                                            let id = flow_id.read().clone();
+                                            let copy = {
+                                                let mut w = book.write();
+                                                let made = w.duplicate(&id);
+                                                w.save();
+                                                made
+                                            };
+                                            if let Some(new_id) = copy {
+                                                flow_id.set(new_id);
+                                                node_id.set(String::new());
+                                            }
+                                        },
+                                        "Duplicate"
                                     }
                                     button {
                                         class: "btn btn-danger",
@@ -179,12 +244,21 @@ pub fn Setup(props: SetupProps) -> Element {
                                     on_select: move |id: String| {
                                         node_id.set(id);
                                         adding.set(false);
+                                        test_result.set(None);
                                     },
                                 }
                             }
 
+                            div {
+                                class: "divider",
+                                onmousedown: move |e| {
+                                    drag_from.set((e.client_coordinates().x, *editor_w.read()));
+                                    dragging.set(2);
+                                },
+                            }
+
                             // ── Step editor / catalogue ──────────────────
-                            div { class: "editor-col",
+                            div { class: "editor-col", style: "width: {editor_w}px;",
                                 if *adding.read() {
                                     div { class: "editor",
                                         div { class: "editor-head",
@@ -207,13 +281,16 @@ pub fn Setup(props: SetupProps) -> Element {
                                                     class: "cat-item",
                                                     onclick: move |_| {
                                                         let key = entry.key;
+                                                        let selected = node_id.read().clone();
                                                         let mut new_id = String::new();
                                                         {
                                                             let mut w = book.write();
                                                             let id = flow_id.read().clone();
                                                             if let Some(f) = w.get_mut(&id) {
                                                                 new_id = f.free_id(key);
-                                                                f.nodes.push(NodeDef::from_catalogue(&new_id, key));
+                                                                let mut node = NodeDef::from_catalogue(&new_id, key);
+                                                                node.deps = default_deps(f, &selected);
+                                                                f.nodes.push(node);
                                                             }
                                                             w.save();
                                                         }
@@ -368,6 +445,39 @@ pub fn Setup(props: SetupProps) -> Element {
                                                     }
                                                 }
 
+                                                if info.map(|i| i.testable).unwrap_or(false) {
+                                                    div { class: "field-row",
+                                                        button {
+                                                            class: "btn",
+                                                            disabled: *testing.read(),
+                                                            onclick: {
+                                                                let node = def.clone();
+                                                                move |_| {
+                                                                    let node = node.clone();
+                                                                    testing.set(true);
+                                                                    test_result.set(None);
+                                                                    spawn(async move {
+                                                                        let outcome = crate::services::remote::test(
+                                                                            node.setting("host"),
+                                                                            node.setting("port"),
+                                                                            node.setting("identity"),
+                                                                        )
+                                                                        .await;
+                                                                        test_result.set(Some(outcome));
+                                                                        testing.set(false);
+                                                                    });
+                                                                }
+                                                            },
+                                                            if *testing.read() { "Testing…" } else { "Test connection" }
+                                                        }
+                                                    }
+                                                    match test_result.read().clone() {
+                                                        Some(Ok(msg)) => rsx! { div { class: "probe probe-ok", "{msg}" } },
+                                                        Some(Err(msg)) => rsx! { div { class: "probe probe-bad", "{msg}" } },
+                                                        None => rsx! {},
+                                                    }
+                                                }
+
                                                 label { class: "item",
                                                     input {
                                                         r#type: "checkbox",
@@ -461,6 +571,80 @@ pub fn Setup(props: SetupProps) -> Element {
                                                 "Add a step"
                                             }
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if *confirm_restore.read() {
+            {
+                let shipped = FlowBook::defaults();
+                let losing: Vec<String> = snapshot
+                    .flows
+                    .iter()
+                    .filter(|f| {
+                        shipped
+                            .get(&f.id)
+                            .map(|original| original != *f)
+                            .unwrap_or(true)
+                    })
+                    .map(|f| f.label.clone())
+                    .collect();
+
+                rsx! {
+                    div { class: "modal-backdrop", onclick: move |_| confirm_restore.set(false),
+                        div {
+                            class: "modal",
+                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                            div { class: "modal-head",
+                                span { "Restore the shipped flows?" }
+                                button {
+                                    class: "modal-close",
+                                    onclick: move |_| confirm_restore.set(false),
+                                    "×"
+                                }
+                            }
+                            div { class: "modal-body",
+                                if losing.is_empty() {
+                                    p { class: "field-note",
+                                        "Nothing has been changed — restoring will leave the flows \
+                                         exactly as they are."
+                                    }
+                                } else {
+                                    div { class: "probe probe-bad",
+                                        "This replaces every flow with the two shipped ones. "
+                                        "{losing.len()} flow(s) will be lost, and there is no undo."
+                                    }
+                                    div { class: "items",
+                                        for label in losing.iter() {
+                                            div { key: "{label}", class: "item",
+                                                span { class: "item-note note-deleted", "lost" }
+                                                span { class: "item-label", "{label}" }
+                                            }
+                                        }
+                                    }
+                                }
+                                div { class: "approval-actions",
+                                    button {
+                                        class: "btn btn-danger",
+                                        onclick: move |_| {
+                                            let restored = FlowBook::defaults();
+                                            restored.save();
+                                            flow_id.set(restored.flows[0].id.clone());
+                                            node_id.set(String::new());
+                                            book.set(restored);
+                                            confirm_restore.set(false);
+                                        },
+                                        "Restore defaults"
+                                    }
+                                    button {
+                                        class: "btn",
+                                        onclick: move |_| confirm_restore.set(false),
+                                        "Cancel"
                                     }
                                 }
                             }

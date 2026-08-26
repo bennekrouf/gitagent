@@ -38,6 +38,7 @@ pub enum Step {
     Sync,
     // ── Generic ──
     RunScript,
+    RunRemote,
 }
 
 /// Whether the node spends a model call. Shown in the UI, and the thing to

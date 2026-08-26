@@ -24,6 +24,7 @@ use super::forge::{self, Forge};
 use super::git;
 use super::graph::{NodeSpec, ProposalItem, Remedy, RunState, Step};
 use super::llm::{self, complete_json, LlmConfig};
+use super::remote;
 
 /// What a node produced. `summary` lands on the card, `log` in the detail
 /// pane, and `artifacts` crosses the edge to downstream nodes.
@@ -106,6 +107,16 @@ pub fn must_branch(state: &RunState) -> bool {
 pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
     match node.step {
         Step::Merge => super::review::proposal(node.step, state),
+        Step::RunRemote => format!(
+            "ssh {} '{}'\n\nThis runs on another machine.{}",
+            node.setting("host"),
+            node.setting("command"),
+            if node.setting("stdin").is_empty() {
+                String::new()
+            } else {
+                format!("\n\nAnswering prompts with: {:?}", node.setting("stdin"))
+            }
+        ),
         Step::RunScript => format!(
             "sh -c '{}'\n\nin {}{}",
             node.setting("command"),
@@ -196,6 +207,7 @@ pub async fn execute(
             super::review::execute(node.step, repo, cfg, state).await
         }
         Step::RunScript => run_script(node, repo).await,
+        Step::RunRemote => run_remote(node).await,
     }
 }
 
@@ -208,6 +220,47 @@ pub async fn execute(
 /// that asks `Proceed? [y/N]` reads EOF and aborts. The `stdin` setting answers
 /// it. That is not a way around the confirmation — GitAgent already asked at
 /// the approval step, and showed the exact command it was asking about.
+/// Runs a command on another machine. See `services::remote` for why no key
+/// ever reaches this app.
+async fn run_remote(node: &NodeSpec) -> Result<StepOutcome, StepFailure> {
+    let host = node.setting("host").trim().to_string();
+    let command = node.setting("command").trim().to_string();
+    if host.is_empty() || command.is_empty() {
+        return Err(StepFailure::from(
+            "This step needs a host and a command. Set them in Setup.",
+        ));
+    }
+
+    let (ok, output) = remote::run(
+        &host,
+        node.setting("port"),
+        node.setting("identity"),
+        &command,
+        node.setting("stdin"),
+    )
+    .await;
+
+    if !ok {
+        return Err(StepFailure::from(format!(
+            "`{command}` failed on {host}.\n\n{output}"
+        )));
+    }
+
+    Ok(StepOutcome {
+        summary: format!("{host} — ok"),
+        log: if output.trim().is_empty() {
+            format!("{host}: {command}\n\n(no output)")
+        } else {
+            output.clone()
+        },
+        artifacts: vec![
+            (format!("{}_output", node.id), output),
+            (format!("{}_exit", node.id), "0".to_string()),
+        ],
+        nothing_to_do: false,
+    })
+}
+
 async fn run_script(node: &NodeSpec, repo: &str) -> Result<StepOutcome, StepFailure> {
     let command = node.setting("command").trim().to_string();
     if command.is_empty() {
@@ -745,7 +798,7 @@ mod tests {
         for entry in crate::services::catalogue::CATALOGUE {
             let _ = entry.step;
         }
-        assert_eq!(crate::services::catalogue::CATALOGUE.len(), 14);
+        assert_eq!(crate::services::catalogue::CATALOGUE.len(), 15);
     }
 
     /// A bare node carrying just a step, for the pure functions that only

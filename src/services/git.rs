@@ -315,6 +315,40 @@ pub async fn run_shell(repo: &str, command: &str, stdin: &str) -> (bool, String)
     }
 }
 
+/// `run_command`, but writing `stdin` to the child first.
+pub async fn run_command_with_stdin(program: &str, args: &[String], stdin: &str) -> (bool, String) {
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return (false, format!("could not run `{program}`: {e}")),
+    };
+
+    if let Some(mut pipe) = child.stdin.take() {
+        let mut answer = stdin.to_string();
+        if !answer.ends_with('\n') {
+            answer.push('\n');
+        }
+        let _ = pipe.write_all(answer.as_bytes()).await;
+        let _ = pipe.shutdown().await;
+    }
+
+    match child.wait_with_output().await {
+        Ok(out) => {
+            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+            text.push_str(&String::from_utf8_lossy(&out.stderr));
+            (out.status.success(), cap(text.trim()))
+        }
+        Err(e) => (false, format!("`{program}` did not finish: {e}")),
+    }
+}
+
 pub async fn has_gh() -> bool {
     Command::new("gh")
         .arg("--version")

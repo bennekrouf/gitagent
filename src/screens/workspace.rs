@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::components::detail_pane::DetailPane;
 use crate::components::forge_icon::ForgeIcon;
 use crate::components::node_card::NodeCard;
+use crate::components::pr_card::PrCard;
 use crate::components::repo_sidebar::{phase_of, Phase, RepoEntry, RepoSidebar};
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
@@ -20,6 +21,7 @@ use crate::services::flowdef::FlowBook;
 use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
 use crate::services::probe::{self, RepoStatus};
+use crate::services::store::Layout;
 use crate::services::{git, store};
 
 /// One run per repository per flow, the flow named by its id in the book.
@@ -293,6 +295,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
 
+    // Pane widths, dragged by the dividers and remembered on disk.
+    let saved = use_signal(store::load_layout);
+    let mut sidebar_w = use_signal(|| saved.read().sidebar);
+    let mut middle_w = use_signal(|| saved.read().middle);
+    // 0 = not dragging, 1 = the sidebar edge, 2 = the flow-column edge.
+    let mut dragging = use_signal(|| 0u8);
+    let mut drag_from = use_signal(|| (0.0f64, 0.0f64));
+
     let mut is_light = props.is_light;
     let mut theme_overridden = props.theme_overridden;
 
@@ -340,6 +350,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             path: repo.path.clone(),
             label: repo.label.clone(),
             wants: status_map.get(&repo.path).map(|s| s.wants()),
+            branch: status_map
+                .get(&repo.path)
+                .map(|s| s.branch.clone())
+                .unwrap_or_default(),
             detail: status_map
                 .get(&repo.path)
                 .map(|s| s.summary())
@@ -436,7 +450,42 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 }
             }
 
-            div { class: "body",
+            div {
+                class: if *dragging.read() > 0 { "body body-dragging" } else { "body" },
+                onmousemove: move |e| {
+                    let which = *dragging.read();
+                    if which == 0 {
+                        return;
+                    }
+                    let (start_x, start_w) = *drag_from.read();
+                    let delta = e.client_coordinates().x - start_x;
+                    if which == 1 {
+                        sidebar_w.set(Layout::clamp_sidebar(start_w + delta));
+                    } else {
+                        middle_w.set(Layout::clamp_middle(start_w + delta));
+                    }
+                },
+                onmouseup: move |_| {
+                    if *dragging.read() > 0 {
+                        dragging.set(0);
+                        store::save_layout(&Layout {
+                            sidebar: *sidebar_w.read(),
+                            middle: *middle_w.read(),
+                        });
+                    }
+                },
+                // A pointer that leaves the window mid-drag would otherwise
+                // leave the divider stuck to the cursor.
+                onmouseleave: move |_| {
+                    if *dragging.read() > 0 {
+                        dragging.set(0);
+                        store::save_layout(&Layout {
+                            sidebar: *sidebar_w.read(),
+                            middle: *middle_w.read(),
+                        });
+                    }
+                },
+
                 RepoSidebar {
                     entries,
                     selected: active.clone(),
@@ -450,6 +499,15 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         selected_node.set(String::new());
                     },
                     on_change_workspace: move |_| props.on_change_workspace.call(()),
+                    width: *sidebar_w.read(),
+                }
+
+                div {
+                    class: "divider",
+                    onmousedown: move |e| {
+                        drag_from.set((e.client_coordinates().x, *sidebar_w.read()));
+                        dragging.set(1);
+                    },
                 }
 
                 match active.clone() {
@@ -486,7 +544,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let finished = state.started && state.is_finished(&graph);
 
                         rsx! {
-                            div { class: "graph-col",
+                            div { class: "graph-col", style: "width: {middle_w}px;",
                                 div { class: "col-head",
                                     match forge_map.get(&repo).cloned() {
                                         Some(forge) => rsx! { ForgeIcon { forge, size: 16 } },
@@ -494,7 +552,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     }
                                     div { class: "col-head-main",
                                         div { class: "col-title", "{label}" }
-                                        div { class: "col-sub", "{repo}" }
+                                        div { class: "col-sub", title: "{repo}",
+                                            match status_map.get(&repo).map(|s| s.branch.clone()) {
+                                                Some(branch) if !branch.is_empty() => rsx! {
+                                                    span { class: "col-branch", "⑂ {branch}" }
+                                                },
+                                                _ => rsx! { span { "{repo}" } },
+                                            }
+                                        }
                                     }
                                     button {
                                         class: "btn btn-primary",
@@ -528,6 +593,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     }
                                 }
 
+                                // What this repository's pull request actually
+                                // contains, before committing to a run.
+                                if let Some(pr) = status_map.get(&repo).and_then(|s| s.pr.clone()) {
+                                    PrCard { pr }
+                                }
+
                                 div { class: "col-scroll",
                                     for node in graph.nodes.iter().cloned() {
                                         NodeCard {
@@ -545,6 +616,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         a { class: "footer-link", href: "{pr_url}", target: "_blank", "{pr_url}" }
                                     }
                                 }
+                            }
+
+                            div {
+                                class: "divider",
+                                onmousedown: move |e| {
+                                    drag_from.set((e.client_coordinates().x, *middle_w.read()));
+                                    dragging.set(2);
+                                },
                             }
 
                             div { class: "detail-col",

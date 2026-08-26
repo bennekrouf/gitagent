@@ -41,6 +41,9 @@ pub struct StepInfo {
     pub gate_by_default: bool,
     /// Settings this step takes per node. Most steps take none.
     pub config: &'static [ConfigField],
+    /// Whether Setup should offer a "Test connection" button for this step —
+    /// for anything whose settings you cannot check by reading them.
+    pub testable: bool,
 }
 
 /// Contract keys may name the node they belong to, so two copies of the same
@@ -63,6 +66,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["remote_url", "forge", "base"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::ScanChanges,
@@ -83,6 +87,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         ],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::DraftCommit,
@@ -96,6 +101,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["branch_name", "commit_subject", "commit_body"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::Commit,
@@ -114,6 +120,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["work_branch", "commit_sha"],
         gate_by_default: true,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::DraftPr,
@@ -127,6 +134,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["pr_title", "pr_body"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::Push,
@@ -139,6 +147,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["push_output"],
         gate_by_default: true,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::OpenPr,
@@ -151,6 +160,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["pr_url"],
         gate_by_default: true,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::FindPr,
@@ -164,6 +174,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["pr_number", "pr_title", "pr_url", "pr_base", "pr_head"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::PrStatus,
@@ -178,6 +189,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["checks_summary", "checks_state", "merge_state"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::PrDiff,
@@ -191,6 +203,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["pr_diff", "pr_stat"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::Analyse,
@@ -204,6 +217,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["verdict", "analysis", "finding_count"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::Merge,
@@ -217,6 +231,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["merge_output"],
         gate_by_default: true,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::Sync,
@@ -229,6 +244,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         writes: &["sync_output"],
         gate_by_default: false,
         config: &[],
+        testable: false,
     },
     StepInfo {
         step: Step::RunScript,
@@ -242,6 +258,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &[],
         writes: &["{id}_output", "{id}_exit"],
         gate_by_default: true,
+        testable: false,
         config: &[
             ConfigField {
                 key: "command",
@@ -259,6 +276,64 @@ pub const CATALOGUE: &[StepInfo] = &[
                 help: "Sent to the command's stdin. A script that asks for \
                        confirmation needs this, because it has no terminal to ask \
                        through — and GitAgent already asked you at the approval.",
+                multiline: true,
+                required: false,
+            },
+        ],
+    },
+    StepInfo {
+        step: Step::RunRemote,
+        key: "run_remote",
+        title: "Run on a server",
+        subtitle: "A command over ssh",
+        about: "Runs a command on another machine over ssh — a deploy, a smoke \
+                test against staging, a service restart. GitAgent stores no keys: \
+                it shells out to your own ssh, so ~/.ssh/config aliases, agent \
+                forwarding and known_hosts all work as they do in a terminal.",
+        kind: NodeKind::Deterministic,
+        reads: &[],
+        writes: &["{id}_output", "{id}_exit"],
+        gate_by_default: true,
+        testable: true,
+        config: &[
+            ConfigField {
+                key: "host",
+                label: "Host",
+                placeholder: "deploy@staging.example.com",
+                help: "`user@host`, or any alias from your ~/.ssh/config.",
+                multiline: false,
+                required: true,
+            },
+            ConfigField {
+                key: "command",
+                label: "Command",
+                placeholder: "cd /srv/app && ./deploy.sh",
+                help: "Run by the login shell on the remote host.",
+                multiline: true,
+                required: true,
+            },
+            ConfigField {
+                key: "identity",
+                label: "Identity file",
+                placeholder: "~/.ssh/id_ed25519",
+                help: "Optional. Leave empty to let ssh and your agent choose, \
+                       which is usually the right answer.",
+                multiline: false,
+                required: false,
+            },
+            ConfigField {
+                key: "port",
+                label: "Port",
+                placeholder: "22",
+                help: "Optional.",
+                multiline: false,
+                required: false,
+            },
+            ConfigField {
+                key: "stdin",
+                label: "Answer prompts with",
+                placeholder: "y",
+                help: "Sent to the remote command's stdin.",
                 multiline: true,
                 required: false,
             },
@@ -302,6 +377,7 @@ mod tests {
             Step::Merge,
             Step::Sync,
             Step::RunScript,
+            Step::RunRemote,
         ];
         assert_eq!(
             all.len(),
@@ -339,6 +415,31 @@ mod tests {
     #[test]
     fn running_an_arbitrary_command_is_gated_by_default() {
         assert!(by_key("run_script").unwrap().gate_by_default);
+        assert!(by_key("run_remote").unwrap().gate_by_default);
+    }
+
+    #[test]
+    fn only_the_settings_you_cannot_verify_by_reading_offer_a_test() {
+        assert!(by_key("run_remote").unwrap().testable);
+        assert!(!by_key("run_script").unwrap().testable);
+        assert!(!by_key("commit").unwrap().testable);
+    }
+
+    #[test]
+    fn the_remote_step_asks_for_a_host_but_not_for_a_key() {
+        let info = by_key("run_remote").unwrap();
+        let required: Vec<&str> = info
+            .config
+            .iter()
+            .filter(|f| f.required)
+            .map(|f| f.key)
+            .collect();
+        assert_eq!(required, vec!["host", "command"]);
+        // A key is optional on purpose: ssh and the agent usually know better.
+        assert!(info
+            .config
+            .iter()
+            .any(|f| f.key == "identity" && !f.required));
     }
 
     #[test]

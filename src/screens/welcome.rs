@@ -15,7 +15,6 @@ pub struct WelcomeProps {
     pub llm_config: Signal<LlmConfig>,
     pub is_light: Signal<bool>,
     pub theme_overridden: Signal<bool>,
-    pub on_open: EventHandler<String>,
 }
 
 #[component]
@@ -28,29 +27,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut is_light = props.is_light;
     let mut theme_overridden = props.theme_overridden;
 
-    // Same picker, but the chosen folder lands in a second window and this one
-    // stays on the list.
-    let pick_new_window = move |_| {
-        spawn(async move {
-            error.set(String::new());
-            let Some(handle) = rfd::AsyncFileDialog::new()
-                .set_title("Pick a folder to open in a new window")
-                .pick_folder()
-                .await
-            else {
-                return;
-            };
-            let path = handle.path().to_string_lossy().to_string();
-            if store::discover_repos(&path).is_empty() {
-                error.set(format!("No git repositories found in {path}"));
-                return;
-            }
-            registry.write().remember(&path);
-            store::save_registry(&registry.read());
-            crate::open_in_new_window(path);
-        });
-    };
-
+    // Opening always lands in a new window and leaves this one on the list —
+    // the welcome screen is a launcher, not a workspace you leave.
     let pick = move |_| {
         spawn(async move {
             error.set(String::new());
@@ -61,12 +39,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
             else {
                 return;
             };
-            open_folder(
-                handle.path().to_string_lossy().to_string(),
-                registry,
-                error,
-                props.on_open,
-            );
+            open_folder(handle.path().to_string_lossy().to_string(), registry, error);
         });
     };
 
@@ -87,12 +60,6 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                     div { class: "welcome-pick",
                         div { class: "field-row",
                             button { class: "btn btn-primary", onclick: pick, "Open folder…" }
-                            button {
-                                class: "btn",
-                                title: "Pick a folder and open it in a new window",
-                                onclick: pick_new_window,
-                                "⧉ New window"
-                            }
                         }
                         div { class: "welcome-pick-note",
                             "Every git repository directly inside it becomes available."
@@ -108,23 +75,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     class: "repo-row",
                                     onclick: {
                                         let path = path.clone();
-                                        move |_| open_folder(path.clone(), registry, error, props.on_open)
+                                        move |_| open_folder(path.clone(), registry, error)
                                     },
                                     div { class: "repo-main",
                                         div { class: "repo-label", "{folder_name(&path)}" }
                                         div { class: "repo-path", "{path}" }
-                                    }
-                                    button {
-                                        class: "repo-newwin",
-                                        title: "Open in a new window",
-                                        onclick: {
-                                            let path = path.clone();
-                                            move |e: Event<MouseData>| {
-                                                e.stop_propagation();
-                                                crate::open_in_new_window(path.clone());
-                                            }
-                                        },
-                                        "⧉"
                                     }
                                     span { class: "repo-open", "Open ›" }
                                     button {
@@ -183,22 +138,17 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     }
 }
 
-/// Opens a folder if it holds at least one repository, and remembers it.
-/// A free function rather than a closure: two different handlers need it, and a
-/// capturing closure can only be moved into one of them.
-fn open_folder(
-    path: String,
-    mut registry: Signal<Registry>,
-    mut error: Signal<String>,
-    on_open: EventHandler<String>,
-) {
+/// Opens a folder in a new window if it holds at least one repository, and
+/// remembers it. This window stays on the welcome list. A free function
+/// rather than a closure: two different handlers need it.
+fn open_folder(path: String, mut registry: Signal<Registry>, mut error: Signal<String>) {
     if store::discover_repos(&path).is_empty() {
         error.set(format!("No git repositories found in {path}"));
         return;
     }
     registry.write().remember(&path);
     store::save_registry(&registry.read());
-    on_open.call(path);
+    crate::open_in_new_window(path);
 }
 
 fn folder_name(path: &str) -> String {

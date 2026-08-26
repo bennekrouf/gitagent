@@ -126,12 +126,6 @@ body {
 }
 .repo-row:hover .repo-open { color: var(--green); }
 
-.repo-newwin {
-    background: none; border: none; color: var(--text3);
-    font-size: 13px; cursor: pointer; padding: 0 4px; line-height: 1;
-}
-.repo-newwin:hover { color: var(--green); }
-
 .repo-remove {
     background: none; border: none; color: var(--text3);
     font-size: 17px; cursor: pointer; padding: 0 4px; line-height: 1;
@@ -168,7 +162,7 @@ body {
 
 /* ── Repository sidebar ───────────────────────────────────────────── */
 .sidebar {
-    width: 224px; flex-shrink: 0;
+    flex-shrink: 0;
     display: flex; flex-direction: column;
     border-right: 1px solid var(--border);
     background: var(--bg1);
@@ -212,8 +206,15 @@ body {
 .forge-plain  { color: var(--text3); }
 .sidebar-row-on .forge-github { color: var(--text1); }
 
+.sidebar-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sidebar-branch {
+    font-size: 9.5px; color: var(--text3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar-row-on .sidebar-branch { color: var(--green); }
+
 .sidebar-label {
-    flex: 1; min-width: 0; font-size: 12px;
+    min-width: 0; font-size: 12px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sidebar-note { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -232,7 +233,7 @@ body {
 
 /* ── Flow column ──────────────────────────────────────────────────── */
 .graph-col {
-    width: 330px; flex-shrink: 0;
+    flex-shrink: 0;
     display: flex; flex-direction: column;
     border-right: 1px solid var(--border);
     background: var(--bg0);
@@ -246,6 +247,7 @@ body {
 }
 .col-head-main { flex: 1; min-width: 0; }
 .col-title { font-size: 13px; font-weight: 600; }
+.col-branch { color: var(--green); }
 .col-sub {
     font-size: 10px; color: var(--text3);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -576,7 +578,7 @@ body {
 .problem { font-size: 11px; color: var(--text2); line-height: 1.7; }
 
 .editor-col {
-    width: 340px; flex-shrink: 0;
+    flex-shrink: 0;
     overflow-y: auto; background: var(--bg0);
     border-left: 1px solid var(--border);
 }
@@ -595,3 +597,55 @@ body {
 .cat-head { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
 .cat-title { flex: 1; font-size: 12px; font-weight: 600; }
 .cat-about { font-size: 10.5px; color: var(--text3); line-height: 1.6; }
+
+
+/* ── Draggable pane dividers ──────────────────────────────────────────
+   Four pixels wide with a wider invisible grab area, so the cursor finds
+   it without the line itself being thick enough to notice. */
+.divider {
+    width: 4px; flex-shrink: 0;
+    cursor: col-resize;
+    background: var(--border);
+    position: relative;
+    transition: background 0.12s;
+}
+.divider::after {
+    content: ""; position: absolute;
+    top: 0; bottom: 0; left: -3px; right: -3px;
+}
+.divider:hover, .body-dragging .divider { background: var(--green); }
+/* Text selection during a drag turns the whole window blue. */
+.body-dragging { user-select: none; cursor: col-resize; }
+
+
+/* ── Open pull request, at a glance ───────────────────────────────── */
+.pr-card {
+    margin: 10px 10px 0;
+    padding: 10px 11px;
+    background: var(--bg1);
+    border: 1px solid var(--border2);
+    border-left: 3px solid var(--green);
+    border-radius: 8px;
+    flex-shrink: 0;
+}
+.pr-card-head { display: flex; gap: 7px; align-items: baseline; }
+.pr-number { font-size: 11px; color: var(--green); flex-shrink: 0; }
+.pr-title {
+    font-size: 12px; color: var(--text1);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pr-card-meta {
+    margin-top: 5px; font-size: 10.5px; color: var(--text2);
+    display: flex; gap: 5px; align-items: baseline; flex-wrap: wrap;
+}
+.pr-size { color: var(--text1); }
+.pr-dot { color: var(--text3); }
+.pr-card-foot {
+    margin-top: 7px; display: flex; gap: 6px; align-items: center;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+}
+.pr-link {
+    margin-left: auto; color: var(--text3); text-decoration: none;
+    text-transform: none; letter-spacing: 0;
+}
+.pr-link:hover { color: var(--green); text-decoration: underline; }
