@@ -137,6 +137,26 @@ impl FlowDef {
     }
 }
 
+/// Where a newly added step should hang by default.
+///
+/// Adding a step as a root every time is technically correct and practically
+/// useless: a flow built that way is a pile of disconnected roots, each one
+/// reporting missing inputs, and every edge has to be drawn by hand. Hanging
+/// the new step off whatever is selected — or off the end of the flow when
+/// nothing is — builds a chain, which is what you almost always meant.
+pub fn default_deps(flow: &FlowDef, selected: &str) -> Vec<String> {
+    if flow.nodes.iter().any(|n| n.id == selected) {
+        return vec![selected.to_string()];
+    }
+    // Nothing selected: hang off a leaf — a step nothing else depends on — so
+    // the new one lands at the end rather than in the middle.
+    flow.nodes
+        .iter()
+        .rfind(|n| !flow.nodes.iter().any(|o| o.deps.contains(&n.id)))
+        .map(|n| vec![n.id.clone()])
+        .unwrap_or_default()
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum Problem {
     Empty,
@@ -413,6 +433,19 @@ impl FlowBook {
         self.flows.iter_mut().find(|f| f.id == id)
     }
 
+    /// Copies a flow whole. Building a release flow means "the commit flow,
+    /// plus a script step" far more often than it means starting from nothing.
+    pub fn duplicate(&mut self, id: &str) -> Option<String> {
+        let source = self.get(id)?.clone();
+        let new_id = self.free_flow_id(&format!("{}_copy", source.id));
+        self.flows.push(FlowDef {
+            id: new_id.clone(),
+            label: format!("{} copy", source.label),
+            nodes: source.nodes.clone(),
+        });
+        Some(new_id)
+    }
+
     pub fn free_flow_id(&self, base: &str) -> String {
         if !self.flows.iter().any(|f| f.id == base) {
             return base.to_string();
@@ -516,6 +549,86 @@ mod tests {
         book.flows[0].nodes[1].deps = vec!["ghost".into()];
         assert_eq!(book.flows.len(), 2);
         assert_eq!(book.runnable().len(), 1);
+    }
+
+    #[test]
+    fn a_step_added_with_something_selected_hangs_off_it() {
+        let f = commit_flow();
+        assert_eq!(default_deps(&f, "commit"), vec!["commit".to_string()]);
+    }
+
+    #[test]
+    fn a_step_added_with_nothing_selected_lands_at_the_end() {
+        let f = commit_flow();
+        assert_eq!(default_deps(&f, ""), vec!["open_pr".to_string()]);
+    }
+
+    #[test]
+    fn the_first_step_of_an_empty_flow_is_a_root() {
+        let f = FlowDef {
+            id: "x".into(),
+            label: "x".into(),
+            nodes: vec![],
+        };
+        assert_eq!(default_deps(&f, ""), Vec::<String>::new());
+        assert_eq!(default_deps(&f, "ghost"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_stale_selection_does_not_produce_a_dangling_dependency() {
+        let f = commit_flow();
+        for dep in &default_deps(&f, "deleted_node") {
+            assert!(f.nodes.iter().any(|n| &n.id == dep));
+        }
+    }
+
+    #[test]
+    fn building_a_flow_by_adding_steps_stays_valid_throughout() {
+        // The point of default_deps: click, click, click, no problems.
+        let mut f = FlowDef {
+            id: "release".into(),
+            label: "Release".into(),
+            nodes: vec![],
+        };
+        let mut selected = String::new();
+        for key in ["preflight", "scan_changes", "draft_commit"] {
+            let id = f.free_id(key);
+            let mut node = NodeDef::from_catalogue(&id, key);
+            node.deps = default_deps(&f, &selected);
+            f.nodes.push(node);
+            selected = id;
+        }
+        assert_eq!(validate(&f), vec![], "a chain built by clicking is valid");
+    }
+
+    #[test]
+    fn duplicating_a_flow_copies_its_shape_under_a_new_id() {
+        let mut book = FlowBook::defaults();
+        let new_id = book.duplicate("commit_and_pr").unwrap();
+        assert_eq!(new_id, "commit_and_pr_copy");
+        assert_eq!(book.flows.len(), 3);
+
+        let copy = book.get(&new_id).unwrap();
+        assert_eq!(copy.label, "Commit → PR copy");
+        assert_eq!(copy.nodes, book.get("commit_and_pr").unwrap().nodes);
+        assert_eq!(validate(copy), vec![], "a copy is runnable immediately");
+    }
+
+    #[test]
+    fn duplicating_twice_does_not_collide() {
+        let mut book = FlowBook::defaults();
+        book.duplicate("commit_and_pr").unwrap();
+        assert_eq!(
+            book.duplicate("commit_and_pr").unwrap(),
+            "commit_and_pr_copy_2"
+        );
+    }
+
+    #[test]
+    fn duplicating_something_that_is_not_there_does_nothing() {
+        let mut book = FlowBook::defaults();
+        assert!(book.duplicate("ghost").is_none());
+        assert_eq!(book.flows.len(), 2);
     }
 
     #[test]
