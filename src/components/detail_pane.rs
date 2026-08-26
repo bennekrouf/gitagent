@@ -3,12 +3,18 @@
 
 use dioxus::prelude::*;
 
+use crate::components::diff_view::DiffView;
 use crate::services::graph::{NodeRun, NodeSpec, NodeStatus};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct DetailPaneProps {
     pub spec: Option<NodeSpec>,
     pub run: NodeRun,
+    /// The node's own diff artifact (`diff` or `pr_diff`), when it wrote
+    /// one — shown as a highlighted diff instead of the plain output log.
+    #[props(default)]
+    pub diff: Option<String>,
+    pub is_light: bool,
     pub on_approve: EventHandler<String>,
     pub on_reject: EventHandler<String>,
     /// `(node id, item key)` — flips one item in and out of the approval.
@@ -17,6 +23,11 @@ pub struct DetailPaneProps {
     pub on_remedy: EventHandler<(String, usize)>,
     /// Re-queues a settled node and everything blocked behind it.
     pub on_retry: EventHandler<String>,
+    /// Abandons the whole run for this repo+flow — for a failure retrying
+    /// can never fix (the branch this was about already merged, the PR
+    /// already exists under a different run). Puts the flow back to never
+    /// having started, the same state a fresh repository would show.
+    pub on_cancel: EventHandler<()>,
 }
 
 #[component]
@@ -153,11 +164,22 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                             onclick: move |_| props.on_retry.call(retry_id.clone()),
                             "Retry this step"
                         }
+                        button {
+                            class: "btn btn-ghost",
+                            title: "Give up on this run — for a failure retrying can't fix \
+                                     (already merged, already open elsewhere). Puts this repo's \
+                                     flow back to not-started.",
+                            onclick: move |_| props.on_cancel.call(()),
+                            "Cancel run"
+                        }
                     }
                 }
             }
 
-            if !run.log.is_empty() {
+            if let Some(diff) = props.diff.clone().filter(|d| !d.trim().is_empty()) {
+                div { class: "log-head", "Diff" }
+                DiffView { diff, is_light: props.is_light }
+            } else if !run.log.is_empty() {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
                 pre {
                     class: if run.status == NodeStatus::Failed { "log log-error" } else { "log" },
