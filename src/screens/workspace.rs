@@ -54,21 +54,26 @@ fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
 /// if nothing is, the first runnable flow's first step.
 fn default_selection(book: &FlowBook, states: &States, repo: &str) -> (String, String, String) {
     let runnable = book.runnable();
-    for flow in &runnable {
-        // Any PR-scoped run for this repo+flow, not just a no-PR one — an
-        // awaiting review under a specific PR must not be missed just
-        // because it isn't the "current branch" slot.
-        let awaiting_run = states
-            .iter()
-            .filter(|((r, f, _), _)| r == repo && f == &flow.id)
-            .find_map(|((_, _, pr), run)| {
-                flowdef::topological_order(flow)
-                    .into_iter()
-                    .find(|id| run.status(id) == NodeStatus::AwaitingApproval)
-                    .map(|node_id| (node_id, pr.clone()))
-            });
-        if let Some((node_id, pr_id)) = awaiting_run {
-            return (flow.id.clone(), node_id, pr_id);
+
+    // A person being waited on outranks everything else, same precedence as
+    // the sidebar's dot — check every flow for one before falling back.
+    for status in [NodeStatus::AwaitingApproval, NodeStatus::Running] {
+        for flow in &runnable {
+            // Any PR-scoped run for this repo+flow, not just a no-PR one — a
+            // review under a specific PR must not be missed just because it
+            // isn't the "current branch" slot.
+            let matching_run = states
+                .iter()
+                .filter(|((r, f, _), _)| r == repo && f == &flow.id)
+                .find_map(|((_, _, pr), run)| {
+                    flowdef::topological_order(flow)
+                        .into_iter()
+                        .find(|id| run.status(id) == status)
+                        .map(|node_id| (node_id, pr.clone()))
+                });
+            if let Some((node_id, pr_id)) = matching_run {
+                return (flow.id.clone(), node_id, pr_id);
+            }
         }
     }
     runnable
@@ -1078,5 +1083,67 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn commit_and_pr() -> flowdef::FlowDef {
+        FlowBook::defaults().get("commit_and_pr").unwrap().clone()
+    }
+
+    #[test]
+    fn a_running_task_is_selected_over_an_idle_flow() {
+        let book = FlowBook::defaults();
+        let flow = commit_and_pr();
+        let mut run = RunState::fresh(&flow.to_graph());
+        run.started = true;
+        run.set_status("preflight", NodeStatus::Done);
+        run.set_status("scan", NodeStatus::Running);
+
+        let mut states = States::new();
+        states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
+
+        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo");
+        assert_eq!(flow_id, flow.id);
+        assert_eq!(node_id, "scan");
+        assert_eq!(pr_id, "");
+    }
+
+    #[test]
+    fn a_running_task_only_wins_for_its_own_repository() {
+        let book = FlowBook::defaults();
+        let flow = commit_and_pr();
+        let mut run = RunState::fresh(&flow.to_graph());
+        run.started = true;
+        run.set_status("scan", NodeStatus::Running);
+
+        let mut states = States::new();
+        states.insert(("/other-repo".into(), flow.id.clone(), String::new()), run);
+
+        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo");
+        // Nothing running here — falls back to the first runnable flow's
+        // first node, same as an untouched repository.
+        assert_eq!(flow_id, book.runnable().first().unwrap().id);
+        assert_eq!(node_id, book.runnable().first().unwrap().first_node());
+    }
+
+    #[test]
+    fn someone_awaiting_approval_still_outranks_a_running_task() {
+        let book = FlowBook::defaults();
+        let flow = commit_and_pr();
+        let mut run = RunState::fresh(&flow.to_graph());
+        run.started = true;
+        run.set_status("scan", NodeStatus::Done);
+        run.set_status("draft_commit", NodeStatus::Running);
+        run.set_status("commit", NodeStatus::AwaitingApproval);
+
+        let mut states = States::new();
+        states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
+
+        let (_, node_id, _) = default_selection(&book, &states, "/repo");
+        assert_eq!(node_id, "commit");
     }
 }
