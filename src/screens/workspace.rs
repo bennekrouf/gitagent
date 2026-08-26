@@ -444,6 +444,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             ahead: status_map.get(&repo.path).map(|s| s.ahead).unwrap_or(0),
             behind: status_map.get(&repo.path).map(|s| s.behind).unwrap_or(0),
             open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
+            prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
         })
         .collect();
 
@@ -774,7 +775,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 if flow_id == probe::REVIEW_FLOW {
                                     {
                                         let prs = status_map.get(&repo).map(|s| s.prs.clone()).unwrap_or_default();
-                                        if prs.is_empty() {
+                                        let prs_error = status_map.get(&repo).and_then(|s| s.prs_error.clone());
+                                        if let Some(err) = prs_error {
+                                            rsx! {
+                                                div { class: "pr-list-error",
+                                                    "Couldn't check for open pull requests: {err}"
+                                                }
+                                            }
+                                        } else if prs.is_empty() {
                                             rsx! {}
                                         } else {
                                             rsx! {

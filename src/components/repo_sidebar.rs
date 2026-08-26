@@ -110,6 +110,10 @@ pub struct RepoEntry {
     /// sitting on `main` with three open PRs elsewhere would otherwise show
     /// nothing here at all.
     pub open_pr_count: usize,
+    /// Set when checking for open PRs actually failed (rate limit, network,
+    /// auth) — shown instead of the count badge, so a check that never
+    /// happened never looks identical to a repository that is truly clean.
+    pub prs_error: Option<String>,
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -192,7 +196,13 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             span { class: "sidebar-main",
                                 span { class: "sidebar-label-row",
                                     span { class: "sidebar-label", "{entry.label}" }
-                                    if entry.open_pr_count > 0 {
+                                    if let Some(err) = entry.prs_error.clone() {
+                                        span {
+                                            class: "pr-count-badge pr-count-error",
+                                            title: "Couldn't check for open pull requests: {err}",
+                                            "!"
+                                        }
+                                    } else if entry.open_pr_count > 0 {
                                         span {
                                             class: "pr-count-badge",
                                             title: "{entry.open_pr_count} open pull request(s) — select this repo, then Review \u{2192} Merge, to pick one",

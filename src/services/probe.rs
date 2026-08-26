@@ -112,6 +112,11 @@ pub struct RepoStatus {
     /// sidebar offer a choice of which one to review, not just the one HEAD
     /// happens to point at right now.
     pub prs: Vec<PrBrief>,
+    /// Set when the call behind `prs` actually failed (rate limit, network,
+    /// auth) rather than the repository genuinely having none — an empty
+    /// `prs` alone cannot tell those two apart, and showing "clean" for a
+    /// check that never happened is worse than showing nothing.
+    pub prs_error: Option<String>,
     /// Commits on this branch not yet on its upstream, and vice versa. Both
     /// `0` whenever there's nothing to report — no upstream configured, or
     /// the branch is caught up — not just "unpushed work exists".
@@ -243,7 +248,10 @@ pub async fn probe(repo: &str) -> RepoStatus {
         .map(|url| forge::detect(&url))
         .unwrap_or(Forge::None);
     let pr = open_pr(repo, &forge).await;
-    let prs = list_open_prs(repo, &forge).await;
+    let (prs, prs_error) = match list_open_prs(repo, &forge).await {
+        Ok(list) => (list, None),
+        Err(e) => (vec![], Some(e)),
+    };
     let (ahead, behind) = ahead_behind(repo).await;
 
     RepoStatus {
@@ -252,6 +260,7 @@ pub async fn probe(repo: &str) -> RepoStatus {
         forge,
         pr,
         prs,
+        prs_error,
         ahead,
         behind,
     }
@@ -304,42 +313,39 @@ const PR_FIELDS: &str =
 /// branch, unlike `open_pr` below. What lets the sidebar offer a choice of
 /// which PR to review instead of only ever "whichever one HEAD happens to
 /// point at".
-async fn list_open_prs(repo: &str, forge: &Forge) -> Vec<PrBrief> {
+/// `Err` only for an actual failed call (rate limit, network, auth) — a
+/// repository with genuinely zero open PRs is `Ok(vec![])`. Collapsing those
+/// two into one silently showed "clean" for a check that never happened, no
+/// different from a repo that really was clean.
+async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBrief>, String> {
     match forge {
         Forge::GitHub => {
-            let Ok(out) = git::run(
+            let out = git::run(
                 repo,
                 "gh",
                 &["pr", "list", "--state", "open", "--json", PR_FIELDS],
             )
-            .await
-            else {
-                return vec![];
-            };
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&out) else {
-                return vec![];
-            };
-            value
+            .await?;
+            let value: serde_json::Value =
+                serde_json::from_str(&out).map_err(|e| format!("could not read gh output: {e}"))?;
+            Ok(value
                 .as_array()
                 .map(|prs| prs.iter().filter_map(github_pr_from_json).collect())
-                .unwrap_or_default()
+                .unwrap_or_default())
         }
         Forge::AzureDevOps => {
-            let Ok(out) = git::run(
+            let out = git::run(
                 repo,
                 "az",
                 &[
                     "repos", "pr", "list", "--status", "active", "--output", "json",
                 ],
             )
-            .await
-            else {
-                return vec![];
-            };
-            let Ok(list) = serde_json::from_str::<serde_json::Value>(&out) else {
-                return vec![];
-            };
-            list.as_array()
+            .await?;
+            let list: serde_json::Value =
+                serde_json::from_str(&out).map_err(|e| format!("could not read az output: {e}"))?;
+            Ok(list
+                .as_array()
                 .map(|prs| {
                     prs.iter()
                         .filter_map(|pr| {
@@ -358,9 +364,9 @@ async fn list_open_prs(repo: &str, forge: &Forge) -> Vec<PrBrief> {
                         })
                         .collect()
                 })
-                .unwrap_or_default()
+                .unwrap_or_default())
         }
-        _ => vec![],
+        _ => Ok(vec![]),
     }
 }
 
@@ -466,6 +472,7 @@ mod tests {
                 commits: 1,
             }),
             prs: vec![],
+            prs_error: None,
             ahead: 0,
             behind: 0,
         }
