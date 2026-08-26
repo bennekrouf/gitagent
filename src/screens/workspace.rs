@@ -814,6 +814,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             );
                                         }
                                     },
+                                    on_cancel: {
+                                        let key = key.clone();
+                                        move |_| {
+                                            states.write().remove(&key);
+                                            running.write().remove(&key);
+                                            reprobe(key.0.clone(), statuses);
+                                        }
+                                    },
                                 }
                             }
                         }

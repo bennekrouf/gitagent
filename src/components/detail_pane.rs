@@ -23,6 +23,11 @@ pub struct DetailPaneProps {
     pub on_remedy: EventHandler<(String, usize)>,
     /// Re-queues a settled node and everything blocked behind it.
     pub on_retry: EventHandler<String>,
+    /// Abandons the whole run for this repo+flow — for a failure retrying
+    /// can never fix (the branch this was about already merged, the PR
+    /// already exists under a different run). Puts the flow back to never
+    /// having started, the same state a fresh repository would show.
+    pub on_cancel: EventHandler<()>,
 }
 
 #[component]
@@ -175,6 +180,14 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                             class: "btn",
                             onclick: move |_| props.on_retry.call(retry_id.clone()),
                             "Retry this step"
+                        }
+                        button {
+                            class: "btn btn-ghost",
+                            title: "Give up on this run — for a failure retrying can't fix \
+                                     (already merged, already open elsewhere). Puts this repo's \
+                                     flow back to not-started.",
+                            onclick: move |_| props.on_cancel.call(()),
+                            "Cancel run"
                         }
                     }
                 }
