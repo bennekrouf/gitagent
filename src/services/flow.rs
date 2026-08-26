@@ -208,7 +208,7 @@ pub async fn execute(
     on_line: &mut dyn FnMut(&str),
 ) -> Result<StepOutcome, StepFailure> {
     match node.step {
-        Step::Preflight => preflight(repo, cfg).await,
+        Step::Preflight => preflight(node, repo, cfg).await,
         Step::ScanChanges => scan(repo, state).await,
         Step::DraftCommit => draft_commit(cfg, state).await,
         Step::Commit => commit(repo, state).await,
@@ -314,7 +314,7 @@ async fn run_script(
     })
 }
 
-async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
+async fn preflight(node: &NodeSpec, repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
     let mut log = String::new();
     let mut failures: Vec<String> = vec![];
 
@@ -326,7 +326,14 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
         forge.label()
     ));
 
-    let (base, how) = git::default_remote_branch(repo).await;
+    // An explicit override — set in Setup when a repository's pull requests
+    // don't target its default branch (a "develop" workflow, say) — always
+    // wins over auto-detection.
+    let (base, how) = if node.setting("base").trim().is_empty() {
+        git::default_remote_branch(repo).await
+    } else {
+        (node.setting("base").trim().to_string(), "set in Setup".to_string())
+    };
     let branch = git::current_branch(repo).await?;
     log.push_str(&format!("base    {base}  ({how})\nbranch  {branch}\n"));
     if git::is_protected(&branch) {

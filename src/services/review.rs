@@ -396,7 +396,14 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
 async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let base = state.artifact("pr_base");
     let head = state.artifact("pr_head");
-    let _ = git::run(repo, "git", &["fetch", "origin", base, head]).await;
+    // Swallowing this used to leave a failed fetch looking like a missing
+    // ref two lines later — "ambiguous argument origin/X...origin/Y" is a
+    // confusing way to learn the actual problem was "couldn't fetch base
+    // or head from origin" (wrong remote, network, a base branch that no
+    // longer exists). Surface the real reason instead.
+    git::run(repo, "git", &["fetch", "origin", base, head])
+        .await
+        .map_err(|e| format!("could not fetch {base} and {head} from origin: {e}"))?;
 
     let range = format!("origin/{base}...origin/{head}");
     let stat = git::run(repo, "git", &["diff", &range, "--stat"])
