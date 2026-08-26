@@ -194,6 +194,10 @@ pub struct NodeRun {
     pub log: String,
     /// Set while `AwaitingApproval`: exactly what will happen if approved.
     pub proposal: String,
+    /// Set while `AwaitingApproval`, for a step whose whole point is a diff
+    /// (`scan_changes`) — the actual diff, read live, so the approval shows
+    /// what you're agreeing to rather than a paraphrase of it.
+    pub preview_diff: String,
     /// Items the approval covers. Empty for nodes that offer no choice.
     pub items: Vec<ProposalItem>,
     /// Fixes offered after a failure. Empty when nothing is known to help.
@@ -318,6 +322,7 @@ impl RunState {
             run.summary.clear();
             run.log.clear();
             run.proposal.clear();
+            run.preview_diff.clear();
             run.items.clear();
         }
         for node in &graph.nodes {

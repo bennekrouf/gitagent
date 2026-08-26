@@ -212,6 +212,12 @@ body {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sidebar-row-on .sidebar-branch { color: var(--green); }
+.sync-badge {
+    display: inline-block; font-size: 9px; font-weight: 700;
+    padding: 0 3px; border-radius: 3px; margin-left: 3px;
+}
+.sync-ahead { color: var(--orange); background: color-mix(in srgb, var(--orange) 16%, transparent); }
+.sync-behind { color: var(--blue); background: color-mix(in srgb, var(--blue) 16%, transparent); }
 
 .sidebar-label {
     min-width: 0; font-size: 12px;
@@ -501,12 +507,19 @@ body {
 /* ── Diff view ────────────────────────────────────────────────────── */
 .diff-view {
     display: flex; flex-direction: column; gap: 14px;
-    max-height: 520px; overflow-y: auto;
+    /* Most of the viewport, not a fixed box — a short window was leaving
+       almost nothing to actually read before this scrolled. */
+    max-height: 70vh; overflow-y: auto;
     border-radius: 8px;
 }
 .diff-file {
     border: 1px solid var(--border2); border-radius: 8px;
-    overflow: hidden; background: var(--bg1);
+    background: var(--bg1);
+    /* Each file scrolls sideways on its own long lines instead of the
+       whole diff wrapping — wrapping was the actual bug: a handful of
+       long lines could burn the entire vertical budget wrapping
+       character-by-character, leaving almost nothing else visible. */
+    overflow-x: auto; overflow-y: hidden;
 }
 .diff-file-head {
     padding: 7px 12px;
@@ -519,18 +532,20 @@ body {
     padding: 4px 12px;
     font-family: var(--mono); font-size: 10.5px; color: var(--text3);
     background: var(--bg0);
+    white-space: pre;
 }
 .diff-line {
-    display: flex; gap: 8px;
+    display: flex; flex-wrap: nowrap; gap: 8px;
     padding: 0 12px;
     font-family: var(--mono); font-size: 12px; line-height: 1.6;
-    white-space: pre-wrap; word-break: break-word;
+    white-space: pre;
+    width: max-content; min-width: 100%;
 }
 .diff-marker {
     flex-shrink: 0; width: 10px; text-align: center;
     color: var(--text3); user-select: none;
 }
-.diff-code { flex: 1; min-width: 0; color: var(--text2); }
+.diff-code { flex-shrink: 0; color: var(--text2); }
 .diff-add { background: color-mix(in srgb, var(--green) 12%, transparent); }
 .diff-add .diff-marker { color: var(--green); }
 .diff-remove { background: color-mix(in srgb, var(--red) 12%, transparent); }
@@ -713,6 +728,26 @@ body {
 /* Text selection during a drag turns the whole window blue. */
 .body-dragging { user-select: none; cursor: col-resize; }
 
+
+/* ── Every open pull request, pick one to review ─────────────────────── */
+.pr-list-head {
+    padding: 8px 12px 2px;
+    font-size: 10px; color: var(--text3);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    flex-shrink: 0;
+}
+.pr-list {
+    display: flex; flex-direction: column; gap: 0;
+    /* A small fixed box here was the actual bug: with more than ~2 open
+       PRs, most of the list sat behind an easy-to-miss nested scrollbar. */
+    max-height: 45vh; overflow-y: auto;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border2);
+}
+.pr-list-item { cursor: pointer; border-radius: 8px; transition: background 0.12s; }
+.pr-list-item:hover { background: var(--bg2); }
+.pr-list-item-on { background: var(--bg2); }
+.pr-list-item-on .pr-card { border-left-color: var(--blue); }
 
 /* ── Open pull request, at a glance ───────────────────────────────── */
 .pr-card {

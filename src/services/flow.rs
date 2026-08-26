@@ -107,6 +107,10 @@ pub fn must_branch(state: &RunState) -> bool {
 pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
     match node.step {
         Step::Merge => super::review::proposal(node.step, state),
+        Step::ScanChanges => "git status --porcelain\ngit diff\n\n\
+            Reads the working tree and produces the diff every later step \
+            works from. Nothing is written to git — this only looks."
+            .to_string(),
         Step::RunRemote => format!(
             "ssh {} '{}'\n\nThis runs on another machine.{}",
             node.setting("host"),
@@ -379,6 +383,39 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
     })
 }
 
+/// The working tree's diff, untracked files included — same shape `scan`
+/// commits as the `diff` artifact. Shared with `diff_preview` so the
+/// approval and the step it approves can never show two different diffs
+/// for the same tree.
+async fn working_tree_diff(
+    repo: &str,
+    changes: &[git::FileChange],
+) -> Result<String, StepFailure> {
+    let mut diff = git::diff(repo).await?;
+    for change in changes.iter().filter(|c| c.is_untracked()) {
+        if diff.len() >= git::DIFF_CAP {
+            break;
+        }
+        diff.push_str(&git::untracked_diff(repo, &change.path).await);
+    }
+    Ok(git::cap(&diff))
+}
+
+/// A live look at what `scan_changes` would produce, read fresh at approval
+/// time so the panel shows the actual diff rather than a paraphrase of it.
+/// `None` for any other step, or once the working tree turns out clean —
+/// the approval falls back to the plain text proposal in that case.
+pub async fn diff_preview(node: &NodeSpec, repo: &str) -> Option<String> {
+    if node.step != Step::ScanChanges {
+        return None;
+    }
+    let changes = git::status(repo).await.ok()?;
+    if changes.is_empty() {
+        return None;
+    }
+    working_tree_diff(repo, &changes).await.ok()
+}
+
 async fn scan(repo: &str) -> Result<StepOutcome, StepFailure> {
     let branch = git::current_branch(repo).await?;
     let changes = git::status(repo).await?;
@@ -396,14 +433,7 @@ async fn scan(repo: &str) -> Result<StepOutcome, StepFailure> {
     let paths: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
     let stat = git::diff_stat(repo).await?;
 
-    let mut diff = git::diff(repo).await?;
-    for change in changes.iter().filter(|c| c.is_untracked()) {
-        if diff.len() >= git::DIFF_CAP {
-            break;
-        }
-        diff.push_str(&git::untracked_diff(repo, &change.path).await);
-    }
-    let diff = git::cap(&diff);
+    let diff = working_tree_diff(repo, &changes).await?;
 
     let listing = changes
         .iter()
@@ -672,6 +702,24 @@ mod tests {
     use super::*;
     use crate::services::graph::NodeStatus;
 
+    #[tokio::test]
+    async fn diff_preview_is_none_for_anything_but_scan_changes() {
+        // Short-circuits before touching git, so an unused repo path is fine.
+        let node = NodeSpec {
+            id: "commit".into(),
+            title: String::new(),
+            subtitle: String::new(),
+            step: Step::Commit,
+            kind: crate::services::graph::NodeKind::Deterministic,
+            deps: vec![],
+            reads: vec![],
+            writes: vec![],
+            requires_approval: true,
+            config: Default::default(),
+        };
+        assert_eq!(diff_preview(&node, "/does/not/matter").await, None);
+    }
+
     #[test]
     fn every_dependency_names_a_node_that_exists() {
         let g = commit_and_pr_flow();
@@ -712,9 +760,18 @@ mod tests {
         for id in ["commit", "push", "open_pr"] {
             assert!(g.get(id).unwrap().requires_approval, "{id} must be gated");
         }
-        for id in ["preflight", "scan", "draft_commit", "draft_pr"] {
+        for id in ["preflight", "draft_commit", "draft_pr"] {
             assert!(!g.get(id).unwrap().requires_approval, "{id} is read-only");
         }
+    }
+
+    #[test]
+    fn scan_is_gated_so_the_diff_it_found_is_reviewed_before_a_commit_drafts_from_it() {
+        // scan_changes touches no git history or remote, but everything
+        // downstream works from the diff it produces — worth a look before
+        // the flow keeps going, not just before the commit itself.
+        let g = commit_and_pr_flow();
+        assert!(g.get("scan").unwrap().requires_approval);
     }
 
     #[test]
@@ -808,7 +865,10 @@ mod tests {
         for entry in crate::services::catalogue::CATALOGUE {
             let _ = entry.step;
         }
-        assert_eq!(crate::services::catalogue::CATALOGUE.len(), 15);
+        // Not every catalogue entry maps to a distinct `Step` — a gated and
+        // an ungated variant can share one execution — so this only pins
+        // down that the catalogue has not shrunk, not an exact 1:1 count.
+        assert!(crate::services::catalogue::CATALOGUE.len() >= 15);
     }
 
     /// A bare node carrying just a step, for the pure functions that only

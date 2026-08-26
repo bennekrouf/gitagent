@@ -65,25 +65,29 @@ pub async fn execute(
 async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let forge = Forge::from_key(state.artifact("forge"));
     let branch = git::current_branch(repo).await?;
+    // Set when this run was started from a specific pull request in the
+    // sidebar's PR list, rather than from "whatever the checked-out branch
+    // has open" — lets a review run against any open PR, not only the one
+    // for the branch you currently happen to be sitting on.
+    let selected = state.artifact("selected_pr_number").trim();
 
     match forge {
         Forge::GitHub => {
-            let out = git::run(
-                repo,
-                "gh",
-                &[
-                    "pr",
-                    "view",
-                    "--json",
-                    "number,title,url,state,baseRefName,headRefName,isDraft",
-                ],
-            )
-            .await
-            .map_err(|e| {
+            let mut args: Vec<&str> = vec!["pr", "view"];
+            if !selected.is_empty() {
+                args.push(selected);
+            }
+            args.extend([
+                "--json",
+                "number,title,url,state,baseRefName,headRefName,isDraft",
+            ]);
+            let out = git::run(repo, "gh", &args).await.map_err(|e| {
                 if e.contains("no pull requests found") || e.contains("no open pull requests") {
-                    StepFailure::from(format!(
-                        "No open pull request for `{branch}`. Run the commit flow first."
-                    ))
+                    StepFailure::from(if selected.is_empty() {
+                        format!("No open pull request for `{branch}`. Run the commit flow first.")
+                    } else {
+                        format!("Pull request #{selected} is not open.")
+                    })
                 } else {
                     StepFailure::from(e)
                 }
@@ -119,28 +123,47 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
             })
         }
         Forge::AzureDevOps => {
-            let out = git::run(
-                repo,
-                "az",
-                &[
-                    "repos",
-                    "pr",
-                    "list",
-                    "--source-branch",
-                    &branch,
-                    "--status",
-                    "active",
-                    "--output",
-                    "json",
-                ],
-            )
-            .await?;
-            let list: serde_json::Value =
-                serde_json::from_str(&out).map_err(|e| format!("could not read az output: {e}"))?;
-            let pr = list
-                .as_array()
-                .and_then(|a| a.first())
-                .ok_or_else(|| format!("No active pull request for `{branch}`."))?;
+            let (pr, head): (serde_json::Value, String) = if !selected.is_empty() {
+                let out = git::run(
+                    repo,
+                    "az",
+                    &["repos", "pr", "show", "--id", selected, "--output", "json"],
+                )
+                .await?;
+                let pr: serde_json::Value = serde_json::from_str(&out)
+                    .map_err(|e| format!("could not read az output: {e}"))?;
+                let head = pr["sourceRefName"]
+                    .as_str()
+                    .unwrap_or(&branch)
+                    .trim_start_matches("refs/heads/")
+                    .to_string();
+                (pr, head)
+            } else {
+                let out = git::run(
+                    repo,
+                    "az",
+                    &[
+                        "repos",
+                        "pr",
+                        "list",
+                        "--source-branch",
+                        &branch,
+                        "--status",
+                        "active",
+                        "--output",
+                        "json",
+                    ],
+                )
+                .await?;
+                let list: serde_json::Value = serde_json::from_str(&out)
+                    .map_err(|e| format!("could not read az output: {e}"))?;
+                let pr = list
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .cloned()
+                    .ok_or_else(|| format!("No active pull request for `{branch}`."))?;
+                (pr, branch.clone())
+            };
 
             let number = pr["pullRequestId"].as_i64().unwrap_or_default().to_string();
             let title = pr["title"].as_str().unwrap_or_default().to_string();
@@ -154,13 +177,13 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
 
             Ok(StepOutcome {
                 summary: format!("!{number} {title}"),
-                log: format!("!{number}  {title}\n{url}\n\n{branch} → {base}"),
+                log: format!("!{number}  {title}\n{url}\n\n{head} → {base}"),
                 artifacts: vec![
                     ("pr_number".into(), number),
                     ("pr_title".into(), title),
                     ("pr_url".into(), url),
                     ("pr_base".into(), base),
-                    ("pr_head".into(), branch),
+                    ("pr_head".into(), head),
                 ],
                 nothing_to_do: false,
             })
