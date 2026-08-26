@@ -273,12 +273,19 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
         });
     }
 
+    // `find_pr` already resolved which PR this run is about — reusing that
+    // number here (rather than a bare `gh pr view`, which re-resolves off
+    // the checked-out branch) is what lets this step work for a PR picked
+    // from the sidebar's list, not just the one the local branch happens to
+    // have open.
+    let number = state.artifact("pr_number");
     let out = git::run(
         repo,
         "gh",
         &[
             "pr",
             "view",
+            number,
             "--json",
             "statusCheckRollup,mergeable,mergeStateStatus",
         ],
