@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3fb950"/>
+      <stop offset="100%" stop-color="#1a4f2e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#eafff0"/>
+    </radialGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="230" fill="url(#bg)"/>
+
+  <!-- git branch/merge glyph: one trunk top to bottom, a branch that splits
+       off and rejoins it — the same reduced-geometry, glowing-white language
+       as the sibling app icons (play triangle, A-mark, dot-chain). -->
+  <g filter="url(#soft)" fill="none" stroke="url(#glow)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 322 256
+             L 322 400
+             C 470 400, 470 480, 620 480
+             C 470 480, 470 624, 322 624
+             L 322 768"/>
+  </g>
+
+  <g filter="url(#soft)">
+    <circle cx="322" cy="256" r="54" fill="url(#glow)"/>
+    <circle cx="322" cy="768" r="54" fill="url(#glow)"/>
+    <circle cx="620" cy="480" r="54" fill="url(#glow)"/>
+  </g>
+</svg>
