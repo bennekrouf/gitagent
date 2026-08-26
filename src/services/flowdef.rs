@@ -12,7 +12,7 @@
 //! graph that deadlocks or reads an artifact nobody produces.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::catalogue;
 use super::graph::{Graph, NodeSpec};
@@ -22,16 +22,20 @@ pub struct NodeDef {
     pub id: String,
     /// Catalogue key.
     pub step: String,
-    /// Empty means "use the catalogue's".
-    #[serde(default)]
+    /// Empty means "use the catalogue's". Skipped on write, so a flow file
+    /// only ever states what it actually overrides.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub subtitle: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deps: Vec<String>,
     /// `None` means "use the catalogue's default gating".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gated: Option<bool>,
+    /// Per-node settings, for steps that take them. See `StepInfo::config`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
 }
 
 impl NodeDef {
@@ -43,7 +47,12 @@ impl NodeDef {
             subtitle: String::new(),
             deps: vec![],
             gated: None,
+            config: BTreeMap::new(),
         }
+    }
+
+    pub fn setting(&self, key: &str) -> &str {
+        self.config.get(key).map(|s| s.as_str()).unwrap_or("")
     }
 
     pub fn is_gated(&self) -> bool {
@@ -89,9 +98,10 @@ impl FlowDef {
                         step: info.step,
                         kind: info.kind,
                         deps: def.deps.clone(),
-                        reads: info.reads.iter().map(|s| s.to_string()).collect(),
-                        writes: info.writes.iter().map(|s| s.to_string()).collect(),
+                        reads: catalogue::expand(info.reads, &def.id),
+                        writes: catalogue::expand(info.writes, &def.id),
                         requires_approval: def.is_gated(),
+                        config: def.config.clone(),
                     })
                 })
                 .collect(),
@@ -137,6 +147,7 @@ pub enum Problem {
     SelfDep(String),
     Cycle(Vec<String>),
     MissingInput { node: String, key: String },
+    MissingSetting { node: String, label: String },
 }
 
 impl Problem {
@@ -162,6 +173,9 @@ impl Problem {
             }
             Problem::MissingInput { node, key } => {
                 format!("`{node}` reads `{key}`, but nothing it depends on produces it.")
+            }
+            Problem::MissingSetting { node, label } => {
+                format!("`{node}` needs its {label} filled in before it can run.")
             }
         }
     }
@@ -227,19 +241,28 @@ pub fn validate(flow: &FlowDef) -> Vec<Problem> {
         let Some(info) = catalogue::by_key(&node.step) else {
             continue;
         };
+        for field in info.config {
+            if field.required && node.setting(field.key).trim().is_empty() {
+                problems.push(Problem::MissingSetting {
+                    node: node.id.clone(),
+                    label: field.label.to_lowercase(),
+                });
+            }
+        }
+
         let upstream = ancestors(flow, &node.id);
-        for key in info.reads {
+        for key in catalogue::expand(info.reads, &node.id) {
             let produced = upstream.iter().any(|id| {
                 by_id
                     .get(id.as_str())
                     .and_then(|d| catalogue::by_key(&d.step))
-                    .map(|i| i.writes.contains(key))
+                    .map(|i| catalogue::expand(i.writes, id).contains(&key))
                     .unwrap_or(false)
             });
             if !produced {
                 problems.push(Problem::MissingInput {
                     node: node.id.clone(),
-                    key: (*key).to_string(),
+                    key,
                 });
             }
         }
@@ -336,7 +359,14 @@ impl FlowBook {
                     id: "review_and_merge".into(),
                     label: "Review → Merge".into(),
                     nodes: vec![
-                        NodeDef::from_catalogue("find_pr", "find_pr"),
+                        // Reviewing needs the same credential check committing
+                        // does: without it, `gh pr view` fails with a raw CLI
+                        // error instead of a preflight with a Fix button.
+                        NodeDef::from_catalogue("preflight", "preflight"),
+                        dep(
+                            NodeDef::from_catalogue("find_pr", "find_pr"),
+                            &["preflight"],
+                        ),
                         dep(
                             NodeDef::from_catalogue("pr_status", "pr_status"),
                             &["find_pr"],
@@ -420,6 +450,7 @@ mod tests {
             subtitle: String::new(),
             deps: deps.iter().map(|d| d.to_string()).collect(),
             gated: None,
+            config: BTreeMap::new(),
         }
     }
 
@@ -576,6 +607,42 @@ mod tests {
         assert!(!validate(&f)
             .iter()
             .any(|p| matches!(p, Problem::UnknownDep { .. })));
+    }
+
+    #[test]
+    fn a_script_step_with_no_command_is_reported_rather_than_run() {
+        let mut f = commit_flow();
+        f.nodes.push(node("release", "run_script", &["open_pr"]));
+        assert!(validate(&f)
+            .iter()
+            .any(|p| matches!(p, Problem::MissingSetting { node, .. } if node == "release")));
+
+        f.nodes
+            .last_mut()
+            .unwrap()
+            .config
+            .insert("command".into(), "./scripts/release.sh --patch".into());
+        assert_eq!(validate(&f), vec![]);
+    }
+
+    #[test]
+    fn two_script_steps_in_one_flow_do_not_collide() {
+        let mut f = commit_flow();
+        for id in ["release", "smoke"] {
+            let mut n = node(id, "run_script", &["open_pr"]);
+            n.config.insert("command".into(), "true".into());
+            f.nodes.push(n);
+        }
+        assert_eq!(validate(&f), vec![]);
+        let g = f.to_graph();
+        assert_eq!(
+            g.get("release").unwrap().writes,
+            vec!["release_output", "release_exit"]
+        );
+        assert_eq!(
+            g.get("smoke").unwrap().writes,
+            vec!["smoke_output", "smoke_exit"]
+        );
     }
 
     #[test]

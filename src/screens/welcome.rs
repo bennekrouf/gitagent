@@ -6,6 +6,7 @@
 use dioxus::prelude::*;
 
 use crate::components::settings_panel::SettingsPanel;
+use crate::screens::setup::Setup;
 use crate::services::llm::LlmConfig;
 use crate::services::store::{self, Registry};
 
@@ -21,6 +22,7 @@ pub struct WelcomeProps {
 pub fn Welcome(props: WelcomeProps) -> Element {
     let mut registry = use_signal(store::load_registry);
     let mut settings_open = use_signal(|| false);
+    let mut setup_open = use_signal(|| false);
     let mut error = use_signal(String::new);
 
     let mut is_light = props.is_light;
@@ -70,6 +72,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
     let recent = registry.read().recent.clone();
     let cfg = props.llm_config.read().clone();
+
+    if *setup_open.read() {
+        return rsx! { Setup { on_close: move |_| setup_open.set(false) } };
+    }
 
     rsx! {
         div { class: "welcome",
@@ -140,6 +146,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                     }
 
                     div { class: "welcome-actions",
+                        button {
+                            class: "btn",
+                            onclick: move |_| setup_open.set(true),
+                            "Setup"
+                        }
                         button {
                             class: "btn",
                             onclick: move |_| settings_open.set(true),

@@ -271,6 +271,50 @@ pub async fn run_command(program: &str, args: &[String]) -> (bool, String) {
     }
 }
 
+/// Runs a shell command in `repo`, optionally writing `stdin` to it first.
+/// Returns success plus the combined output — a failing script explains itself
+/// in stdout at least as often as in stderr.
+pub async fn run_shell(repo: &str, command: &str, stdin: &str) -> (bool, String) {
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(repo)
+        .stdin(if stdin.is_empty() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return (false, format!("could not start `{command}`: {e}")),
+    };
+
+    if !stdin.is_empty() {
+        if let Some(mut pipe) = child.stdin.take() {
+            let mut answer = stdin.to_string();
+            if !answer.ends_with('\n') {
+                answer.push('\n');
+            }
+            let _ = pipe.write_all(answer.as_bytes()).await;
+            let _ = pipe.shutdown().await;
+        }
+    }
+
+    match child.wait_with_output().await {
+        Ok(out) => {
+            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+            text.push_str(&String::from_utf8_lossy(&out.stderr));
+            (out.status.success(), cap(text.trim()))
+        }
+        Err(e) => (false, format!("`{command}` did not finish: {e}")),
+    }
+}
+
 pub async fn has_gh() -> bool {
     Command::new("gh")
         .arg("--version")

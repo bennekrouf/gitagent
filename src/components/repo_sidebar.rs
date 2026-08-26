@@ -8,6 +8,7 @@ use dioxus::prelude::*;
 use crate::components::forge_icon::ForgeIcon;
 use crate::services::forge::Forge;
 use crate::services::graph::{NodeStatus, RunState};
+use crate::services::probe::Wants;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
@@ -15,6 +16,8 @@ pub enum Phase {
     Running,
     NeedsApproval,
     Done,
+    /// Ran and found nothing to do.
+    Nothing,
     Failed,
 }
 
@@ -25,6 +28,7 @@ impl Phase {
             Phase::Running => "running",
             Phase::NeedsApproval => "awaiting",
             Phase::Done => "done",
+            Phase::Nothing => "skipped",
             Phase::Failed => "failed",
         }
     }
@@ -35,6 +39,7 @@ impl Phase {
             Phase::Running => "running",
             Phase::NeedsApproval => "needs you",
             Phase::Done => "done",
+            Phase::Nothing => "nothing to do",
             Phase::Failed => "failed",
         }
     }
@@ -57,6 +62,8 @@ pub fn phase_of(state: &RunState) -> Phase {
         .any(|s| matches!(s, NodeStatus::Failed | NodeStatus::Rejected))
     {
         Phase::Failed
+    } else if statuses.contains(&NodeStatus::Skipped) {
+        Phase::Nothing
     } else if statuses.iter().all(|s| s.is_terminal()) {
         Phase::Done
     } else {
@@ -68,8 +75,10 @@ pub fn phase_of(state: &RunState) -> Phase {
 pub struct RepoEntry {
     pub path: String,
     pub label: String,
-    /// Uncommitted file count, or `None` while it is still being counted.
-    pub changes: Option<usize>,
+    /// What the repository is waiting for, or `None` while still probing.
+    pub wants: Option<Wants>,
+    /// The short qualifier beside it — a PR number, or a file count.
+    pub detail: String,
     /// `None` until the remote has been read.
     pub forge: Option<Forge>,
     pub phase: Phase,
@@ -80,7 +89,10 @@ pub struct RepoSidebarProps {
     pub entries: Vec<RepoEntry>,
     pub selected: Option<String>,
     pub workspace: String,
+    /// How many probes are still outstanding.
+    pub probing: usize,
     pub on_select: EventHandler<String>,
+    pub on_refresh: EventHandler<()>,
     pub on_change_workspace: EventHandler<()>,
 }
 
@@ -93,6 +105,13 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
             div { class: "sidebar-head",
                 div { class: "sidebar-title", "Repositories" }
                 div { class: "sidebar-actions",
+                    button {
+                        class: if props.probing > 0 { "sidebar-switch spinning" } else { "sidebar-switch" },
+                        disabled: props.probing > 0,
+                        title: "Re-check every repository",
+                        onclick: move |_| props.on_refresh.call(()),
+                        "⟳"
+                    }
                     button {
                         class: "sidebar-switch",
                         title: "Open this folder in a new window",
@@ -128,19 +147,31 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                 let path = entry.path.clone();
                                 move |_| props.on_select.call(path.clone())
                             },
-                            span { class: "dot dot-{entry.phase.css()}" }
+                            span {
+                            class: if entry.phase == Phase::Idle {
+                                format!("dot dot-{}", entry.wants.map(|w| w.css()).unwrap_or("pending"))
+                            } else {
+                                format!("dot dot-{}", entry.phase.css())
+                            },
+                        }
                             match entry.forge.clone() {
                                 Some(forge) => rsx! { ForgeIcon { forge } },
                                 None => rsx! { span { class: "forge-icon-gap" } },
                             }
                             span { class: "sidebar-label", "{entry.label}" }
+                            // A run in progress outranks anything the probe found:
+                            // it is more recent, and it is already yours.
                             if !entry.phase.note().is_empty() {
                                 span { class: "sidebar-note status-{entry.phase.css()}", "{entry.phase.note()}" }
                             } else {
-                                match entry.changes {
-                                    Some(0) => rsx! { span { class: "sidebar-clean", "clean" } },
-                                    Some(n) => rsx! { span { class: "sidebar-changes", "{n}" } },
-                                    None => rsx! {},
+                                match entry.wants {
+                                    Some(wants) => rsx! {
+                                        if !entry.detail.is_empty() {
+                                            span { class: "sidebar-detail", "{entry.detail}" }
+                                        }
+                                        span { class: "sidebar-note status-{wants.css()}", "{wants.note()}" }
+                                    },
+                                    None => rsx! { span { class: "sidebar-clean", "…" } },
                                 }
                             }
                         }
@@ -194,6 +225,15 @@ mod tests {
             s.set_status(&node.id, NodeStatus::Done);
         }
         assert_eq!(phase_of(&s), Phase::Done);
+    }
+
+    #[test]
+    fn a_clean_tree_reads_as_nothing_to_do_not_as_a_failure() {
+        let mut s = started();
+        s.set_status("preflight", NodeStatus::Done);
+        s.set_status("scan", NodeStatus::Skipped);
+        s.propagate_block(&commit_and_pr_flow());
+        assert_eq!(phase_of(&s), Phase::Nothing);
     }
 
     #[test]

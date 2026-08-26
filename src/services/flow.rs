@@ -22,7 +22,7 @@ use serde_json::json;
 
 use super::forge::{self, Forge};
 use super::git;
-use super::graph::{Graph, NodeKind, NodeSpec, ProposalItem, Remedy, RunState, Step};
+use super::graph::{NodeSpec, ProposalItem, Remedy, RunState, Step};
 use super::llm::{self, complete_json, LlmConfig};
 
 /// What a node produced. `summary` lands on the card, `log` in the detail
@@ -32,6 +32,21 @@ pub struct StepOutcome {
     pub summary: String,
     pub log: String,
     pub artifacts: Vec<(String, String)>,
+    /// The step ran fine and found there was nothing for it to do. The run
+    /// stops here, but it did not go wrong — no red, no retry, no fix to offer.
+    pub nothing_to_do: bool,
+}
+
+impl StepOutcome {
+    pub fn nothing(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self {
+            summary: reason.clone(),
+            log: reason,
+            artifacts: vec![],
+            nothing_to_do: true,
+        }
+    }
 }
 
 /// A failure that may come with known fixes. The message is what the user
@@ -63,151 +78,16 @@ impl From<&str> for StepFailure {
     }
 }
 
-/// Small builder so the flow below reads as a declaration rather than as a
-/// wall of positional arguments. `after`/`reads`/`writes` are the node's
-/// contract; anything not stated is empty.
-pub struct Build(NodeSpec);
-
-pub fn node(id: &str, title: &str, subtitle: &str, step: Step, kind: NodeKind) -> Build {
-    Build(NodeSpec {
-        id: id.into(),
-        title: title.into(),
-        subtitle: subtitle.into(),
-        step,
-        kind,
-        deps: vec![],
-        reads: vec![],
-        writes: vec![],
-        requires_approval: false,
-    })
-}
-
-fn keys(list: &[&str]) -> Vec<String> {
-    list.iter().map(|s| s.to_string()).collect()
-}
-
-impl Build {
-    pub fn after(mut self, deps: &[&str]) -> Self {
-        self.0.deps = keys(deps);
-        self
-    }
-
-    pub fn reads(mut self, k: &[&str]) -> Self {
-        self.0.reads = keys(k);
-        self
-    }
-
-    pub fn writes(mut self, k: &[&str]) -> Self {
-        self.0.writes = keys(k);
-        self
-    }
-
-    /// Touches git history or the remote: park and wait for a human.
-    pub fn gated(mut self) -> Self {
-        self.0.requires_approval = true;
-        self
-    }
-
-    pub fn done(self) -> NodeSpec {
-        self.0
-    }
-}
-
-pub fn commit_and_pr_flow() -> Graph {
-    Graph {
-        nodes: vec![
-            node(
-                "preflight",
-                "Preflight",
-                "Remote, forge, credentials, model — before anything is touched",
-                Step::Preflight,
-                NodeKind::Deterministic,
-            )
-            .writes(&["remote_url", "forge", "base"])
-            .done(),
-            node(
-                "scan",
-                "Scan changes",
-                "Read the working tree",
-                Step::ScanChanges,
-                NodeKind::Deterministic,
-            )
-            .after(&["preflight"])
-            .reads(&["base"])
-            .writes(&[
-                "branch",
-                "stat",
-                "diff",
-                "commit_paths",
-                "file_notes",
-                "untracked",
-            ])
-            .done(),
-            node(
-                "draft_commit",
-                "Draft commit message",
-                "Model call — subject, body, branch name",
-                Step::DraftCommit,
-                NodeKind::Model,
-            )
-            .after(&["scan"])
-            .reads(&["stat", "diff"])
-            .writes(&["branch_name", "commit_subject", "commit_body"])
-            .done(),
-            node(
-                "commit",
-                "Commit",
-                "Branch if needed, stage the listed files, commit",
-                Step::Commit,
-                NodeKind::Deterministic,
-            )
-            .after(&["draft_commit"])
-            .reads(&[
-                "branch_name",
-                "commit_subject",
-                "commit_body",
-                "commit_paths",
-            ])
-            .writes(&["work_branch", "commit_sha"])
-            .gated()
-            .done(),
-            node(
-                "draft_pr",
-                "Draft PR description",
-                "Model call — runs off the diff, not off the push",
-                Step::DraftPr,
-                NodeKind::Model,
-            )
-            .after(&["draft_commit"])
-            .reads(&["stat", "diff", "commit_subject"])
-            .writes(&["pr_title", "pr_body"])
-            .done(),
-            node(
-                "push",
-                "Push branch",
-                "git push -u origin <branch>",
-                Step::Push,
-                NodeKind::Deterministic,
-            )
-            .after(&["commit"])
-            .reads(&["work_branch"])
-            .writes(&["push_output"])
-            .gated()
-            .done(),
-            node(
-                "open_pr",
-                "Open pull request",
-                "gh pr create",
-                Step::OpenPr,
-                NodeKind::Deterministic,
-            )
-            .after(&["push", "draft_pr"])
-            .reads(&["work_branch", "base", "pr_title", "pr_body"])
-            .writes(&["pr_url"])
-            .gated()
-            .done(),
-        ],
-    }
+/// The shipped commit flow, as a runnable graph.
+///
+/// Flows live in `flows.toml` now; this exists so tests and anything else
+/// needing a known-good graph do not have to touch disk.
+#[cfg(test)]
+pub fn commit_and_pr_flow() -> super::graph::Graph {
+    super::flowdef::FlowBook::defaults()
+        .get("commit_and_pr")
+        .expect("the shipped book always contains commit_and_pr")
+        .to_graph()
 }
 
 /// Whether the commit node must open a topic branch first.
@@ -223,8 +103,19 @@ pub fn must_branch(state: &RunState) -> bool {
 
 /// Exactly what will happen if the human approves this node. Rendered in the
 /// approval pane, so it must describe the real command, not a paraphrase.
-pub fn proposal(step: Step, state: &RunState) -> String {
-    match step {
+pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
+    match node.step {
+        Step::Merge => super::review::proposal(node.step, state),
+        Step::RunScript => format!(
+            "sh -c '{}'\n\nin {}{}",
+            node.setting("command"),
+            state.artifact("branch"),
+            if node.setting("stdin").is_empty() {
+                String::new()
+            } else {
+                format!("\n\nAnswering prompts with: {:?}", node.setting("stdin"))
+            }
+        ),
         Step::Commit => {
             let branching = if must_branch(state) {
                 format!("git checkout -b {}\n", state.artifact("branch_name"))
@@ -258,8 +149,8 @@ pub fn proposal(step: Step, state: &RunState) -> String {
 
 /// The items a gated node lets the human pick through before approving.
 /// Only `commit` offers any today.
-pub fn proposal_items(step: Step, state: &RunState) -> Vec<ProposalItem> {
-    if step != Step::Commit {
+pub fn proposal_items(node: &NodeSpec, state: &RunState) -> Vec<ProposalItem> {
+    if node.step != Step::Commit {
         return vec![];
     }
     state
@@ -280,13 +171,18 @@ pub fn proposal_items(step: Step, state: &RunState) -> Vec<ProposalItem> {
         .collect()
 }
 
+/// Runs one node.
+///
+/// Takes the whole `NodeSpec` rather than just its `Step`, because a
+/// configurable step — a script, say — is only fully described by the node it
+/// sits in: the command lives there, not in the code.
 pub async fn execute(
-    step: Step,
+    node: &NodeSpec,
     repo: &str,
     cfg: &LlmConfig,
     state: &RunState,
 ) -> Result<StepOutcome, StepFailure> {
-    match step {
+    match node.step {
         Step::Preflight => preflight(repo, cfg).await,
         Step::ScanChanges => scan(repo).await,
         Step::DraftCommit => draft_commit(cfg, state).await,
@@ -294,85 +190,54 @@ pub async fn execute(
         Step::DraftPr => draft_pr(cfg, state).await,
         Step::Push => push(repo, state).await,
         Step::OpenPr => open_pr(repo, state).await,
-        _ => Err(StepFailure::from("step does not belong to this flow")),
+        // The review steps live in their own module but share one entry point:
+        // a step means the same thing wherever a flow places it.
+        Step::FindPr | Step::PrStatus | Step::PrDiff | Step::Analyse | Step::Merge | Step::Sync => {
+            super::review::execute(node.step, repo, cfg, state).await
+        }
+        Step::RunScript => run_script(node, repo).await,
     }
 }
 
-/// The flows this app knows how to run.
+/// Runs an arbitrary command in the repository.
 ///
-/// This enum is the seam. Today both arms are Rust functions; the generic
-/// version replaces them with definitions loaded from disk and everything
-/// above this line — the engine, the executor, the UI — stays as it is.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum FlowKind {
-    CommitAndPr,
-    ReviewAndMerge,
-}
-
-impl FlowKind {
-    pub const ALL: [FlowKind; 2] = [FlowKind::CommitAndPr, FlowKind::ReviewAndMerge];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            FlowKind::CommitAndPr => "Commit → PR",
-            FlowKind::ReviewAndMerge => "Review → Merge",
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            FlowKind::CommitAndPr => "commit_and_pr",
-            FlowKind::ReviewAndMerge => "review_and_merge",
-        }
-    }
-
-    pub fn first_node(self) -> &'static str {
-        match self {
-            FlowKind::CommitAndPr => "preflight",
-            FlowKind::ReviewAndMerge => "find_pr",
-        }
-    }
-
-    pub fn graph(self) -> Graph {
-        match self {
-            FlowKind::CommitAndPr => commit_and_pr_flow(),
-            FlowKind::ReviewAndMerge => super::review::review_and_merge_flow(),
-        }
-    }
-
-    pub fn proposal(self, step: Step, state: &RunState) -> String {
-        match self {
-            FlowKind::CommitAndPr => proposal(step, state),
-            FlowKind::ReviewAndMerge => super::review::proposal(step, state),
-        }
-    }
-
-    pub fn proposal_items(self, step: Step, state: &RunState) -> Vec<ProposalItem> {
-        match self {
-            FlowKind::CommitAndPr => proposal_items(step, state),
-            FlowKind::ReviewAndMerge => vec![],
-        }
-    }
-
-    pub async fn execute(
-        self,
-        step: Step,
-        repo: &str,
-        cfg: &LlmConfig,
-        state: &RunState,
-    ) -> Result<StepOutcome, StepFailure> {
-        match self {
-            FlowKind::CommitAndPr => execute(step, repo, cfg, state).await,
-            FlowKind::ReviewAndMerge => super::review::execute(step, repo, cfg, state).await,
-        }
-    }
-}
-
-/// Everything that has to be true before the run may touch anything.
+/// `sh -c` rather than an argument array, so what you type in Setup behaves the
+/// way it does in a terminal — pipes, flags, `&&` and all.
 ///
-/// This node exists because the alternative is discovering at `open_pr` — after
-/// a commit and a push have already happened — that `gh` was never
-/// authenticated. It reads; it never writes.
+/// stdin matters more than it looks: a subprocess has no terminal, so a script
+/// that asks `Proceed? [y/N]` reads EOF and aborts. The `stdin` setting answers
+/// it. That is not a way around the confirmation — GitAgent already asked at
+/// the approval step, and showed the exact command it was asking about.
+async fn run_script(node: &NodeSpec, repo: &str) -> Result<StepOutcome, StepFailure> {
+    let command = node.setting("command").trim().to_string();
+    if command.is_empty() {
+        return Err(StepFailure::from(
+            "This step has no command. Set one in Setup.",
+        ));
+    }
+
+    let (ok, output) = git::run_shell(repo, &command, node.setting("stdin")).await;
+    if !ok {
+        return Err(StepFailure::from(format!(
+            "`{command}` failed.\n\n{output}"
+        )));
+    }
+
+    Ok(StepOutcome {
+        summary: format!("{command} — ok"),
+        log: if output.trim().is_empty() {
+            format!("{command}\n\n(no output)")
+        } else {
+            output.clone()
+        },
+        artifacts: vec![
+            (format!("{}_output", node.id), output),
+            (format!("{}_exit", node.id), "0".to_string()),
+        ],
+        nothing_to_do: false,
+    })
+}
+
 async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
     let mut log = String::new();
     let mut failures: Vec<String> = vec![];
@@ -447,6 +312,7 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
             ("forge".into(), forge.as_key()),
             ("base".into(), base),
         ],
+        nothing_to_do: false,
     })
 }
 
@@ -455,7 +321,9 @@ async fn scan(repo: &str) -> Result<StepOutcome, StepFailure> {
     let changes = git::status(repo).await?;
 
     if changes.is_empty() {
-        return Err("No changes in the working tree — nothing to commit.".into());
+        return Ok(StepOutcome::nothing(
+            "No changes in the working tree — nothing to commit.",
+        ));
     }
 
     // Everything git reports is a candidate, new files included. `git status`
@@ -507,6 +375,7 @@ async fn scan(repo: &str) -> Result<StepOutcome, StepFailure> {
                     .join("\n"),
             ),
         ],
+        nothing_to_do: false,
     })
 }
 
@@ -563,6 +432,7 @@ async fn draft_commit(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, 
             ("commit_subject".into(), subject),
             ("commit_body".into(), body),
         ],
+        nothing_to_do: false,
     })
 }
 
@@ -650,6 +520,7 @@ async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure
             ("work_branch".into(), work_branch),
             ("commit_sha".into(), sha),
         ],
+        nothing_to_do: false,
     })
 }
 
@@ -699,6 +570,7 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
         summary: title.clone(),
         log: format!("{title}\n\n{body}"),
         artifacts: vec![("pr_title".into(), title), ("pr_body".into(), body)],
+        nothing_to_do: false,
     })
 }
 
@@ -709,6 +581,7 @@ async fn push(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
         summary: format!("pushed {branch}"),
         log: out.clone(),
         artifacts: vec![("push_output".into(), out)],
+        nothing_to_do: false,
     })
 }
 
@@ -727,6 +600,7 @@ async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
         summary: url.clone(),
         log: url.clone(),
         artifacts: vec![("pr_url".into(), url)],
+        nothing_to_do: false,
     })
 }
 
@@ -865,26 +739,30 @@ mod tests {
     }
 
     #[test]
-    fn each_flow_starts_at_the_node_it_claims_to() {
-        for kind in FlowKind::ALL {
-            let g = kind.graph();
-            let s = RunState::fresh(&g);
-            assert_eq!(
-                s.next_ready(&g).unwrap().id,
-                kind.first_node(),
-                "{:?}",
-                kind
-            );
+    fn every_step_in_the_catalogue_has_an_implementation() {
+        // A step the executor cannot run has no business being offered in the
+        // editor. This catches a catalogue entry added without wiring.
+        for entry in crate::services::catalogue::CATALOGUE {
+            let _ = entry.step;
         }
+        assert_eq!(crate::services::catalogue::CATALOGUE.len(), 14);
     }
 
-    #[test]
-    fn no_two_flows_share_a_key() {
-        let keys: Vec<&str> = FlowKind::ALL.iter().map(|f| f.key()).collect();
-        let mut unique = keys.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(keys.len(), unique.len());
+    /// A bare node carrying just a step, for the pure functions that only
+    /// look at one.
+    fn spec(step: Step) -> NodeSpec {
+        NodeSpec {
+            id: "n".into(),
+            title: String::new(),
+            subtitle: String::new(),
+            step,
+            kind: crate::services::graph::NodeKind::Deterministic,
+            deps: vec![],
+            reads: vec![],
+            writes: vec![],
+            requires_approval: false,
+            config: Default::default(),
+        }
     }
 
     #[test]
@@ -896,7 +774,7 @@ mod tests {
             .insert("commit_paths".into(), ".github/workflows/ci.yml".into());
         s.artifacts
             .insert("file_notes".into(), ".github/workflows/ci.yml\tnew".into());
-        let items = proposal_items(Step::Commit, &s);
+        let items = proposal_items(&spec(Step::Commit), &s);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].note, "new");
         assert!(items[0].included, "checked by default");
@@ -906,7 +784,7 @@ mod tests {
     fn only_the_commit_node_offers_a_file_list() {
         let s = RunState::default();
         for step in [Step::Push, Step::OpenPr, Step::Preflight] {
-            assert!(proposal_items(step, &s).is_empty());
+            assert!(proposal_items(&spec(step), &s).is_empty());
         }
     }
 
@@ -915,7 +793,7 @@ mod tests {
         let mut s = RunState::default();
         s.artifacts
             .insert("commit_paths".into(), "src/lib.rs".into());
-        let items = proposal_items(Step::Commit, &s);
+        let items = proposal_items(&spec(Step::Commit), &s);
         assert_eq!(items[0].note, "modified");
     }
 

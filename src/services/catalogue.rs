@@ -12,6 +12,18 @@
 
 use super::graph::{NodeKind, Step};
 
+/// One setting a step takes per node, rendered as an input in Setup.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ConfigField {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub placeholder: &'static str,
+    pub help: &'static str,
+    pub multiline: bool,
+    /// A step with an empty required field cannot run, and validation says so.
+    pub required: bool,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct StepInfo {
     pub step: Step,
@@ -27,6 +39,14 @@ pub struct StepInfo {
     /// Whether this step touches history, a remote, or anything else that
     /// should stop for a human by default.
     pub gate_by_default: bool,
+    /// Settings this step takes per node. Most steps take none.
+    pub config: &'static [ConfigField],
+}
+
+/// Contract keys may name the node they belong to, so two copies of the same
+/// configurable step in one flow do not collide on their outputs.
+pub fn expand(keys: &[&'static str], node_id: &str) -> Vec<String> {
+    keys.iter().map(|k| k.replace("{id}", node_id)).collect()
 }
 
 pub const CATALOGUE: &[StepInfo] = &[
@@ -42,6 +62,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &[],
         writes: &["remote_url", "forge", "base"],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::ScanChanges,
@@ -61,6 +82,7 @@ pub const CATALOGUE: &[StepInfo] = &[
             "untracked",
         ],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::DraftCommit,
@@ -73,6 +95,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["stat", "diff"],
         writes: &["branch_name", "commit_subject", "commit_body"],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::Commit,
@@ -90,6 +113,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         ],
         writes: &["work_branch", "commit_sha"],
         gate_by_default: true,
+        config: &[],
     },
     StepInfo {
         step: Step::DraftPr,
@@ -102,6 +126,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["stat", "diff", "commit_subject"],
         writes: &["pr_title", "pr_body"],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::Push,
@@ -113,6 +138,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["work_branch"],
         writes: &["push_output"],
         gate_by_default: true,
+        config: &[],
     },
     StepInfo {
         step: Step::OpenPr,
@@ -124,6 +150,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["work_branch", "base", "pr_title", "pr_body"],
         writes: &["pr_url"],
         gate_by_default: true,
+        config: &[],
     },
     StepInfo {
         step: Step::FindPr,
@@ -136,6 +163,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["forge"],
         writes: &["pr_number", "pr_title", "pr_url", "pr_base", "pr_head"],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::PrStatus,
@@ -149,6 +177,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["pr_number"],
         writes: &["checks_summary", "checks_state", "merge_state"],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::PrDiff,
@@ -161,6 +190,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["pr_base", "pr_head"],
         writes: &["pr_diff", "pr_stat"],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::Analyse,
@@ -173,6 +203,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["pr_diff", "pr_stat", "pr_title"],
         writes: &["verdict", "analysis", "finding_count"],
         gate_by_default: false,
+        config: &[],
     },
     StepInfo {
         step: Step::Merge,
@@ -185,6 +216,7 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["pr_number", "checks_summary", "verdict", "analysis"],
         writes: &["merge_output"],
         gate_by_default: true,
+        config: &[],
     },
     StepInfo {
         step: Step::Sync,
@@ -196,9 +228,46 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &["pr_base"],
         writes: &["sync_output"],
         gate_by_default: false,
+        config: &[],
+    },
+    StepInfo {
+        step: Step::RunScript,
+        key: "run_script",
+        title: "Run a script",
+        subtitle: "A command in the repository",
+        about: "Runs any command in the repository root — a release script, a \
+                test suite, a deploy. Its output becomes an artifact named after \
+                this step, so a later step can read it.",
+        kind: NodeKind::Deterministic,
+        reads: &[],
+        writes: &["{id}_output", "{id}_exit"],
+        gate_by_default: true,
+        config: &[
+            ConfigField {
+                key: "command",
+                label: "Command",
+                placeholder: "./scripts/release.sh --patch",
+                help: "Run through `sh -c` in the repository root, so pipes and \
+                       arguments work as they do in a terminal.",
+                multiline: false,
+                required: true,
+            },
+            ConfigField {
+                key: "stdin",
+                label: "Answer prompts with",
+                placeholder: "y",
+                help: "Sent to the command's stdin. A script that asks for \
+                       confirmation needs this, because it has no terminal to ask \
+                       through — and GitAgent already asked you at the approval.",
+                multiline: true,
+                required: false,
+            },
+        ],
     },
 ];
 
+/// Used by the exhaustiveness test to prove every variant is described.
+#[cfg(test)]
 pub fn info(step: Step) -> &'static StepInfo {
     CATALOGUE
         .iter()
@@ -232,6 +301,7 @@ mod tests {
             Step::Analyse,
             Step::Merge,
             Step::Sync,
+            Step::RunScript,
         ];
         assert_eq!(
             all.len(),
@@ -241,6 +311,34 @@ mod tests {
         for step in all {
             let _ = info(step);
         }
+    }
+
+    #[test]
+    fn a_configurable_steps_outputs_are_named_after_the_node() {
+        // Two release steps in one flow must not overwrite each other.
+        let info = by_key("run_script").unwrap();
+        assert_eq!(
+            expand(info.writes, "release"),
+            vec!["release_output".to_string(), "release_exit".to_string()]
+        );
+        assert_eq!(
+            expand(info.writes, "smoke"),
+            vec!["smoke_output".to_string(), "smoke_exit".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_step_with_no_template_is_left_alone() {
+        let info = by_key("commit").unwrap();
+        assert_eq!(
+            expand(info.writes, "anything"),
+            vec!["work_branch".to_string(), "commit_sha".to_string()]
+        );
+    }
+
+    #[test]
+    fn running_an_arbitrary_command_is_gated_by_default() {
+        assert!(by_key("run_script").unwrap().gate_by_default);
     }
 
     #[test]
