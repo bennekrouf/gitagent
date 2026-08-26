@@ -3,12 +3,18 @@
 
 use dioxus::prelude::*;
 
+use crate::components::diff_view::DiffView;
 use crate::services::graph::{NodeRun, NodeSpec, NodeStatus};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct DetailPaneProps {
     pub spec: Option<NodeSpec>,
     pub run: NodeRun,
+    /// The node's own diff artifact (`diff` or `pr_diff`), when it wrote
+    /// one — shown as a highlighted diff instead of the plain output log.
+    #[props(default)]
+    pub diff: Option<String>,
+    pub is_light: bool,
     pub on_approve: EventHandler<String>,
     pub on_reject: EventHandler<String>,
     /// `(node id, item key)` — flips one item in and out of the approval.
@@ -37,6 +43,10 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     let failed = matches!(run.status, NodeStatus::Failed | NodeStatus::Rejected);
     let nothing_selected = run.has_nothing_selected();
     let chosen = run.items.iter().filter(|i| i.included).count();
+    // Collapsed by default — the count already says "all N selected" at a
+    // glance, and most approvals want everything committed. The list is one
+    // click away for the times a subset needs picking.
+    let mut show_files = use_signal(|| false);
 
     rsx! {
         div { class: "detail",
@@ -76,25 +86,38 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
 
                     if !run.items.is_empty() {
                         div { class: "items-head",
-                            span { "Files" }
-                            span { class: "items-count", "{chosen} of {run.items.len()} selected" }
+                            span { class: "items-head-label", "Files" }
+                            div { class: "items-head-right",
+                                span { class: "items-count", "{chosen} of {run.items.len()} selected" }
+                                button {
+                                    class: "items-toggle",
+                                    title: if *show_files.read() { "Hide the file list" } else { "Choose which files to include" },
+                                    onclick: {
+                                        let now = *show_files.read();
+                                        move |_| show_files.set(!now)
+                                    },
+                                    "…"
+                                }
+                            }
                         }
-                        div { class: "items",
-                            for item in run.items.iter().cloned() {
-                                label {
-                                    key: "{item.key}",
-                                    class: if item.included { "item" } else { "item item-off" },
-                                    input {
-                                        r#type: "checkbox",
-                                        checked: item.included,
-                                        onchange: {
-                                            let node = toggle_id.clone();
-                                            let key = item.key.clone();
-                                            move |_| props.on_toggle.call((node.clone(), key.clone()))
-                                        },
+                        if *show_files.read() {
+                            div { class: "items",
+                                for item in run.items.iter().cloned() {
+                                    label {
+                                        key: "{item.key}",
+                                        class: if item.included { "item" } else { "item item-off" },
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: item.included,
+                                            onchange: {
+                                                let node = toggle_id.clone();
+                                                let key = item.key.clone();
+                                                move |_| props.on_toggle.call((node.clone(), key.clone()))
+                                            },
+                                        }
+                                        span { class: "item-note note-{item.note}", "{item.note}" }
+                                        span { class: "item-label", "{item.label}" }
                                     }
-                                    span { class: "item-note note-{item.note}", "{item.note}" }
-                                    span { class: "item-label", "{item.label}" }
                                 }
                             }
                         }
@@ -157,7 +180,10 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 }
             }
 
-            if !run.log.is_empty() {
+            if let Some(diff) = props.diff.clone().filter(|d| !d.trim().is_empty()) {
+                div { class: "log-head", "Diff" }
+                DiffView { diff, is_light: props.is_light }
+            } else if !run.log.is_empty() {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
                 pre {
                     class: if run.status == NodeStatus::Failed { "log log-error" } else { "log" },
