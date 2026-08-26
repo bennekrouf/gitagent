@@ -169,6 +169,12 @@ pub struct Remedy {
     pub running: bool,
     pub output: String,
     pub done: bool,
+    /// Whether the node that failed is worth re-queuing once this remedy
+    /// succeeds. True for anything that unblocks the same step (pulling a
+    /// missing model, installing a CLI extension) — false for a remedy that
+    /// makes the step moot instead (closing the pull request it was trying
+    /// to merge), where retrying would just fail again for a new reason.
+    pub retry_after: bool,
 }
 
 impl Remedy {
@@ -181,6 +187,16 @@ impl Remedy {
             running: false,
             output: String::new(),
             done: false,
+            retry_after: true,
+        }
+    }
+
+    /// A remedy that resolves the failure by abandoning the step rather than
+    /// unblocking it — the run ends here on success instead of re-queuing.
+    pub fn terminal(label: &str, program: &str, args: &[&str]) -> Self {
+        Self {
+            retry_after: false,
+            ..Self::new(label, program, args)
         }
     }
 }
