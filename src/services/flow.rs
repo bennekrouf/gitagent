@@ -410,19 +410,37 @@ async fn working_tree_diff(
     Ok(git::cap(&diff))
 }
 
-/// A live look at what `scan_changes` would produce, read fresh at approval
-/// time so the panel shows the actual diff rather than a paraphrase of it.
-/// `None` for any other step, or once the working tree turns out clean —
-/// the approval falls back to the plain text proposal in that case.
-pub async fn diff_preview(node: &NodeSpec, repo: &str) -> Option<String> {
-    if node.step != Step::ScanChanges {
-        return None;
+/// A live look at what `scan_changes` or `pr_diff` would produce, read fresh
+/// at approval time so the panel shows the actual diff rather than a
+/// paraphrase of it. `None` for any other step, or once there is nothing to
+/// show — the approval falls back to the plain text proposal in that case.
+pub async fn diff_preview(node: &NodeSpec, repo: &str, state: &RunState) -> Option<String> {
+    match node.step {
+        Step::ScanChanges => {
+            let changes = git::status(repo).await.ok()?;
+            if changes.is_empty() {
+                return None;
+            }
+            working_tree_diff(repo, &changes).await.ok()
+        }
+        Step::PrDiff => {
+            let base = state.artifact("pr_base");
+            let head = state.artifact("pr_head");
+            if base.is_empty() || head.is_empty() {
+                return None;
+            }
+            let _ = git::run(repo, "git", &["fetch", "origin", base, head]).await;
+            let range = format!("origin/{base}...origin/{head}");
+            let diff = git::run(repo, "git", &["diff", &range, "--unified=3"])
+                .await
+                .ok()?;
+            if diff.trim().is_empty() {
+                return None;
+            }
+            Some(git::cap(&diff))
+        }
+        _ => None,
     }
-    let changes = git::status(repo).await.ok()?;
-    if changes.is_empty() {
-        return None;
-    }
-    working_tree_diff(repo, &changes).await.ok()
 }
 
 async fn scan(repo: &str) -> Result<StepOutcome, StepFailure> {
@@ -712,7 +730,7 @@ mod tests {
     use crate::services::graph::NodeStatus;
 
     #[tokio::test]
-    async fn diff_preview_is_none_for_anything_but_scan_changes() {
+    async fn diff_preview_is_none_for_anything_but_scan_changes_and_pr_diff() {
         // Short-circuits before touching git, so an unused repo path is fine.
         let node = NodeSpec {
             id: "commit".into(),
@@ -726,7 +744,26 @@ mod tests {
             requires_approval: true,
             config: Default::default(),
         };
-        assert_eq!(diff_preview(&node, "/does/not/matter").await, None);
+        let state = RunState::fresh(&commit_and_pr_flow());
+        assert_eq!(diff_preview(&node, "/does/not/matter", &state).await, None);
+    }
+
+    #[tokio::test]
+    async fn pr_diff_preview_is_none_without_a_base_and_head_to_compare() {
+        let node = NodeSpec {
+            id: "pr_diff".into(),
+            title: String::new(),
+            subtitle: String::new(),
+            step: Step::PrDiff,
+            kind: crate::services::graph::NodeKind::Deterministic,
+            deps: vec![],
+            reads: vec![],
+            writes: vec![],
+            requires_approval: true,
+            config: Default::default(),
+        };
+        let state = RunState::fresh(&commit_and_pr_flow());
+        assert_eq!(diff_preview(&node, "/does/not/matter", &state).await, None);
     }
 
     #[test]

@@ -115,7 +115,7 @@ async fn drive(
         if node.requires_approval {
             let proposal = flow::proposal(&node, &state);
             let items = flow::proposal_items(&node, &state);
-            let preview_diff = flow::diff_preview(&node, &repo).await.unwrap_or_default();
+            let preview_diff = flow::diff_preview(&node, &repo, &state).await.unwrap_or_default();
             {
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();
@@ -631,6 +631,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             .map(|r| r.label.clone())
                             .unwrap_or_else(|| repo.clone());
                         let is_running = running.read().contains(&key);
+                        // A repo reviewing PR #7 shouldn't also be able to start
+                        // reviewing #5 — two runs racing each other's git state
+                        // (checkout, fetch) in the same working tree.
+                        let other_pr_running = flow_id == probe::REVIEW_FLOW
+                            && running
+                                .read()
+                                .iter()
+                                .any(|(r, f, p)| r == &repo && f == &flow_id && !p.is_empty() && p != &pr_id);
                         let can_run = probe::affordance(
                             &flow_id,
                             status_map.get(&repo),
@@ -685,8 +693,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     }
                                     button {
                                         class: "btn btn-primary",
-                                        disabled: is_running || !can_run.enabled,
-                                        title: "{can_run.reason}",
+                                        disabled: is_running || other_pr_running || !can_run.enabled,
+                                        title: if other_pr_running {
+                                            "Another pull request review is already running for this repository — finish or cancel it first.".to_string()
+                                        } else {
+                                            can_run.reason.clone()
+                                        },
                                         onclick: start,
                                         if is_running { "Running…" } else { "{can_run.label}" }
                                     }
@@ -785,23 +797,49 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         } else if prs.is_empty() {
                                             rsx! {}
                                         } else {
+                                            // Once one PR on this repo is running, the
+                                            // rest are unpickable — switching to another
+                                            // would leave that run's git state (checkout,
+                                            // fetch) racing against this one's.
+                                            let running_pr = running
+                                                .read()
+                                                .iter()
+                                                .find(|(r, f, p)| r == &repo && f == &flow_id && !p.is_empty())
+                                                .map(|(_, _, p)| p.clone());
                                             rsx! {
                                                 div { class: "pr-list-head",
                                                     "{prs.len()} open pull request" if prs.len() != 1 { "s" }
                                                 }
                                                 div { class: "pr-list",
                                                     for pr in prs.iter().cloned() {
-                                                        div {
-                                                            key: "{pr.number}",
-                                                            class: if pr.number == pr_id { "pr-list-item pr-list-item-on" } else { "pr-list-item" },
-                                                            onclick: {
-                                                                let number = pr.number.clone();
-                                                                move |_| {
-                                                                    selected_pr.set(number.clone());
-                                                                    selected_node.set(String::new());
+                                                        {
+                                                            let locked = running_pr.as_deref()
+                                                                .is_some_and(|running| running != pr.number);
+                                                            let class = if pr.number == pr_id {
+                                                                "pr-list-item pr-list-item-on"
+                                                            } else if locked {
+                                                                "pr-list-item pr-list-item-locked"
+                                                            } else {
+                                                                "pr-list-item"
+                                                            };
+                                                            rsx! {
+                                                                div {
+                                                                    key: "{pr.number}",
+                                                                    class,
+                                                                    title: if locked { "Another pull request review is already running for this repository." } else { "" },
+                                                                    onclick: {
+                                                                        let number = pr.number.clone();
+                                                                        move |_| {
+                                                                            if locked {
+                                                                                return;
+                                                                            }
+                                                                            selected_pr.set(number.clone());
+                                                                            selected_node.set(String::new());
+                                                                        }
+                                                                    },
+                                                                    PrCard { pr: pr.clone() }
                                                                 }
-                                                            },
-                                                            PrCard { pr: pr.clone() }
+                                                            }
                                                         }
                                                     }
                                                 }
