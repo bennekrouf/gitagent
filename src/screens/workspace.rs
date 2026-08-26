@@ -885,6 +885,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         spec.writes.iter()
                                             .find(|w| w.as_str() == "diff" || w.as_str() == "pr_diff")
                                             .and_then(|key| state.artifacts.get(key).cloned())
+                                    }).or_else(|| {
+                                        // `merge` writes no diff of its own, but the one
+                                        // `pr_diff` already fetched earlier in this same
+                                        // run is exactly the code a conflict — or a
+                                        // decision to abandon — is about.
+                                        if node_id == "merge" {
+                                            state.artifacts.get("pr_diff").cloned()
+                                        } else {
+                                            None
+                                        }
                                     }),
                                     is_light: *is_light.read(),
                                     on_approve: {
@@ -943,15 +953,22 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                         output.clone()
                                                     };
                                                 });
-                                                // A fix that worked is only useful if the
-                                                // run moves on, so re-queue what it unblocked.
-                                                if ok {
+                                                if ok && remedy.retry_after {
+                                                    // A fix that unblocked this step is only
+                                                    // useful if the run moves on, so re-queue it.
                                                     retry_node(
                                                         states, running, selected_node,
                                                         selected_repo, selected_flow, selected_pr,
                                                         llm_config, statuses, retry_graph,
                                                         key, &node,
                                                     );
+                                                } else if ok {
+                                                    // A terminal remedy resolves the failure by
+                                                    // abandoning the step, not by unblocking it —
+                                                    // retrying would just fail again differently.
+                                                    states.write().remove(&key);
+                                                    running.write().remove(&key);
+                                                    reprobe(key.0.clone(), statuses);
                                                 }
                                             });
                                         }

@@ -22,7 +22,7 @@ use serde_json::json;
 use super::flow::{StepFailure, StepOutcome};
 use super::forge::Forge;
 use super::git;
-use super::graph::{RunState, Step};
+use super::graph::{Remedy, RunState, Step};
 use super::llm::{complete_json, LlmConfig};
 
 /// The merge approval is the whole point of this flow: both signals, stated
@@ -518,6 +518,29 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
     })
 }
 
+/// "not mergeable: the merge commit cannot be cleanly created" means a real
+/// conflict against the base branch — nothing here can resolve that
+/// automatically, but closing the pull request is always an available way
+/// out, worth offering right where the failure is shown rather than sending
+/// the human to a terminal.
+fn merge_failure(number: &str, message: String) -> StepFailure {
+    let mut remedies = vec![];
+    if message.contains("not mergeable") {
+        remedies.push(Remedy::terminal(
+            &format!("Abandon — close #{number} without merging"),
+            "gh",
+            &[
+                "pr",
+                "close",
+                number,
+                "--comment",
+                "Closing — conflicts with the base branch and this run is being abandoned rather than resolved.",
+            ],
+        ));
+    }
+    StepFailure { message, remedies }
+}
+
 async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let forge = Forge::from_key(state.artifact("forge"));
     let number = state.artifact("pr_number").to_string();
@@ -529,7 +552,8 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
                 "gh",
                 &["pr", "merge", &number, "--squash", "--delete-branch"],
             )
-            .await?
+            .await
+            .map_err(|e| merge_failure(&number, e))?
         }
         Forge::AzureDevOps => {
             git::run(
@@ -674,5 +698,25 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
         ] {
             assert!(proposal(step, &s).is_empty());
         }
+    }
+
+    #[test]
+    fn a_merge_conflict_offers_abandoning_the_pull_request() {
+        let failure = merge_failure(
+            "8",
+            "X Pull request bennekrouf/gitagent#8 is not mergeable: the merge commit cannot be cleanly created.".to_string(),
+        );
+        assert_eq!(failure.remedies.len(), 1);
+        let remedy = &failure.remedies[0];
+        assert!(!remedy.retry_after, "closing the PR ends the run, it doesn't unblock the merge");
+        assert_eq!(remedy.program, "gh");
+        assert_eq!(remedy.args, vec!["pr", "close", "8", "--comment",
+            "Closing — conflicts with the base branch and this run is being abandoned rather than resolved."]);
+    }
+
+    #[test]
+    fn a_merge_failure_for_any_other_reason_offers_nothing() {
+        let failure = merge_failure("8", "gh: authentication required".to_string());
+        assert!(failure.remedies.is_empty());
     }
 }
