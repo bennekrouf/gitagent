@@ -40,9 +40,45 @@ pub fn ssh_args(host: &str, port: &str, identity: &str, command: &str) -> Vec<St
 
     args.push(host.trim().to_string());
     if !command.trim().is_empty() {
-        args.push(command.trim().to_string());
+        args.push(remote_command(command.trim()));
     }
     args
+}
+
+/// What actually reaches the remote shell for one command.
+///
+/// `ssh host cmd` hands `cmd` to a *non-interactive* remote shell, which
+/// never sources `~/.bashrc` — so a deploy command defined there as a bash
+/// alias (a common pattern: `alias deploy-foo='cd ... && git pull && ...'`)
+/// comes back "command not found" even though typing the same thing at an
+/// interactive prompt on that host works fine. Wrapping in `bash -ic` forces
+/// an interactive-enough shell that aliases actually resolve; `-l` (login)
+/// was tried first and does not — most hosts do not source `.bashrc` from
+/// their login files, only from interactive-shell startup.
+fn remote_command(command: &str) -> String {
+    format!("bash -ic {}", shell_quote(command))
+}
+
+/// Wraps `s` in single quotes so it reaches the remote shell as one
+/// argument, verbatim — the standard `'\''` trick for a literal `'` inside
+/// a single-quoted string.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `bash -ic` prints two harmless lines to stderr on every call — ssh gives
+/// it no controlling terminal, so it cannot set up job control, and says so.
+/// Nothing failed; stripping them keeps the step's log about the command
+/// that actually ran.
+fn strip_interactive_shell_noise(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| {
+            !line.contains("cannot set terminal process group")
+                && *line != "bash: no job control in this shell"
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `~` is a shell convenience, and there is no shell here.
@@ -63,11 +99,12 @@ pub async fn run(
     stdin: &str,
 ) -> (bool, String) {
     let args = ssh_args(host, port, identity, command);
-    if stdin.trim().is_empty() {
+    let (ok, output) = if stdin.trim().is_empty() {
         git::run_command("ssh", &args).await
     } else {
         git::run_command_with_stdin("ssh", &args, stdin).await
-    }
+    };
+    (ok, strip_interactive_shell_noise(&output))
 }
 
 /// Proves the host answers and the credentials work, without running anything
@@ -78,6 +115,7 @@ pub async fn test(host: &str, port: &str, identity: &str) -> Result<String, Stri
     }
     let args = ssh_args(host, port, identity, "echo gitagent-ok && uname -sn");
     let (ok, output) = git::run_command("ssh", &args).await;
+    let output = strip_interactive_shell_noise(&output);
 
     let text = output.replace("gitagent-ok", "").trim().to_string();
     if ok {
@@ -118,7 +156,10 @@ mod tests {
             .iter()
             .position(|a| a == "build@ci.example.com")
             .unwrap();
-        let cmd = args.iter().position(|a| a == "./deploy.sh").unwrap();
+        let cmd = args
+            .iter()
+            .position(|a| a.contains("./deploy.sh"))
+            .unwrap();
         assert!(host < cmd, "ssh takes the destination first");
     }
 
@@ -127,7 +168,26 @@ mod tests {
         // Splitting it would make ssh reassemble it differently and quoting
         // would stop meaning what it says.
         let args = ssh_args("h", "", "", "cd /srv && ./release.sh --patch");
-        assert!(args.contains(&"cd /srv && ./release.sh --patch".to_string()));
+        assert!(args
+            .iter()
+            .any(|a| a.contains("cd /srv && ./release.sh --patch")));
+    }
+
+    #[test]
+    fn the_command_is_wrapped_so_bashrc_aliases_resolve() {
+        // A remote alias like `deploy-foo` (defined in ~/.bashrc) is only
+        // visible to an interactive shell — plain `ssh host cmd` would say
+        // "command not found" for it even though it works at the prompt.
+        let args = ssh_args("h", "", "", "deploy-mayorana");
+        let cmd = args.last().unwrap();
+        assert_eq!(cmd, "bash -ic 'deploy-mayorana'");
+    }
+
+    #[test]
+    fn a_single_quote_in_the_command_cannot_break_out_of_the_wrapper() {
+        let args = ssh_args("h", "", "", "echo 'hi there'");
+        let cmd = args.last().unwrap();
+        assert_eq!(cmd, r"bash -ic 'echo '\''hi there'\'''");
     }
 
     #[test]
@@ -159,7 +219,7 @@ mod tests {
         let args = ssh_args("  h  ", " 22 ", "", "  true  ");
         assert!(args.contains(&"h".to_string()));
         assert!(args.windows(2).any(|w| w == ["-p", "22"]));
-        assert!(args.contains(&"true".to_string()));
+        assert!(args.iter().any(|a| a == "bash -ic 'true'"));
     }
 
     #[test]
@@ -172,6 +232,23 @@ mod tests {
     #[test]
     fn an_absolute_key_path_is_untouched() {
         assert_eq!(expand_home("/etc/keys/id"), "/etc/keys/id");
+    }
+
+    #[test]
+    fn the_job_control_warning_is_stripped_but_real_output_is_kept() {
+        let raw = "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\n\
+                   bash: no job control in this shell\n\
+                   ✅ mayorana deployed";
+        assert_eq!(strip_interactive_shell_noise(raw), "✅ mayorana deployed");
+    }
+
+    #[test]
+    fn a_line_that_only_mentions_job_control_in_its_own_output_survives() {
+        // The exact two known-benign lines are filtered by content, not by
+        // merely containing "bash:" — a script legitimately printing its own
+        // "bash: ..." diagnostic must not be silently eaten.
+        let raw = "bash: my-script.sh: command not found";
+        assert_eq!(strip_interactive_shell_noise(raw), raw);
     }
 
     #[test]

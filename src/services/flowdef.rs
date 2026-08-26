@@ -312,6 +312,26 @@ pub fn can_depend_on(flow: &FlowDef, node: &str, candidate: &str) -> bool {
     node != candidate && !ancestors(flow, candidate).contains(node)
 }
 
+/// Where a newly added node should attach. With a node selected, it branches
+/// off that one; with nothing selected, it attaches after every step nothing
+/// else depends on, so the flow keeps growing at its end.
+pub fn default_deps(flow: &FlowDef, selected: &str) -> Vec<String> {
+    if !selected.is_empty() && flow.nodes.iter().any(|n| n.id == selected) {
+        return vec![selected.to_string()];
+    }
+    let depended_on: HashSet<&str> = flow
+        .nodes
+        .iter()
+        .flat_map(|n| n.deps.iter().map(|d| d.as_str()))
+        .collect();
+    flow.nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .filter(|id| !depended_on.contains(id))
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Every flow the app knows, and the file they live in.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct FlowBook {
@@ -430,6 +450,16 @@ impl FlowBook {
             .iter()
             .filter(|f| validate(f).is_empty())
             .collect()
+    }
+
+    /// Copies a flow's nodes into a new flow, `_copy`/`_copy_2`/... suffixed.
+    /// Returns the new id, or `None` if `id` does not name an existing flow.
+    pub fn duplicate(&mut self, id: &str) -> Option<String> {
+        let mut copy = self.get(id)?.clone();
+        let new_id = self.free_flow_id(&format!("{id}_copy"));
+        copy.id = new_id.clone();
+        self.flows.push(copy);
+        Some(new_id)
     }
 }
 
