@@ -65,7 +65,17 @@ pub const CATALOGUE: &[StepInfo] = &[
         reads: &[],
         writes: &["remote_url", "forge", "base"],
         gate_by_default: false,
-        config: &[],
+        config: &[ConfigField {
+            key: "base",
+            label: "Target branch",
+            placeholder: "auto-detected (origin/HEAD, then main, then master)",
+            help: "Where pull requests should go. Leave empty to let GitAgent \
+                   detect it — set this when a repository's pull requests \
+                   target something other than its default branch, e.g. \
+                   \"develop\".",
+            multiline: false,
+            required: false,
+        }],
         testable: false,
     },
     StepInfo {
