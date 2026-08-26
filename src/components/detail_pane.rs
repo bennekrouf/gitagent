@@ -3,12 +3,18 @@
 
 use dioxus::prelude::*;
 
+use crate::components::diff_view::DiffView;
 use crate::services::graph::{NodeRun, NodeSpec, NodeStatus};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct DetailPaneProps {
     pub spec: Option<NodeSpec>,
     pub run: NodeRun,
+    /// The node's own diff artifact (`diff` or `pr_diff`), when it wrote
+    /// one — shown as a highlighted diff instead of the plain output log.
+    #[props(default)]
+    pub diff: Option<String>,
+    pub is_light: bool,
     pub on_approve: EventHandler<String>,
     pub on_reject: EventHandler<String>,
     /// `(node id, item key)` — flips one item in and out of the approval.
@@ -157,7 +163,10 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 }
             }
 
-            if !run.log.is_empty() {
+            if let Some(diff) = props.diff.clone().filter(|d| !d.trim().is_empty()) {
+                div { class: "log-head", "Diff" }
+                DiffView { diff, is_light: props.is_light }
+            } else if !run.log.is_empty() {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
                 pre {
                     class: if run.status == NodeStatus::Failed { "log log-error" } else { "log" },

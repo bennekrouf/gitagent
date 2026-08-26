@@ -630,6 +630,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 DetailPane {
                                     spec: graph.get(&node_id).cloned(),
                                     run: state.runs.get(&node_id).cloned().unwrap_or_else(NodeRun::default),
+                                    diff: graph.get(&node_id).and_then(|spec| {
+                                        spec.writes.iter()
+                                            .find(|w| w.as_str() == "diff" || w.as_str() == "pr_diff")
+                                            .and_then(|key| state.artifacts.get(key).cloned())
+                                    }),
+                                    is_light: *is_light.read(),
                                     on_approve: {
                                         let key = key.clone();
                                         move |id: String| {

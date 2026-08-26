@@ -55,6 +55,50 @@ pub fn expand_home(path: &str) -> String {
     }
 }
 
+/// Private keys sitting in `~/.ssh`, newest first — what Setup offers as
+/// one-click suggestions for the "Identity file" field, so picking a key does
+/// not mean knowing its filename or its path by heart.
+///
+/// A file only counts as a private key when a `<name>.pub` sibling exists
+/// next to it: that is the actual signal that separates a keypair's private
+/// half from `config`, `known_hosts`, `authorized_keys`, and everything else
+/// that also lives in `~/.ssh`. The `.pub` file itself is never offered —
+/// pointing `ssh -i` at the public half is a common mistake this sidesteps.
+pub fn discover_identities() -> Vec<String> {
+    let Some(home) = dirs::home_dir() else {
+        return vec![];
+    };
+    identities_in(&home.join(".ssh"))
+        .into_iter()
+        .map(|name| format!("~/.ssh/{name}"))
+        .collect()
+}
+
+/// The scanning logic behind `discover_identities`, taking the directory
+/// directly so tests do not have to touch the real `~/.ssh`.
+fn identities_in(ssh_dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(ssh_dir) else {
+        return vec![];
+    };
+
+    let mut found: Vec<(std::time::SystemTime, String)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            !name.ends_with(".pub") && ssh_dir.join(format!("{name}.pub")).is_file()
+        })
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.file_name().to_string_lossy().to_string()))
+        })
+        .collect();
+
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, name)| name).collect()
+}
+
 pub async fn run(
     host: &str,
     port: &str,
@@ -98,6 +142,60 @@ pub async fn test(host: &str, port: &str, identity: &str) -> Result<String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn temp_ssh_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gitagent-test-ssh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn touch(dir: &std::path::Path, name: &str) {
+        std::fs::File::create(dir.join(name))
+            .unwrap()
+            .write_all(b"x")
+            .unwrap();
+    }
+
+    #[test]
+    fn only_a_private_key_with_a_matching_pub_sibling_is_offered() {
+        let dir = temp_ssh_dir();
+        touch(&dir, "id_ed25519");
+        touch(&dir, "id_ed25519.pub");
+        touch(&dir, "config");
+        touch(&dir, "known_hosts");
+        touch(&dir, "orphan_key"); // no .pub sibling — not a confirmed keypair
+
+        let found = identities_in(&dir);
+        assert_eq!(found, vec!["id_ed25519".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_public_half_is_never_offered_on_its_own() {
+        let dir = temp_ssh_dir();
+        touch(&dir, "id_rsa");
+        touch(&dir, "id_rsa.pub");
+
+        let found = identities_in(&dir);
+        assert!(!found.iter().any(|f| f.ends_with(".pub")));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_ssh_directory_yields_no_identities_rather_than_an_error() {
+        let dir = std::env::temp_dir().join("gitagent-test-ssh-does-not-exist");
+        assert_eq!(identities_in(&dir), Vec::<String>::new());
+    }
 
     #[test]
     fn a_prompt_can_never_hang_the_run() {
