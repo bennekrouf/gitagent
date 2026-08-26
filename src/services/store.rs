@@ -8,12 +8,14 @@
 //! environment at call time so that nothing ever writes a credential to disk.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::llm::LlmConfig;
 
 const REPOS_FILE: &str = "repos.json";
 const SETTINGS_FILE: &str = "settings.json";
+const REPO_FLOWS_FILE: &str = "repo_flows.json";
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Repo {
@@ -170,6 +172,57 @@ pub fn save_settings(cfg: &LlmConfig) {
     write(SETTINGS_FILE, cfg);
 }
 
+/// Which flows each repository has chosen not to see, keyed by repository
+/// path. Flows are shared by every repository and every window — this is
+/// purely a per-repo *filter* on top of that shared list, not a copy of it,
+/// so hiding a flow here never touches `flows.toml`. A repository with
+/// nothing hidden simply has no entry.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct RepoFlows {
+    #[serde(default)]
+    pub hidden: BTreeMap<String, Vec<String>>,
+}
+
+impl RepoFlows {
+    pub fn is_hidden(&self, repo: &str, flow_id: &str) -> bool {
+        self.hidden
+            .get(repo)
+            .is_some_and(|ids| ids.iter().any(|id| id == flow_id))
+    }
+
+    pub fn hide(&mut self, repo: &str, flow_id: &str) {
+        let ids = self.hidden.entry(repo.to_string()).or_default();
+        if !ids.iter().any(|id| id == flow_id) {
+            ids.push(flow_id.to_string());
+        }
+    }
+
+    /// Un-hides one flow. Drops the repo's entry entirely once nothing is
+    /// hidden for it, so a repo that has restored everything looks exactly
+    /// like one that never hid anything.
+    pub fn show(&mut self, repo: &str, flow_id: &str) {
+        let Some(ids) = self.hidden.get_mut(repo) else {
+            return;
+        };
+        ids.retain(|id| id != flow_id);
+        if ids.is_empty() {
+            self.hidden.remove(repo);
+        }
+    }
+
+    pub fn hidden_for(&self, repo: &str) -> &[String] {
+        self.hidden.get(repo).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+pub fn load_repo_flows() -> RepoFlows {
+    read(REPO_FLOWS_FILE)
+}
+
+pub fn save_repo_flows(flows: &RepoFlows) {
+    write(REPO_FLOWS_FILE, flows);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +250,47 @@ mod tests {
         r.remember("/b");
         r.remember("/a");
         assert_eq!(r.recent, vec!["/a", "/b"]);
+    }
+
+    #[test]
+    fn nothing_is_hidden_by_default() {
+        let flows = RepoFlows::default();
+        assert!(!flows.is_hidden("/repo", "commit_and_pr"));
+        assert!(flows.hidden_for("/repo").is_empty());
+    }
+
+    #[test]
+    fn hiding_a_flow_only_affects_the_repo_it_was_hidden_for() {
+        let mut flows = RepoFlows::default();
+        flows.hide("/repo-a", "commit_and_pr");
+        assert!(flows.is_hidden("/repo-a", "commit_and_pr"));
+        assert!(!flows.is_hidden("/repo-b", "commit_and_pr"));
+    }
+
+    #[test]
+    fn hiding_the_same_flow_twice_does_not_duplicate_it() {
+        let mut flows = RepoFlows::default();
+        flows.hide("/repo", "commit_and_pr");
+        flows.hide("/repo", "commit_and_pr");
+        assert_eq!(flows.hidden_for("/repo"), &["commit_and_pr".to_string()]);
+    }
+
+    #[test]
+    fn showing_a_flow_again_undoes_hiding_it() {
+        let mut flows = RepoFlows::default();
+        flows.hide("/repo", "commit_and_pr");
+        flows.show("/repo", "commit_and_pr");
+        assert!(!flows.is_hidden("/repo", "commit_and_pr"));
+    }
+
+    #[test]
+    fn a_repo_with_everything_restored_leaves_no_trace() {
+        // Restoring the last hidden flow removes the repo's entry entirely,
+        // rather than leaving an empty list sitting in the saved file.
+        let mut flows = RepoFlows::default();
+        flows.hide("/repo", "commit_and_pr");
+        flows.show("/repo", "commit_and_pr");
+        assert!(flows.hidden.is_empty());
     }
 
     #[test]
