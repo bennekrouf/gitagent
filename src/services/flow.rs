@@ -209,7 +209,7 @@ pub async fn execute(
 ) -> Result<StepOutcome, StepFailure> {
     match node.step {
         Step::Preflight => preflight(repo, cfg).await,
-        Step::ScanChanges => scan(repo).await,
+        Step::ScanChanges => scan(repo, state).await,
         Step::DraftCommit => draft_commit(cfg, state).await,
         Step::Commit => commit(repo, state).await,
         Step::DraftPr => draft_pr(cfg, state).await,
@@ -443,11 +443,80 @@ pub async fn diff_preview(node: &NodeSpec, repo: &str, state: &RunState) -> Opti
     }
 }
 
-async fn scan(repo: &str) -> Result<StepOutcome, StepFailure> {
+/// `Some` when the working tree is clean but the branch is already ahead of
+/// `base` — commits made outside this run, still unpushed. `None` when there
+/// is truly nothing (a fresh checkout of `base` itself, or a branch already
+/// level with it), in which case `scan` falls back to its usual "nothing to
+/// commit" outcome.
+async fn already_committed(
+    repo: &str,
+    branch: &str,
+    state: &RunState,
+) -> Result<Option<StepOutcome>, StepFailure> {
+    let base = state.artifact("base");
+    if base.is_empty() || base == branch {
+        return Ok(None);
+    }
+    let base_ref = if git::run(
+        repo,
+        "git",
+        &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{base}")],
+    )
+    .await
+    .is_ok()
+    {
+        format!("origin/{base}")
+    } else {
+        base.to_string()
+    };
+
+    let range = format!("{base_ref}..HEAD");
+    let ahead: usize = git::run(repo, "git", &["rev-list", "--count", &range])
+        .await
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    if ahead == 0 {
+        return Ok(None);
+    }
+
+    let stat = git::run(repo, "git", &["diff", &range, "--stat"])
+        .await
+        .unwrap_or_default();
+    let diff = git::run(repo, "git", &["diff", &range, "--unified=3"]).await?;
+    let plural = if ahead == 1 { "" } else { "s" };
+
+    Ok(Some(StepOutcome {
+        summary: format!("{ahead} commit{plural} already on {branch}, ready to push"),
+        log: format!(
+            "branch: {branch}\n\n{stat}\n\n{ahead} commit{plural} ahead of {base}, none pushed yet\n"
+        ),
+        artifacts: vec![
+            ("branch".into(), branch.to_string()),
+            ("stat".into(), stat),
+            ("diff".into(), git::cap(&diff)),
+            ("commit_paths".into(), String::new()),
+            ("file_notes".into(), String::new()),
+            ("untracked".into(), String::new()),
+        ],
+        nothing_to_do: false,
+    }))
+}
+
+async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let branch = git::current_branch(repo).await?;
     let changes = git::status(repo).await?;
 
     if changes.is_empty() {
+        // A clean tree isn't necessarily nothing to do — a commit made
+        // outside GitAgent (or by a previous run) can already sit ahead of
+        // `base`, unpushed. Diff those commits against `base` so the rest
+        // of the flow — draft, commit (a no-op here), push, open PR — has
+        // something to work from instead of everything downstream getting
+        // skipped just because there was nothing to *stage*.
+        if let Some(outcome) = already_committed(repo, &branch, state).await? {
+            return Ok(outcome);
+        }
         return Ok(StepOutcome::nothing(
             "No changes in the working tree — nothing to commit.",
         ));
@@ -617,7 +686,28 @@ async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure
         selected
     };
     if paths.is_empty() {
-        return Err("no files selected to stage".into());
+        // Nothing was ever proposed to stage (`items` empty) means `scan`
+        // found the tree already clean but the branch ahead of `base` — the
+        // commit already exists, made outside GitAgent. Unchecking every
+        // proposed file, by contrast, is a real "stop" the human meant.
+        let items_offered = state
+            .runs
+            .get("commit")
+            .is_some_and(|r| !r.items.is_empty());
+        if items_offered {
+            return Err("no files selected to stage".into());
+        }
+        let sha = git::head_sha(repo).await?;
+        log.push_str(&format!("nothing to stage — {sha} already committed\n"));
+        return Ok(StepOutcome {
+            summary: format!("{sha} already on {work_branch}"),
+            log,
+            artifacts: vec![
+                ("work_branch".into(), work_branch),
+                ("commit_sha".into(), sha),
+            ],
+            nothing_to_do: false,
+        });
     }
 
     git::add(repo, &paths).await?;
@@ -746,6 +836,25 @@ mod tests {
         };
         let state = RunState::fresh(&commit_and_pr_flow());
         assert_eq!(diff_preview(&node, "/does/not/matter", &state).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_clean_base_branch_has_nothing_already_committed_to_find() {
+        // Short-circuits before touching git — no `base` artifact means
+        // there is nothing to compare the branch against.
+        let state = RunState::fresh(&commit_and_pr_flow());
+        let out = already_committed("/does/not/matter", "main", &state).await.unwrap();
+        assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn sitting_on_base_itself_has_nothing_already_committed_to_find() {
+        // A checkout of `base` compared against itself is always empty —
+        // short-circuits without needing to touch git.
+        let mut state = RunState::fresh(&commit_and_pr_flow());
+        state.artifacts.insert("base".into(), "main".into());
+        let out = already_committed("/does/not/matter", "main", &state).await.unwrap();
+        assert!(out.is_none());
     }
 
     #[tokio::test]

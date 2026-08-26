@@ -163,8 +163,17 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                     div { class: "remedy-label", "{remedy.label}" }
                                     code { class: "remedy-cmd", "{remedy.display}" }
                                 }
+                                {
+                                    let btn_class = if remedy.done {
+                                        "btn"
+                                    } else if remedy.retry_after {
+                                        "btn btn-primary"
+                                    } else {
+                                        "btn btn-danger"
+                                    };
+                                    rsx! {
                                 button {
-                                    class: if remedy.done { "btn" } else { "btn btn-primary" },
+                                    class: btn_class,
                                     disabled: remedy.running || remedy.done,
                                     onclick: {
                                         let node = remedy_id.clone();
@@ -172,7 +181,10 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                     },
                                     if remedy.running { "Running…" }
                                     else if remedy.done { "Done" }
-                                    else { "Run" }
+                                    else if remedy.retry_after { "Run" }
+                                    else { "Abandon" }
+                                }
+                                    }
                                 }
                             }
                             if !remedy.output.is_empty() {
