@@ -729,13 +729,27 @@ async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure
         });
     }
 
-    git::add(repo, &paths).await?;
-    log.push_str(&format!("staged {} file(s)\n", paths.len()));
+    // Re-read status rather than trusting the scan: an approval can sit for a
+    // while, and what still needs staging may have changed underneath.
+    let live = git::status(repo).await.unwrap_or_default();
+    let to_stage = git::needs_staging(&live, &paths);
+
+    if !to_stage.is_empty() {
+        git::add(repo, &to_stage).await?;
+        log.push_str(&format!("staged {} file(s)\n", to_stage.len()));
+    }
+    if paths.len() > to_stage.len() {
+        log.push_str(&format!(
+            "{} path(s) already staged\n",
+            paths.len() - to_stage.len()
+        ));
+    }
 
     let out = git::commit(
         repo,
         state.artifact("commit_subject"),
         state.artifact("commit_body"),
+        &paths,
     )
     .await?;
     log.push_str(&out);
