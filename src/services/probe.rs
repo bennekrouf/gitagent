@@ -240,6 +240,16 @@ pub fn affordance(
     }
 }
 
+/// GitHub reports `OPEN`, `MERGED` or `CLOSED`; anything else is not
+/// reviewable. A missing field is treated as open so an older `gh` that does
+/// not report it still works.
+pub fn is_open(value: &serde_json::Value) -> bool {
+    match value.get("state").and_then(|s| s.as_str()) {
+        None => true,
+        Some(state) => state.eq_ignore_ascii_case("OPEN"),
+    }
+}
+
 pub async fn probe(repo: &str) -> RepoStatus {
     let branch = git::current_branch(repo).await.unwrap_or_default();
     let changes = git::status(repo).await.map(|c| c.len()).unwrap_or(0);
@@ -307,7 +317,7 @@ fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> {
 }
 
 const PR_FIELDS: &str =
-    "number,title,url,statusCheckRollup,changedFiles,additions,deletions,commits";
+    "number,title,url,state,statusCheckRollup,changedFiles,additions,deletions,commits";
 
 /// Every open pull request on the repository — not scoped to the checked-out
 /// branch, unlike `open_pr` below. What lets the sidebar offer a choice of
@@ -377,6 +387,13 @@ async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
                 .await
                 .ok()?;
             let value: serde_json::Value = serde_json::from_str(&out).ok()?;
+            // `gh pr view` answers for the checked-out branch whatever the
+            // pull request's state, so a merged one comes back looking open.
+            // Reporting that as "ready to merge" sends the review flow at a
+            // branch the remote deleted on merge.
+            if !is_open(&value) {
+                return None;
+            }
             github_pr_from_json(&value)
         }
         Forge::AzureDevOps => {
@@ -701,6 +718,25 @@ mod tests {
         pr.additions = 9297;
         pr.deletions = 4567;
         assert_eq!(pr.size(), "115 files  +9297  −4567");
+    }
+
+    #[test]
+    fn a_merged_pull_request_is_not_offered_for_review() {
+        // The exact failure: merge with --delete-branch, stay on the branch,
+        // and gh still answers with the merged PR.
+        assert!(!is_open(&json!({ "number": 5, "state": "MERGED" })));
+        assert!(!is_open(&json!({ "number": 5, "state": "CLOSED" })));
+        assert!(is_open(&json!({ "number": 5, "state": "OPEN" })));
+    }
+
+    #[test]
+    fn a_gh_that_does_not_report_state_is_still_usable() {
+        assert!(is_open(&json!({ "number": 5 })));
+    }
+
+    #[test]
+    fn the_state_check_is_not_case_sensitive() {
+        assert!(is_open(&json!({ "state": "open" })));
     }
 
     #[test]

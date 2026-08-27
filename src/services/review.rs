@@ -96,6 +96,19 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
             let value: serde_json::Value = serde_json::from_str(&out)
                 .map_err(|e| format!("could not read the gh response: {e}"))?;
 
+            // A merged or closed pull request is not an error, there is simply
+            // nothing to review — and its branch is usually gone from the
+            // remote, which would fail confusingly at `pr_diff` instead.
+            if !crate::services::probe::is_open(&value) {
+                let state = value["state"].as_str().unwrap_or("not open");
+                let number = value["number"].as_i64().unwrap_or_default();
+                return Ok(StepOutcome::nothing(format!(
+                    "Pull request #{number} for `{branch}` is {state}. Nothing to review — \
+                     switch to {} and pull.",
+                    value["baseRefName"].as_str().unwrap_or("the base branch"),
+                )));
+            }
+
             let number = value["number"].as_i64().unwrap_or_default().to_string();
             let title = value["title"].as_str().unwrap_or_default().to_string();
             let url = value["url"].as_str().unwrap_or_default().to_string();
