@@ -263,25 +263,48 @@ pub async fn add(repo: &str, paths: &[String]) -> Result<String, String> {
     run(repo, "git", &args).await
 }
 
-/// Commits exactly `paths`.
+/// Paths with something staged: the index column is neither a space (nothing
+/// staged) nor `?` (untracked, so nothing is in the index at all).
+pub fn staged_paths(changes: &[FileChange]) -> Vec<String> {
+    changes
+        .iter()
+        .filter(|c| {
+            let index = c.code.chars().next().unwrap_or(' ');
+            index != ' ' && index != '?'
+        })
+        .map(|c| c.path.clone())
+        .collect()
+}
+
+/// Staged work the human did not approve — what has to leave the index before
+/// committing it would be honest.
+pub fn staged_but_unapproved(changes: &[FileChange], approved: &[String]) -> Vec<String> {
+    staged_paths(changes)
+        .into_iter()
+        .filter(|path| !approved.contains(path))
+        .collect()
+}
+
+/// Takes paths out of the index, leaving the working tree untouched.
+pub async fn unstage(repo: &str, paths: &[String]) -> Result<String, String> {
+    let mut args = vec!["restore", "--staged", "--"];
+    args.extend(paths.iter().map(|p| p.as_str()));
+    run(repo, "git", &args).await
+}
+
+/// Commits whatever is in the index.
 ///
-/// The pathspec matters: without it `git commit` records everything in the
-/// index, so a file the human unchecked at the approval would still land if
-/// something had already staged it. The approval names files, so the commit
-/// contains those files and nothing else.
-pub async fn commit(
-    repo: &str,
-    subject: &str,
-    body: &str,
-    paths: &[String],
-) -> Result<String, String> {
+/// Deliberately no pathspec: `git commit -- <paths>` would commit the *working
+/// tree* content of those paths and throw away any partial staging, so a
+/// carefully `git add -p`-ed hunk would silently become the whole file. The
+/// caller makes the index match the approval instead — staging what was
+/// checked, unstaging what was not — and then this commits it as it stands.
+pub async fn commit(repo: &str, subject: &str, body: &str) -> Result<String, String> {
     let mut args = vec!["commit", "-m", subject];
     if !body.trim().is_empty() {
         args.push("-m");
         args.push(body);
     }
-    args.push("--");
-    args.extend(paths.iter().map(|p| p.as_str()));
     run(repo, "git", &args).await
 }
 
@@ -521,6 +544,36 @@ mod tests {
         let changes = vec![change("D ", "logic_apps/local.settings.json")];
         let wanted = vec!["logic_apps/local.settings.json".to_string()];
         assert!(needs_staging(&changes, &wanted).is_empty());
+    }
+
+    #[test]
+    fn untracked_files_are_not_in_the_index() {
+        let changes = vec![change("??", "new.rs"), change("A ", "added.rs")];
+        assert_eq!(staged_paths(&changes), vec!["added.rs".to_string()]);
+    }
+
+    #[test]
+    fn a_staged_file_nobody_approved_is_singled_out() {
+        // Unchecking a file that was already staged has to actually exclude it.
+        let changes = vec![change("M ", "wanted.rs"), change("M ", "sneaky.rs")];
+        let approved = vec!["wanted.rs".to_string()];
+        assert_eq!(
+            staged_but_unapproved(&changes, &approved),
+            vec!["sneaky.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn nothing_is_unstaged_when_the_index_already_matches() {
+        let changes = vec![change("M ", "a.rs"), change(" M", "b.rs")];
+        let approved = vec!["a.rs".to_string(), "b.rs".to_string()];
+        assert!(staged_but_unapproved(&changes, &approved).is_empty());
+    }
+
+    #[test]
+    fn a_staged_deletion_counts_as_staged() {
+        let changes = vec![change("D ", "logic_apps/local.settings.json")];
+        assert_eq!(staged_paths(&changes).len(), 1);
     }
 
     #[test]
