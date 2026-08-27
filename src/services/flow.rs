@@ -335,7 +335,9 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
     // rather than threaded through a node's own config: one setting per
     // repository, not one that has to be repeated on every flow's Preflight
     // node to actually apply everywhere.
-    let override_base = super::store::load_repo_bases().get(repo).map(str::to_string);
+    let override_base = super::store::load_repo_bases()
+        .get(repo)
+        .map(str::to_string);
     let (base, how) = match override_base {
         Some(base) => (base, "set for this repository".to_string()),
         None => git::default_remote_branch(repo).await,
@@ -762,11 +764,29 @@ async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure
         ));
     }
 
+    // Anything staged that was not approved has to leave the index, or the
+    // commit would quietly contain more than the approval showed. Only the
+    // index is touched — the files themselves are left exactly as they are.
+    let extra = git::staged_but_unapproved(&live, &paths);
+    if !extra.is_empty() {
+        git::unstage(repo, &extra).await?;
+        log.push_str(&format!(
+            "unstaged {} path(s) that were not approved (working tree untouched):\n{}\n",
+            extra.len(),
+            extra
+                .iter()
+                .map(|p| format!("  {p}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    // The index now matches the approval, so commit it as it stands — which
+    // preserves any hunks staged by hand with `git add -p`.
     let out = git::commit(
         repo,
         state.artifact("commit_subject"),
         state.artifact("commit_body"),
-        &paths,
     )
     .await?;
     log.push_str(&out);

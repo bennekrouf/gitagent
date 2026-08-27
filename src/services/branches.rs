@@ -85,13 +85,19 @@ pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInf
                 repo,
                 "gh",
                 &[
-                    "pr", "list", "--state", "all", "--limit", "200", "--json",
+                    "pr",
+                    "list",
+                    "--state",
+                    "all",
+                    "--limit",
+                    "200",
+                    "--json",
                     "number,title,state,headRefName",
                 ],
             )
             .await?;
-            let value: serde_json::Value = serde_json::from_str(&out)
-                .map_err(|e| format!("could not read gh output: {e}"))?;
+            let value: serde_json::Value =
+                serde_json::from_str(&out).map_err(|e| format!("could not read gh output: {e}"))?;
             value
                 .as_array()
                 .map(|prs| prs.iter().filter_map(github_pr_row).collect())
@@ -143,11 +149,15 @@ async fn resolve_ref(repo: &str, base: &str) -> String {
 }
 
 async fn ahead_count(repo: &str, base_ref: &str, branch: &str) -> usize {
-    git::run(repo, "git", &["rev-list", "--count", &format!("{base_ref}..{branch}")])
-        .await
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
+    git::run(
+        repo,
+        "git",
+        &["rev-list", "--count", &format!("{base_ref}..{branch}")],
+    )
+    .await
+    .ok()
+    .and_then(|s| s.trim().parse().ok())
+    .unwrap_or(0)
 }
 
 fn github_pr_row(pr: &serde_json::Value) -> Option<(String, String, String, PrState)> {
@@ -194,10 +204,18 @@ pub async fn create_pr(
 /// and the rest (if any) become a bulleted body. `branch` is the fallback
 /// title for a branch whose log came back empty.
 fn title_and_body(log: &str, branch: &str) -> (String, String) {
-    let subjects: Vec<&str> = log.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let subjects: Vec<&str> = log
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let title = subjects.first().copied().unwrap_or(branch).to_string();
     let body = if subjects.len() > 1 {
-        subjects.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")
+        subjects
+            .iter()
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         String::new()
     };
@@ -220,7 +238,12 @@ mod tests {
     #[test]
     fn only_a_confirmed_merge_says_the_branch_is_safe_to_lose() {
         assert!(PrState::Merged.merged());
-        for state in [PrState::Open, PrState::Closed, PrState::None, PrState::Unchecked] {
+        for state in [
+            PrState::Open,
+            PrState::Closed,
+            PrState::None,
+            PrState::Unchecked,
+        ] {
             assert!(!state.merged(), "{state:?}");
         }
     }
@@ -259,10 +282,19 @@ mod tests {
     fn a_branch_is_only_worth_a_pr_with_real_work_and_no_live_pr() {
         assert!(branch(3, PrState::None).worth_a_pr());
         assert!(branch(3, PrState::Closed).worth_a_pr());
-        assert!(!branch(0, PrState::None).worth_a_pr(), "nothing for a PR to carry");
-        assert!(!branch(3, PrState::Open).worth_a_pr(), "already has a live PR");
+        assert!(
+            !branch(0, PrState::None).worth_a_pr(),
+            "nothing for a PR to carry"
+        );
+        assert!(
+            !branch(3, PrState::Open).worth_a_pr(),
+            "already has a live PR"
+        );
         assert!(!branch(3, PrState::Merged).worth_a_pr(), "already shipped");
-        assert!(!branch(3, PrState::Unchecked).worth_a_pr(), "not confirmed either way");
+        assert!(
+            !branch(3, PrState::Unchecked).worth_a_pr(),
+            "not confirmed either way"
+        );
     }
 
     #[test]
@@ -274,9 +306,15 @@ mod tests {
 
     #[test]
     fn several_commits_keep_the_newest_as_title_and_list_the_rest() {
-        let (title, body) = title_and_body("feat: add retry\nfix: typo\nfeat: start feature\n", "feat/x");
+        let (title, body) = title_and_body(
+            "feat: add retry\nfix: typo\nfeat: start feature\n",
+            "feat/x",
+        );
         assert_eq!(title, "feat: add retry");
-        assert_eq!(body, "- feat: add retry\n- fix: typo\n- feat: start feature");
+        assert_eq!(
+            body,
+            "- feat: add retry\n- fix: typo\n- feat: start feature"
+        );
     }
 
     #[test]
