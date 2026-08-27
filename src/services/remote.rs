@@ -91,7 +91,13 @@ pub fn expand_home(path: &str) -> String {
     }
 }
 
-pub async fn run(host: &str, port: &str, identity: &str, command: &str, stdin: &str) -> (bool, String) {
+pub async fn run(
+    host: &str,
+    port: &str,
+    identity: &str,
+    command: &str,
+    stdin: &str,
+) -> (bool, String) {
     run_streaming(host, port, identity, command, stdin, &mut |_| {}).await
 }
 
@@ -256,10 +262,7 @@ mod tests {
             .iter()
             .position(|a| a == "build@ci.example.com")
             .unwrap();
-        let cmd = args
-            .iter()
-            .position(|a| a.contains("./deploy.sh"))
-            .unwrap();
+        let cmd = args.iter().position(|a| a.contains("./deploy.sh")).unwrap();
         assert!(host < cmd, "ssh takes the destination first");
     }
 

@@ -239,7 +239,10 @@ pub async fn execute(
 /// the approval step, and showed the exact command it was asking about.
 /// Runs a command on another machine. See `services::remote` for why no key
 /// ever reaches this app.
-async fn run_remote(node: &NodeSpec, on_line: &mut dyn FnMut(&str)) -> Result<StepOutcome, StepFailure> {
+async fn run_remote(
+    node: &NodeSpec,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<StepOutcome, StepFailure> {
     let host = node.setting("host").trim().to_string();
     let command = node.setting("command").trim().to_string();
     if host.is_empty() || command.is_empty() {
@@ -314,7 +317,11 @@ async fn run_script(
     })
 }
 
-async fn preflight(node: &NodeSpec, repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
+async fn preflight(
+    node: &NodeSpec,
+    repo: &str,
+    cfg: &LlmConfig,
+) -> Result<StepOutcome, StepFailure> {
     let mut log = String::new();
     let mut failures: Vec<String> = vec![];
 
@@ -332,7 +339,10 @@ async fn preflight(node: &NodeSpec, repo: &str, cfg: &LlmConfig) -> Result<StepO
     let (base, how) = if node.setting("base").trim().is_empty() {
         git::default_remote_branch(repo).await
     } else {
-        (node.setting("base").trim().to_string(), "set in Setup".to_string())
+        (
+            node.setting("base").trim().to_string(),
+            "set in Setup".to_string(),
+        )
     };
     let branch = git::current_branch(repo).await?;
     log.push_str(&format!("base    {base}  ({how})\nbranch  {branch}\n"));
@@ -403,10 +413,7 @@ async fn preflight(node: &NodeSpec, repo: &str, cfg: &LlmConfig) -> Result<StepO
 /// commits as the `diff` artifact. Shared with `diff_preview` so the
 /// approval and the step it approves can never show two different diffs
 /// for the same tree.
-async fn working_tree_diff(
-    repo: &str,
-    changes: &[git::FileChange],
-) -> Result<String, StepFailure> {
+async fn working_tree_diff(repo: &str, changes: &[git::FileChange]) -> Result<String, StepFailure> {
     let mut diff = git::diff(repo).await?;
     for change in changes.iter().filter(|c| c.is_untracked()) {
         if diff.len() >= git::DIFF_CAP {
@@ -467,7 +474,12 @@ async fn already_committed(
     let base_ref = if git::run(
         repo,
         "git",
-        &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{base}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{base}"),
+        ],
     )
     .await
     .is_ok()
@@ -850,7 +862,9 @@ mod tests {
         // Short-circuits before touching git — no `base` artifact means
         // there is nothing to compare the branch against.
         let state = RunState::fresh(&commit_and_pr_flow());
-        let out = already_committed("/does/not/matter", "main", &state).await.unwrap();
+        let out = already_committed("/does/not/matter", "main", &state)
+            .await
+            .unwrap();
         assert!(out.is_none());
     }
 
@@ -860,7 +874,9 @@ mod tests {
         // short-circuits without needing to touch git.
         let mut state = RunState::fresh(&commit_and_pr_flow());
         state.artifacts.insert("base".into(), "main".into());
-        let out = already_committed("/does/not/matter", "main", &state).await.unwrap();
+        let out = already_committed("/does/not/matter", "main", &state)
+            .await
+            .unwrap();
         assert!(out.is_none());
     }
 

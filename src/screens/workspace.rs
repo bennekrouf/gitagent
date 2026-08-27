@@ -120,7 +120,9 @@ async fn drive(
         if node.requires_approval {
             let proposal = flow::proposal(&node, &state);
             let items = flow::proposal_items(&node, &state);
-            let preview_diff = flow::diff_preview(&node, &repo, &state).await.unwrap_or_default();
+            let preview_diff = flow::diff_preview(&node, &repo, &state)
+                .await
+                .unwrap_or_default();
             {
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();

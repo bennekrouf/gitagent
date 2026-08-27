@@ -553,15 +553,13 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
     let number = state.artifact("pr_number").to_string();
 
     let out = match forge {
-        Forge::GitHub => {
-            git::run(
-                repo,
-                "gh",
-                &["pr", "merge", &number, "--squash", "--delete-branch"],
-            )
-            .await
-            .map_err(|e| merge_failure(&number, e))?
-        }
+        Forge::GitHub => git::run(
+            repo,
+            "gh",
+            &["pr", "merge", &number, "--squash", "--delete-branch"],
+        )
+        .await
+        .map_err(|e| merge_failure(&number, e))?,
         Forge::AzureDevOps => {
             git::run(
                 repo,
@@ -715,7 +713,10 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
         );
         assert_eq!(failure.remedies.len(), 1);
         let remedy = &failure.remedies[0];
-        assert!(!remedy.retry_after, "closing the PR ends the run, it doesn't unblock the merge");
+        assert!(
+            !remedy.retry_after,
+            "closing the PR ends the run, it doesn't unblock the merge"
+        );
         assert_eq!(remedy.program, "gh");
         assert_eq!(remedy.args, vec!["pr", "close", "8", "--comment",
             "Closing — conflicts with the base branch and this run is being abandoned rather than resolved."]);

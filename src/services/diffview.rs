@@ -61,14 +61,15 @@ pub fn parse(diff: &str) -> Vec<FileDiff> {
             f.hunks.push(h);
         }
     };
-    let flush_file = |files: &mut Vec<FileDiff>, file: &mut Option<FileDiff>, hunk: &mut Option<Hunk>| {
-        if let (Some(f), Some(h)) = (file.as_mut(), hunk.take()) {
-            f.hunks.push(h);
-        }
-        if let Some(f) = file.take() {
-            files.push(f);
-        }
-    };
+    let flush_file =
+        |files: &mut Vec<FileDiff>, file: &mut Option<FileDiff>, hunk: &mut Option<Hunk>| {
+            if let (Some(f), Some(h)) = (file.as_mut(), hunk.take()) {
+                f.hunks.push(h);
+            }
+            if let Some(f) = file.take() {
+                files.push(f);
+            }
+        };
 
     for line in diff.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
@@ -131,10 +132,7 @@ pub fn parse(diff: &str) -> Vec<FileDiff> {
 /// this parser have not needed to handle yet.
 fn split_git_header_paths(rest: &str) -> (String, String) {
     match rest.split_once(" b/") {
-        Some((a, b)) => (
-            a.strip_prefix("a/").unwrap_or(a).to_string(),
-            b.to_string(),
-        ),
+        Some((a, b)) => (a.strip_prefix("a/").unwrap_or(a).to_string(), b.to_string()),
         None => (rest.to_string(), rest.to_string()),
     }
 }

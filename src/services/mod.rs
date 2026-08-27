@@ -1,5 +1,6 @@
 pub mod catalogue;
 pub mod diffview;
+pub mod env;
 pub mod flow;
 pub mod flowdef;
 pub mod forge;
