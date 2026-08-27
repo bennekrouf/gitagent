@@ -2,6 +2,7 @@
 name = "gitagent"
 version = "0.1.10"
 edition = "2021"
+license-file = "LICENSE"
 description = "Agentic graph for commit and deploy workflows"
 
 [dependencies]
