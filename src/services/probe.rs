@@ -10,6 +10,7 @@
 
 use super::forge::{self, Forge};
 use super::git;
+use super::release::{self, ReleaseState};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Checks {
@@ -59,6 +60,8 @@ pub enum Wants {
     Attention,
     /// Uncommitted work.
     Commit,
+    /// Merged work that has not been tagged.
+    Release,
     /// A pull request whose checks are still running. Nothing to do yet.
     Wait,
     /// Clean tree, no pull request.
@@ -68,7 +71,10 @@ pub enum Wants {
 impl Wants {
     /// Whether a person is actually expected to do something.
     pub fn needs_a_person(self) -> bool {
-        matches!(self, Wants::Merge | Wants::Attention | Wants::Commit)
+        matches!(
+            self,
+            Wants::Merge | Wants::Attention | Wants::Commit | Wants::Release
+        )
     }
 
     pub fn note(self) -> &'static str {
@@ -76,6 +82,7 @@ impl Wants {
             Wants::Merge => "ready to merge",
             Wants::Attention => "checks failing",
             Wants::Commit => "uncommitted",
+            Wants::Release => "release due",
             Wants::Wait => "checks running",
             Wants::Nothing => "clean",
         }
@@ -86,6 +93,7 @@ impl Wants {
             Wants::Merge => "done",
             Wants::Attention => "failed",
             Wants::Commit => "awaiting",
+            Wants::Release => "running",
             Wants::Wait => "running",
             Wants::Nothing => "skipped",
         }
@@ -95,6 +103,9 @@ impl Wants {
     pub fn flow_hint(self) -> &'static str {
         match self {
             Wants::Merge | Wants::Attention | Wants::Wait => "review_and_merge",
+            // Only matches if a flow with this id exists; the workspace checks
+            // before switching, so an unnamed release flow simply does nothing.
+            Wants::Release => "release",
             _ => "commit_and_pr",
         }
     }
@@ -122,6 +133,8 @@ pub struct RepoStatus {
     /// the branch is caught up — not just "unpushed work exists".
     pub ahead: usize,
     pub behind: usize,
+    /// Merged work the last tag does not reach.
+    pub release: ReleaseState,
 }
 
 impl RepoStatus {
@@ -136,7 +149,10 @@ impl RepoStatus {
                 Checks::Pending if self.changes > 0 => Wants::Commit,
                 Checks::Pending => Wants::Wait,
             },
+            // Uncommitted work outranks a pending release: it is the more
+            // perishable of the two, and shipping can wait a minute.
             None if self.changes > 0 => Wants::Commit,
+            None if self.release.due() => Wants::Release,
             None => Wants::Nothing,
         }
     }
@@ -263,6 +279,8 @@ pub async fn probe(repo: &str) -> RepoStatus {
         Err(e) => (vec![], Some(e)),
     };
     let (ahead, behind) = ahead_behind(repo).await;
+    let (base, _) = git::default_remote_branch(repo).await;
+    let release = release::status(repo, &base).await;
 
     RepoStatus {
         branch,
@@ -273,6 +291,7 @@ pub async fn probe(repo: &str) -> RepoStatus {
         prs_error,
         ahead,
         behind,
+        release,
     }
 }
 
@@ -478,6 +497,7 @@ mod tests {
             branch: "master".into(),
             changes,
             forge: Forge::GitHub,
+            release: ReleaseState::default(),
             pr: pr.map(|checks| PrBrief {
                 number: "2".into(),
                 title: "t".into(),

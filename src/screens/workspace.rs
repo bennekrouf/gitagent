@@ -696,6 +696,15 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                 },
                                                 _ => rsx! { span { "{repo}" } },
                                             }
+                                            // Merged work that has not shipped, named by the
+                                            // pull requests that are sitting in it.
+                                            if let Some(rel) = status_map
+                                                .get(&repo)
+                                                .map(|s| s.release.clone())
+                                                .filter(|r| r.due())
+                                            {
+                                                span { class: "col-release", "⬆ {rel.summary()}" }
+                                            }
                                         }
                                     }
                                     button {
