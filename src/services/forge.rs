@@ -128,7 +128,12 @@ pub async fn check_credentials(forge: &Forge) -> Vec<Check> {
     match forge {
         Forge::GitHub => {
             if !git::has_gh().await {
-                return vec![Check::fail("gh CLI", "not installed — `brew install gh`")];
+                return vec![Check::fixable(
+                    "gh CLI",
+                    "not found on PATH — install it, or check it is on the PATH \
+                     this app inherits",
+                    Remedy::new("Install gh", "brew", &["install", "gh"]),
+                )];
             }
             match git::run(".", "gh", &["auth", "status"]).await {
                 Ok(out) => vec![Check::pass(
@@ -153,7 +158,8 @@ pub async fn check_credentials(forge: &Forge) -> Vec<Check> {
                 Err(_) => {
                     checks.push(Check::fail(
                         "az CLI",
-                        "not installed — `brew install azure-cli`",
+                        "not found on PATH — install it, or check it is on the PATH \
+                         this app inherits",
                     ));
                     return checks;
                 }

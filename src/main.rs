@@ -62,6 +62,11 @@ pub fn open_in_new_window(path: String) {
 }
 
 fn main() {
+    // Before anything can shell out: a bundle launched from Finder does not
+    // inherit the terminal's PATH, so gh, az and cargo would all read as
+    // "not installed".
+    services::env::adopt_login_path();
+
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
     }
