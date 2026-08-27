@@ -17,7 +17,14 @@ CARGO="Cargo.toml"
 FORMULA="${FORMULA_PATH:-$HOME/code/homebrew-gitagent/Formula/gitagent.rb}"
 DRY_RUN=false
 
-CURRENT=$(grep '^version' "$CARGO" | head -1 | sed 's/version = "\(.*\)"/\1/')
+CARGO_VERSION=$(grep '^version' "$CARGO" | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+# Base the bump on the highest tag ever pushed, not on Cargo.toml's version on
+# this branch — a release cut from a branch that never merged back to master
+# (or any divergent history) leaves Cargo.toml stale here, and bumping off it
+# recomputes a tag that already exists elsewhere.
+LATEST_TAG=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -1)
+CURRENT="${LATEST_TAG:-$CARGO_VERSION}"
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
 # ── Compute target version ────────────────────────────────────────────────────
@@ -59,7 +66,10 @@ fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Release plan"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Cargo.toml   : $CURRENT → $NEW"
+echo "  Cargo.toml   : $CARGO_VERSION → $NEW"
+if [[ "$CARGO_VERSION" != "$CURRENT" ]]; then
+    echo "  drift          : Cargo.toml was behind tag v$CURRENT — bumping from the tag"
+fi
 if [[ -f "$FORMULA" ]]; then
     FORMULA_VER=$(grep 'version "' "$FORMULA" | head -1 | sed 's/.*version "\(.*\)".*/\1/')
     echo "  Homebrew tap : $FORMULA_VER → $NEW  (CI updates sha256 automatically)"
@@ -90,9 +100,16 @@ fi
 
 # ── Bump + commit + tag ───────────────────────────────────────────────────────
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s/^version = \"$CURRENT\"/version = \"$NEW\"/" "$CARGO"
+    sed -i '' "s/^version = \"$CARGO_VERSION\"/version = \"$NEW\"/" "$CARGO"
 else
-    sed -i    "s/^version = \"$CURRENT\"/version = \"$NEW\"/" "$CARGO"
+    sed -i    "s/^version = \"$CARGO_VERSION\"/version = \"$NEW\"/" "$CARGO"
+fi
+
+# A tag whose commit does not carry the bump is how this repo ended up with
+# releases pointing at a stale version. Fail loudly instead.
+if ! grep -q "^version = \"$NEW\"" "$CARGO"; then
+    echo "❌ Failed to bump Cargo.toml version ($CARGO_VERSION → $NEW) — aborting before commit/tag."
+    exit 1
 fi
 
 # Refresh Cargo.lock so its recorded version matches the bump, and commit it
