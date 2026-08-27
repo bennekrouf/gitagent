@@ -8,6 +8,7 @@ pub mod git;
 pub mod graph;
 pub mod llm;
 pub mod probe;
+pub mod release;
 pub mod remote;
 pub mod review;
 pub mod store;
