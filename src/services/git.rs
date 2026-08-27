@@ -232,6 +232,30 @@ pub async fn branch_exists(repo: &str, name: &str) -> bool {
 
 /// Stages exactly the paths listed — never `git add -A`. The approval step
 /// shows this list, so the two must not be able to drift apart.
+/// Which of `wanted` still need `git add`.
+///
+/// A porcelain code is two columns: index, then worktree. A space in the
+/// worktree column means the path is already fully staged and there is
+/// nothing left to add — and calling `git add` on one of those is not merely
+/// redundant, it fails outright when the path is also gitignored, because git
+/// treats it as a new file being added rather than a tracked one being
+/// removed. A staged deletion of an ignored file hits exactly that.
+///
+/// Anything we cannot classify is included, so unknown states behave as before.
+pub fn needs_staging(changes: &[FileChange], wanted: &[String]) -> Vec<String> {
+    wanted
+        .iter()
+        .filter(|path| {
+            changes
+                .iter()
+                .find(|c| &c.path == *path)
+                .map(|c| c.code.chars().nth(1).unwrap_or(' ') != ' ')
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
 pub async fn add(repo: &str, paths: &[String]) -> Result<String, String> {
     let mut args = vec!["add", "--"];
     let owned: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
@@ -239,12 +263,25 @@ pub async fn add(repo: &str, paths: &[String]) -> Result<String, String> {
     run(repo, "git", &args).await
 }
 
-pub async fn commit(repo: &str, subject: &str, body: &str) -> Result<String, String> {
+/// Commits exactly `paths`.
+///
+/// The pathspec matters: without it `git commit` records everything in the
+/// index, so a file the human unchecked at the approval would still land if
+/// something had already staged it. The approval names files, so the commit
+/// contains those files and nothing else.
+pub async fn commit(
+    repo: &str,
+    subject: &str,
+    body: &str,
+    paths: &[String],
+) -> Result<String, String> {
     let mut args = vec!["commit", "-m", subject];
     if !body.trim().is_empty() {
         args.push("-m");
         args.push(body);
     }
+    args.push("--");
+    args.extend(paths.iter().map(|p| p.as_str()));
     run(repo, "git", &args).await
 }
 
@@ -469,6 +506,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn change(code: &str, path: &str) -> FileChange {
+        FileChange {
+            code: code.into(),
+            path: path.into(),
+        }
+    }
+
+    #[test]
+    fn an_already_staged_deletion_is_not_added_again() {
+        // ais_tom_platform: `D ` plus a .gitignore rule made `git add` fail.
+        let changes = vec![change("D ", "logic_apps/local.settings.json")];
+        let wanted = vec!["logic_apps/local.settings.json".to_string()];
+        assert!(needs_staging(&changes, &wanted).is_empty());
+    }
+
+    #[test]
+    fn an_unstaged_deletion_still_needs_staging() {
+        let changes = vec![change(" D", "gone.rs")];
+        let wanted = vec!["gone.rs".to_string()];
+        assert_eq!(needs_staging(&changes, &wanted), wanted);
+    }
+
+    #[test]
+    fn untracked_and_modified_files_need_staging() {
+        let changes = vec![change("??", "new.rs"), change(" M", "edited.rs")];
+        let wanted = vec!["new.rs".to_string(), "edited.rs".to_string()];
+        assert_eq!(needs_staging(&changes, &wanted), wanted);
+    }
+
+    #[test]
+    fn a_fully_staged_change_needs_nothing_further() {
+        let changes = vec![change("M ", "done.rs"), change("A ", "added.rs")];
+        let wanted = vec!["done.rs".to_string(), "added.rs".to_string()];
+        assert!(needs_staging(&changes, &wanted).is_empty());
+    }
+
+    #[test]
+    fn a_partly_staged_file_is_staged_the_rest_of_the_way() {
+        let changes = vec![change("MM", "half.rs")];
+        let wanted = vec!["half.rs".to_string()];
+        assert_eq!(needs_staging(&changes, &wanted), wanted);
+    }
+
+    #[test]
+    fn a_path_git_did_not_report_is_attempted_anyway() {
+        assert_eq!(
+            needs_staging(&[], &["mystery.rs".to_string()]),
+            vec!["mystery.rs".to_string()]
+        );
     }
 
     #[test]

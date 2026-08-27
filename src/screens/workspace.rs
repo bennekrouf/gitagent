@@ -13,6 +13,7 @@
 use dioxus::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::components::branches_panel::BranchesPanel;
 use crate::components::detail_pane::DetailPane;
 use crate::components::forge_icon::ForgeIcon;
 use crate::components::node_card::NodeCard;
@@ -43,6 +44,16 @@ pub struct WorkspaceProps {
     pub is_light: Signal<bool>,
     pub theme_overridden: Signal<bool>,
     pub on_change_workspace: EventHandler<()>,
+}
+
+/// The base branch to use for the Branches panel — the per-repo override if
+/// one is set, else whatever auto-detection finds, same fallback preflight
+/// itself uses.
+async fn resolved_base(repo: &str, override_base: Option<String>) -> String {
+    match override_base {
+        Some(base) => base,
+        None => git::default_remote_branch(repo).await.0,
+    }
 }
 
 fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
@@ -373,6 +384,17 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // changes when a flow is hidden here.
     let mut repo_flows = use_signal(store::load_repo_flows);
     let mut confirm_hide = use_signal(|| Option::<(String, String)>::None);
+    let mut branches_open = use_signal(|| Option::<String>::None);
+    let mut branches_data =
+        use_signal(|| Option::<Result<Vec<crate::services::branches::BranchInfo>, String>>::None);
+    let mut repo_bases = use_signal(store::load_repo_bases);
+    let mut branches_action_error = use_signal(|| Option::<String>::None);
+    // Which branch a delete or create-PR is currently running against, so the
+    // panel can disable that row's buttons and show it's doing something
+    // instead of looking like the click did nothing.
+    let mut branches_busy = use_signal(|| Option::<String>::None);
+    let mut base_editor_open = use_signal(|| Option::<String>::None);
+    let mut base_editor_value = use_signal(String::new);
     let mut hidden_open = use_signal(|| false);
 
     // Pane widths, dragged by the dividers and remembered on disk.
@@ -708,6 +730,45 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         }
                                     }
                                     button {
+                                        class: "btn btn-ghost",
+                                        title: "Local branches, and whether their pull request landed",
+                                        onclick: {
+                                            let repo = repo.clone();
+                                            let forge = forge_map.get(&repo).cloned().unwrap_or(crate::services::forge::Forge::None);
+                                            move |_| {
+                                                let repo = repo.clone();
+                                                let forge = forge.clone();
+                                                let override_base = repo_bases.read().get(&repo).map(str::to_string);
+                                                branches_open.set(Some(repo.clone()));
+                                                branches_data.set(None);
+                                                branches_action_error.set(None);
+                                                spawn(async move {
+                                                    let base = resolved_base(&repo, override_base).await;
+                                                    let result = crate::services::branches::list(&repo, &forge, &base).await;
+                                                    branches_data.set(Some(result));
+                                                });
+                                            }
+                                        },
+                                        "Branches"
+                                    }
+                                    button {
+                                        class: "btn btn-ghost",
+                                        title: "Which branch this repository's pull requests target",
+                                        onclick: {
+                                            let repo = repo.clone();
+                                            move |_| {
+                                                base_editor_value.set(
+                                                    repo_bases.read().get(&repo).unwrap_or("").to_string()
+                                                );
+                                                base_editor_open.set(Some(repo.clone()));
+                                            }
+                                        },
+                                        match repo_bases.read().get(&repo) {
+                                            Some(base) => format!("Base: {base}"),
+                                            None => "Base: auto".to_string(),
+                                        }
+                                    }
+                                    button {
                                         class: "btn btn-primary",
                                         disabled: is_running || other_pr_running || !can_run.enabled,
                                         title: if other_pr_running {
@@ -1021,6 +1082,150 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             SettingsPanel {
                 llm_config: props.llm_config,
                 on_close: move |_| settings_open.set(false),
+            }
+        }
+
+        if let Some(repo) = branches_open.read().clone() {
+            {
+                let repo_label = repos.read().iter()
+                    .find(|r| r.path == repo)
+                    .map(|r| r.label.clone())
+                    .unwrap_or_else(|| repo.clone());
+                let forge = forge_map.get(&repo).cloned().unwrap_or(crate::services::forge::Forge::None);
+                let override_base = repo_bases.read().get(&repo).map(str::to_string);
+                let reload = {
+                    let repo = repo.clone();
+                    let forge = forge.clone();
+                    let override_base = override_base.clone();
+                    move || {
+                        let repo = repo.clone();
+                        let forge = forge.clone();
+                        let override_base = override_base.clone();
+                        branches_data.set(None);
+                        spawn(async move {
+                            let base = resolved_base(&repo, override_base).await;
+                            let result = crate::services::branches::list(&repo, &forge, &base).await;
+                            branches_data.set(Some(result));
+                        });
+                    }
+                };
+                rsx! {
+                    BranchesPanel {
+                        repo_label,
+                        branches: branches_data.read().clone(),
+                        action_error: branches_action_error.read().clone(),
+                        busy: branches_busy.read().clone(),
+                        on_close: move |_| branches_open.set(None),
+                        on_refresh: {
+                            let mut reload = reload.clone();
+                            move |_| reload()
+                        },
+                        on_delete: {
+                            let repo = repo.clone();
+                            let reload = reload.clone();
+                            move |(branch, force): (String, bool)| {
+                                let repo = repo.clone();
+                                let mut reload = reload.clone();
+                                branches_busy.set(Some(branch.clone()));
+                                spawn(async move {
+                                    branches_action_error.set(None);
+                                    if let Err(e) = crate::services::branches::delete(&repo, &branch, force).await {
+                                        branches_action_error.set(Some(format!("Couldn't delete {branch}: {e}")));
+                                    }
+                                    branches_busy.set(None);
+                                    reload();
+                                });
+                            }
+                        },
+                        on_create_pr: {
+                            let repo = repo.clone();
+                            let forge = forge.clone();
+                            let override_base = override_base.clone();
+                            let reload = reload.clone();
+                            move |branch: String| {
+                                let repo = repo.clone();
+                                let forge = forge.clone();
+                                let override_base = override_base.clone();
+                                let mut reload = reload.clone();
+                                branches_busy.set(Some(branch.clone()));
+                                spawn(async move {
+                                    branches_action_error.set(None);
+                                    let base = resolved_base(&repo, override_base).await;
+                                    if let Err(e) = crate::services::branches::create_pr(&repo, &branch, &base, &forge).await {
+                                        branches_action_error.set(Some(format!("Couldn't open a pull request for {branch}: {e}")));
+                                    }
+                                    branches_busy.set(None);
+                                    reload();
+                                });
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        if let Some(repo) = base_editor_open.read().clone() {
+            {
+                let repo_label = repos.read().iter()
+                    .find(|r| r.path == repo)
+                    .map(|r| r.label.clone())
+                    .unwrap_or_else(|| repo.clone());
+                let close = move |_| base_editor_open.set(None);
+                rsx! {
+                    div { class: "modal-backdrop", onclick: close,
+                        div {
+                            class: "modal",
+                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                            div { class: "modal-head",
+                                span { "Base branch — {repo_label}" }
+                                button { class: "modal-close", onclick: close, "×" }
+                            }
+                            div { class: "modal-body",
+                                label { class: "field",
+                                    span { "Target branch" }
+                                    input {
+                                        value: "{base_editor_value.read()}",
+                                        placeholder: "auto-detected (origin/HEAD, then main, then master)",
+                                        oninput: move |e| base_editor_value.set(e.value()),
+                                    }
+                                }
+                                p { class: "field-note",
+                                    "Where this repository's pull requests go. Leave empty to let \
+                                     GitAgent detect it — set this only when a repository's pull \
+                                     requests target something other than its default branch, e.g. \
+                                     \"develop\"."
+                                }
+                                div { class: "field-row",
+                                    button {
+                                        class: "btn",
+                                        onclick: {
+                                            let repo = repo.clone();
+                                            move |_| {
+                                                base_editor_value.set(String::new());
+                                                repo_bases.write().set(&repo, "");
+                                                store::save_repo_bases(&repo_bases.read());
+                                                base_editor_open.set(None);
+                                            }
+                                        },
+                                        "Clear (use auto-detection)"
+                                    }
+                                    button {
+                                        class: "btn btn-primary",
+                                        onclick: {
+                                            let repo = repo.clone();
+                                            move |_| {
+                                                repo_bases.write().set(&repo, &base_editor_value.read());
+                                                store::save_repo_bases(&repo_bases.read());
+                                                base_editor_open.set(None);
+                                            }
+                                        },
+                                        "Save"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

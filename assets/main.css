@@ -607,6 +607,47 @@ body {
 .modal-close { background: none; border: none; color: var(--text3); font-size: 19px; cursor: pointer; line-height: 1; }
 .modal-close:hover { color: var(--text1); }
 .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 13px; }
+.modal-wide { width: 620px; }
+
+/* ══════════════════════════════════════════════
+   BRANCHES panel
+══════════════════════════════════════════════ */
+.branches-loading { color: var(--text3); font-size: 12.5px; }
+.branches-cleanup {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 12px; background: var(--bg2); border-radius: 8px;
+    font-size: 12px; color: var(--text2);
+}
+.branches-list { display: flex; flex-direction: column; gap: 2px; max-height: 55vh; overflow-y: auto; }
+.branch-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 6px; border-bottom: 1px solid var(--border2);
+}
+.branch-row:last-child { border-bottom: none; }
+.branch-name { font-family: var(--mono); font-size: 12.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-name-current { color: var(--blue); font-weight: 600; }
+.branch-protected {
+    font-size: 10px; padding: 2px 6px; border-radius: 5px;
+    background: var(--bg2); color: var(--text3); flex-shrink: 0;
+}
+.branch-pr {
+    font-size: 10.5px; padding: 2px 7px; border-radius: 5px; flex-shrink: 0;
+}
+.branch-pr-open { background: color-mix(in srgb, var(--blue) 22%, transparent); color: var(--blue); }
+.branch-pr-merged { background: var(--bg2); color: var(--text2); }
+.branch-pr-closed { background: color-mix(in srgb, var(--red) 22%, transparent); color: var(--red); }
+.branch-pr-none { background: var(--bg2); color: var(--text3); }
+.branch-pr-unchecked { background: var(--bg2); color: var(--text3); font-style: italic; }
+.branch-delete { flex-shrink: 0; }
+.branch-create-pr { flex-shrink: 0; }
+.branches-worth-pr { color: var(--text2); }
+.btn-spinner {
+    display: inline-block; width: 9px; height: 9px; margin-right: 6px;
+    border: 1.5px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; opacity: 0.7;
+    animation: spin 0.7s linear infinite;
+    vertical-align: -1px;
+}
 
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field span { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; }

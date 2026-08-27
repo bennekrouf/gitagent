@@ -208,7 +208,7 @@ pub async fn execute(
     on_line: &mut dyn FnMut(&str),
 ) -> Result<StepOutcome, StepFailure> {
     match node.step {
-        Step::Preflight => preflight(node, repo, cfg).await,
+        Step::Preflight => preflight(repo, cfg).await,
         Step::ScanChanges => scan(repo, state).await,
         Step::DraftCommit => draft_commit(cfg, state).await,
         Step::Commit => commit(repo, state).await,
@@ -317,11 +317,7 @@ async fn run_script(
     })
 }
 
-async fn preflight(
-    node: &NodeSpec,
-    repo: &str,
-    cfg: &LlmConfig,
-) -> Result<StepOutcome, StepFailure> {
+async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
     let mut log = String::new();
     let mut failures: Vec<String> = vec![];
 
@@ -333,16 +329,16 @@ async fn preflight(
         forge.label()
     ));
 
-    // An explicit override — set in Setup when a repository's pull requests
-    // don't target its default branch (a "develop" workflow, say) — always
-    // wins over auto-detection.
-    let (base, how) = if node.setting("base").trim().is_empty() {
-        git::default_remote_branch(repo).await
-    } else {
-        (
-            node.setting("base").trim().to_string(),
-            "set in Setup".to_string(),
-        )
+    // An explicit override — set from the workspace's Base button when a
+    // repository's pull requests don't target its default branch (a
+    // "develop" workflow, say) — always wins over auto-detection. Read fresh
+    // rather than threaded through a node's own config: one setting per
+    // repository, not one that has to be repeated on every flow's Preflight
+    // node to actually apply everywhere.
+    let override_base = super::store::load_repo_bases().get(repo).map(str::to_string);
+    let (base, how) = match override_base {
+        Some(base) => (base, "set for this repository".to_string()),
+        None => git::default_remote_branch(repo).await,
     };
     let branch = git::current_branch(repo).await?;
     log.push_str(&format!("base    {base}  ({how})\nbranch  {branch}\n"));
@@ -351,9 +347,30 @@ async fn preflight(
             "        {branch} is protected — the commit node will branch off it\n"
         ));
     }
-    log.push('\n');
 
     let mut remedies: Vec<Remedy> = vec![];
+
+    // An explicit override is otherwise trusted at face value with no check
+    // that the branch actually exists on the remote — confirmed 2026-08-27:
+    // an override copied from another project's naming convention
+    // ("develop") sailed through preflight, then failed only at the PR step
+    // with a bare `gh pr create` error instead of a clear, early message.
+    if how == "set for this repository" {
+        let git_ref = format!("refs/remotes/origin/{base}");
+        if git::branch_exists(repo, &git_ref).await {
+            log.push_str(&format!("ok    base branch on origin  {base}\n"));
+        } else {
+            let (detected, detected_how) = git::default_remote_branch(repo).await;
+            let msg = format!(
+                "base branch '{base}' does not exist on origin — \
+                 this repo's actual default looks like '{detected}' ({detected_how})"
+            );
+            log.push_str(&format!("FAIL  base branch on origin  {msg}\n"));
+            failures.push(msg);
+        }
+    }
+
+    log.push('\n');
 
     for check in forge::check_credentials(&forge).await {
         log.push_str(&format!(
@@ -729,13 +746,27 @@ async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure
         });
     }
 
-    git::add(repo, &paths).await?;
-    log.push_str(&format!("staged {} file(s)\n", paths.len()));
+    // Re-read status rather than trusting the scan: an approval can sit for a
+    // while, and what still needs staging may have changed underneath.
+    let live = git::status(repo).await.unwrap_or_default();
+    let to_stage = git::needs_staging(&live, &paths);
+
+    if !to_stage.is_empty() {
+        git::add(repo, &to_stage).await?;
+        log.push_str(&format!("staged {} file(s)\n", to_stage.len()));
+    }
+    if paths.len() > to_stage.len() {
+        log.push_str(&format!(
+            "{} path(s) already staged\n",
+            paths.len() - to_stage.len()
+        ));
+    }
 
     let out = git::commit(
         repo,
         state.artifact("commit_subject"),
         state.artifact("commit_body"),
+        &paths,
     )
     .await?;
     log.push_str(&out);
