@@ -389,6 +389,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         use_signal(|| Option::<Result<Vec<crate::services::branches::BranchInfo>, String>>::None);
     let mut repo_bases = use_signal(store::load_repo_bases);
     let mut branches_action_error = use_signal(|| Option::<String>::None);
+    // Which branch a delete or create-PR is currently running against, so the
+    // panel can disable that row's buttons and show it's doing something
+    // instead of looking like the click did nothing.
+    let mut branches_busy = use_signal(|| Option::<String>::None);
     let mut base_editor_open = use_signal(|| Option::<String>::None);
     let mut base_editor_value = use_signal(String::new);
     let mut hidden_open = use_signal(|| false);
@@ -1110,6 +1114,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         repo_label,
                         branches: branches_data.read().clone(),
                         action_error: branches_action_error.read().clone(),
+                        busy: branches_busy.read().clone(),
                         on_close: move |_| branches_open.set(None),
                         on_refresh: {
                             let mut reload = reload.clone();
@@ -1121,11 +1126,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             move |(branch, force): (String, bool)| {
                                 let repo = repo.clone();
                                 let mut reload = reload.clone();
+                                branches_busy.set(Some(branch.clone()));
                                 spawn(async move {
                                     branches_action_error.set(None);
                                     if let Err(e) = crate::services::branches::delete(&repo, &branch, force).await {
                                         branches_action_error.set(Some(format!("Couldn't delete {branch}: {e}")));
                                     }
+                                    branches_busy.set(None);
                                     reload();
                                 });
                             }
@@ -1140,12 +1147,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 let forge = forge.clone();
                                 let override_base = override_base.clone();
                                 let mut reload = reload.clone();
+                                branches_busy.set(Some(branch.clone()));
                                 spawn(async move {
                                     branches_action_error.set(None);
                                     let base = resolved_base(&repo, override_base).await;
                                     if let Err(e) = crate::services::branches::create_pr(&repo, &branch, &base, &forge).await {
                                         branches_action_error.set(Some(format!("Couldn't open a pull request for {branch}: {e}")));
                                     }
+                                    branches_busy.set(None);
                                     reload();
                                 });
                             }

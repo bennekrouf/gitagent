@@ -641,6 +641,13 @@ body {
 .branch-delete { flex-shrink: 0; }
 .branch-create-pr { flex-shrink: 0; }
 .branches-worth-pr { color: var(--text2); }
+.btn-spinner {
+    display: inline-block; width: 9px; height: 9px; margin-right: 6px;
+    border: 1.5px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; opacity: 0.7;
+    animation: spin 0.7s linear infinite;
+    vertical-align: -1px;
+}
 
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field span { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; }

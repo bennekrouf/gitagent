@@ -15,6 +15,11 @@ pub struct BranchesPanelProps {
     /// the list, rather than silently leaving the branch exactly as it was.
     #[props(default)]
     pub action_error: Option<String>,
+    /// The branch a delete or create-PR is currently running against, if
+    /// any — that row's buttons disable and show it's working instead of
+    /// looking like the click did nothing.
+    #[props(default)]
+    pub busy: Option<String>,
     pub on_close: EventHandler<()>,
     pub on_refresh: EventHandler<()>,
     /// `(branch, force)` — force is set for a merged branch, whose commit is
@@ -133,49 +138,77 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                                 }
                                             }
                                             if !b.is_current && !b.protected {
-                                                if b.worth_a_pr() {
-                                                    button {
-                                                        class: "btn btn-primary branch-create-pr",
-                                                        title: "Pushes this branch and opens a pull request from its {b.ahead} commit(s).",
-                                                        onclick: {
-                                                            let name = b.name.clone();
-                                                            move |_| props.on_create_pr.call(name.clone())
-                                                        },
-                                                        "Create PR"
-                                                    }
-                                                }
-                                                if b.pr_state.merged() {
-                                                    button {
-                                                        class: "btn btn-danger branch-delete",
-                                                        title: "Merged — safe to delete, its commit already lives on the base branch.",
-                                                        onclick: {
-                                                            let name = b.name.clone();
-                                                            move |_| props.on_delete.call((name.clone(), true))
-                                                        },
-                                                        "Delete"
-                                                    }
-                                                } else if confirming.read().as_deref() == Some(b.name.as_str()) {
-                                                    button {
-                                                        class: "btn btn-danger branch-delete",
-                                                        title: "This discards any commits that exist only on this branch.",
-                                                        onclick: {
-                                                            let name = b.name.clone();
-                                                            move |_| {
-                                                                confirming.set(None);
-                                                                props.on_delete.call((name.clone(), false));
+                                                {
+                                                    let is_busy = props.busy.as_deref() == Some(b.name.as_str());
+                                                    rsx! {
+                                                        if b.worth_a_pr() {
+                                                            button {
+                                                                class: "btn btn-primary branch-create-pr",
+                                                                disabled: is_busy,
+                                                                title: if is_busy {
+                                                                    "Pushing and opening the pull request…".to_string()
+                                                                } else {
+                                                                    format!("Pushes this branch and opens a pull request from its {} commit(s).", b.ahead)
+                                                                },
+                                                                onclick: {
+                                                                    let name = b.name.clone();
+                                                                    move |_| props.on_create_pr.call(name.clone())
+                                                                },
+                                                                if is_busy {
+                                                                    span { class: "btn-spinner" }
+                                                                    "Creating…"
+                                                                } else {
+                                                                    "Create PR"
+                                                                }
                                                             }
-                                                        },
-                                                        "Really delete?"
-                                                    }
-                                                } else {
-                                                    button {
-                                                        class: "btn branch-delete",
-                                                        title: "Not confirmed merged — deleting removes any commits that exist only here.",
-                                                        onclick: {
-                                                            let name = b.name.clone();
-                                                            move |_| confirming.set(Some(name.clone()))
-                                                        },
-                                                        "Delete"
+                                                        }
+                                                        if b.pr_state.merged() {
+                                                            button {
+                                                                class: "btn btn-danger branch-delete",
+                                                                disabled: is_busy,
+                                                                title: "Merged — safe to delete, its commit already lives on the base branch.",
+                                                                onclick: {
+                                                                    let name = b.name.clone();
+                                                                    move |_| props.on_delete.call((name.clone(), true))
+                                                                },
+                                                                if is_busy {
+                                                                    span { class: "btn-spinner" }
+                                                                    "Deleting…"
+                                                                } else {
+                                                                    "Delete"
+                                                                }
+                                                            }
+                                                        } else if confirming.read().as_deref() == Some(b.name.as_str()) {
+                                                            button {
+                                                                class: "btn btn-danger branch-delete",
+                                                                disabled: is_busy,
+                                                                title: "This discards any commits that exist only on this branch.",
+                                                                onclick: {
+                                                                    let name = b.name.clone();
+                                                                    move |_| {
+                                                                        confirming.set(None);
+                                                                        props.on_delete.call((name.clone(), false));
+                                                                    }
+                                                                },
+                                                                if is_busy {
+                                                                    span { class: "btn-spinner" }
+                                                                    "Deleting…"
+                                                                } else {
+                                                                    "Really delete?"
+                                                                }
+                                                            }
+                                                        } else {
+                                                            button {
+                                                                class: "btn branch-delete",
+                                                                disabled: is_busy,
+                                                                title: "Not confirmed merged — deleting removes any commits that exist only here.",
+                                                                onclick: {
+                                                                    let name = b.name.clone();
+                                                                    move |_| confirming.set(Some(name.clone()))
+                                                                },
+                                                                "Delete"
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
