@@ -1,3 +1,4 @@
+pub mod branches;
 pub mod catalogue;
 pub mod diffview;
 pub mod env;

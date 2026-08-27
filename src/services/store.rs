@@ -16,6 +16,7 @@ use super::llm::LlmConfig;
 const REPOS_FILE: &str = "repos.json";
 const SETTINGS_FILE: &str = "settings.json";
 const REPO_FLOWS_FILE: &str = "repo_flows.json";
+const REPO_BASES_FILE: &str = "repo_bases.json";
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Repo {
@@ -223,6 +224,43 @@ pub fn save_repo_flows(flows: &RepoFlows) {
     write(REPO_FLOWS_FILE, flows);
 }
 
+/// Which base branch each repository's pull requests should target, keyed
+/// by repository path. One setting per repository rather than per flow node
+/// — a repo whose PRs go to `develop` means that everywhere in that repo,
+/// not "in this one flow if you remembered to set it there too", which is
+/// what living inside each flow's Preflight config amounted to.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct RepoBases {
+    #[serde(default)]
+    pub base: BTreeMap<String, String>,
+}
+
+impl RepoBases {
+    pub fn get(&self, repo: &str) -> Option<&str> {
+        self.base.get(repo).map(String::as_str)
+    }
+
+    /// An empty branch name clears the override — same as never having set
+    /// one — rather than persisting an empty string that Setup would then
+    /// have to treat specially.
+    pub fn set(&mut self, repo: &str, branch: &str) {
+        let branch = branch.trim();
+        if branch.is_empty() {
+            self.base.remove(repo);
+        } else {
+            self.base.insert(repo.to_string(), branch.to_string());
+        }
+    }
+}
+
+pub fn load_repo_bases() -> RepoBases {
+    read(REPO_BASES_FILE)
+}
+
+pub fn save_repo_bases(bases: &RepoBases) {
+    write(REPO_BASES_FILE, bases);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +329,36 @@ mod tests {
         flows.hide("/repo", "commit_and_pr");
         flows.show("/repo", "commit_and_pr");
         assert!(flows.hidden.is_empty());
+    }
+
+    #[test]
+    fn a_repository_with_no_override_has_none() {
+        let bases = RepoBases::default();
+        assert_eq!(bases.get("/repo"), None);
+    }
+
+    #[test]
+    fn setting_a_base_only_affects_the_repo_it_was_set_for() {
+        let mut bases = RepoBases::default();
+        bases.set("/repo-a", "develop");
+        assert_eq!(bases.get("/repo-a"), Some("develop"));
+        assert_eq!(bases.get("/repo-b"), None);
+    }
+
+    #[test]
+    fn clearing_a_base_with_an_empty_string_removes_the_override() {
+        let mut bases = RepoBases::default();
+        bases.set("/repo", "develop");
+        bases.set("/repo", "");
+        assert_eq!(bases.get("/repo"), None);
+        assert!(bases.base.is_empty(), "no empty-string entry left behind");
+    }
+
+    #[test]
+    fn setting_a_base_trims_surrounding_whitespace() {
+        let mut bases = RepoBases::default();
+        bases.set("/repo", "  develop  ");
+        assert_eq!(bases.get("/repo"), Some("develop"));
     }
 
     #[test]
