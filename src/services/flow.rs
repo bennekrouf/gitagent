@@ -351,9 +351,31 @@ async fn preflight(
             "        {branch} is protected — the commit node will branch off it\n"
         ));
     }
-    log.push('\n');
 
     let mut remedies: Vec<Remedy> = vec![];
+
+    // An explicit `base` override (set in Setup) is otherwise trusted at face
+    // value with no check that the branch actually exists on the remote —
+    // confirmed 2026-08-27: an override copied from another project's naming
+    // convention ("develop") sailed through preflight, then failed only at
+    // the PR step with a bare `gh pr create` error instead of a clear,
+    // early message pointing at Setup.
+    if how == "set in Setup" {
+        let git_ref = format!("refs/remotes/origin/{base}");
+        if git::branch_exists(repo, &git_ref).await {
+            log.push_str(&format!("ok    base branch on origin  {base}\n"));
+        } else {
+            let (detected, detected_how) = git::default_remote_branch(repo).await;
+            let msg = format!(
+                "base branch '{base}' (set in Setup) does not exist on origin — \
+                 this repo's actual default looks like '{detected}' ({detected_how})"
+            );
+            log.push_str(&format!("FAIL  base branch on origin  {msg}\n"));
+            failures.push(msg);
+        }
+    }
+
+    log.push('\n');
 
     for check in forge::check_credentials(&forge).await {
         log.push_str(&format!(
