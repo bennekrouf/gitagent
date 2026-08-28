@@ -25,6 +25,7 @@ use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
+use crate::services::notify;
 use crate::services::probe::{self, RepoStatus};
 use crate::services::store::Layout;
 use crate::services::{git, store};
@@ -54,6 +55,25 @@ async fn resolved_base(repo: &str, override_base: Option<String>) -> String {
         Some(base) => base,
         None => git::default_remote_branch(repo).await.0,
     }
+}
+
+/// Raises an OS notification when a run stops for a person and the window is
+/// not in front of them.
+///
+/// The repository is named by its folder rather than its full path — a
+/// notification is two short lines, and `/Users/…/code/ais-runner` spends all
+/// of them saying nothing.
+fn announce(status: NodeStatus, repo_path: &str, node_title: &str, detail: &str) {
+    if !notify::should_notify(status, notify::window_focused()) {
+        return;
+    }
+    let repo = std::path::Path::new(repo_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| repo_path.to_string());
+
+    let (summary, body) = notify::message(status, &repo, node_title, detail);
+    notify::raise(summary, body);
 }
 
 fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
@@ -144,6 +164,10 @@ async fn drive(
                 run.status = NodeStatus::AwaitingApproval;
             }
 
+            // The run has stopped and cannot continue without a person. If they
+            // are not looking at the window, say so.
+            announce(NodeStatus::AwaitingApproval, &key.0, &node.title, "");
+
             let approved = loop {
                 let decision = states
                     .read()
@@ -225,6 +249,7 @@ async fn drive(
                 }
             }
             Err(failure) => {
+                announce(NodeStatus::Failed, &key.0, &node.title, &failure.message);
                 {
                     let run = entry.runs.entry(node.id.clone()).or_default();
                     run.status = NodeStatus::Failed;
