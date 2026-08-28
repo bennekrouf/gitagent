@@ -226,6 +226,32 @@ fn job_id(details_url: &str) -> Option<&str> {
 /// head nor the tail is the interesting part. The `##[error]` line is, so this
 /// keeps that line and the lines leading up to it, which is where the compiler
 /// output, the failing assertion or the rustfmt diff actually is.
+/// Removes ANSI colour codes.
+///
+/// cargo colours its output, and GitHub Actions keeps the escapes in the
+/// stored log. Rendered as text they show up as `^[[1m^[[92m` in front of
+/// every interesting line, which is worse than no colour at all.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // CSI: ESC '[' params… final byte in @-~. Anything else, drop the
+        // escape alone rather than guessing at a length.
+        if chars.next() == Some('[') {
+            for p in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&p) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 fn distil_log(raw: &str, context: usize) -> String {
     let lines: Vec<String> = raw
         .lines()
@@ -241,7 +267,7 @@ fn distil_log(raw: &str, context: usize) -> String {
                 _ => text.to_string(),
             }
         })
-        .map(|line| line.trim_start_matches('\u{feff}').to_string())
+        .map(|line| strip_ansi(line.trim_start_matches('\u{feff}')))
         .filter(|line| {
             let l = line.trim();
             !l.is_empty()
@@ -671,6 +697,33 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
         assert!(!out.contains("##[group]"), "group markers stripped");
         assert!(!out.contains("2026-08-25T"), "timestamps stripped");
         assert!(!out.contains("##[error]"), "the marker itself is noise");
+    }
+
+    #[test]
+    fn cargo_colours_do_not_reach_the_reader() {
+        let raw = concat!(
+            "j\ts\t2026-08-28T14:09:12.9480177Z ",
+            "\u{1b}[1m\u{1b}[91merror\u{1b}[0m: found call to `str::trim`\n",
+            "j\ts\t2026-08-28T14:09:12.9490017Z ",
+            "##[error]Process completed with exit code 101."
+        );
+        let out = distil_log(raw, 3);
+        assert!(!out.contains('\u{1b}'), "no escapes survive");
+        assert!(!out.contains("[1m"), "and no leftovers either");
+        assert!(
+            out.contains("error: found call to `str::trim`"),
+            "got {out}"
+        );
+    }
+
+    #[test]
+    fn stripping_colour_leaves_ordinary_text_alone() {
+        assert_eq!(strip_ansi("plain [not] an escape"), "plain [not] an escape");
+    }
+
+    #[test]
+    fn a_truncated_escape_does_not_eat_the_rest_of_the_line() {
+        assert_eq!(strip_ansi("before\u{1b}"), "before");
     }
 
     #[test]

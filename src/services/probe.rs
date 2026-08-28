@@ -314,7 +314,7 @@ async fn ahead_behind(repo: &str) -> (usize, usize) {
 /// `git rev-list --left-right --count upstream...HEAD` prints
 /// "<behind>\t<ahead>" — split out so the parsing has no subprocess to mock.
 fn parse_ahead_behind(out: &str) -> (usize, usize) {
-    let mut parts = out.trim().split_whitespace();
+    let mut parts = out.split_whitespace();
     let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     (ahead, behind)
