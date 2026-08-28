@@ -264,7 +264,15 @@ body {
     flex-shrink: 0;
 }
 .col-head-main { flex: 1; min-width: 0; }
-.col-title { font-size: 13px; font-weight: 600; }
+/* A repository folder can be named anything — an Azure DevOps clone carries
+   its whole percent-encoded project name. Without a shrink limit the title
+   pushes the buttons off their own row. */
+.col-title {
+    font-size: 13px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The controls keep their size; the name is what gives way. */
+.col-head > .btn, .col-head > button { flex-shrink: 0; }
 .col-branch { color: var(--green); }
 .col-release { color: var(--yellow); margin-left: 8px; }
 .col-sub {
