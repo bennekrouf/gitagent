@@ -715,7 +715,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         None => rsx! {},
                                     }
                                     div { class: "col-head-main",
-                                        div { class: "col-title", "{label}" }
+                                        // Elided when long, so the full name
+                                        // stays reachable on hover.
+                                        div { class: "col-title", title: "{label}", "{label}" }
                                         div { class: "col-sub", title: "{repo}",
                                             match status_map.get(&repo).map(|s| s.branch.clone()) {
                                                 Some(branch) if !branch.is_empty() => rsx! {
