@@ -26,7 +26,7 @@ use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
-use crate::services::probe::{self, RepoStatus};
+use crate::services::probe::{self, RepoStatus, Wants};
 use crate::services::store::Layout;
 use crate::services::{git, store};
 
@@ -83,7 +83,12 @@ fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
 /// Where to land when a repository is picked: the first step, in the first
 /// runnable flow, that is waiting on the person looking at the screen — or,
 /// if nothing is, the first runnable flow's first step.
-fn default_selection(book: &FlowBook, states: &States, repo: &str) -> (String, String, String) {
+fn default_selection(
+    book: &FlowBook,
+    states: &States,
+    repo: &str,
+    wants: Option<Wants>,
+) -> (String, String, String) {
     let runnable = book.runnable();
 
     // A person being waited on outranks everything else, same precedence as
@@ -107,8 +112,16 @@ fn default_selection(book: &FlowBook, states: &States, repo: &str) -> (String, S
             }
         }
     }
-    runnable
-        .first()
+    // Nothing in flight, so open on the flow that handles whatever the
+    // repository actually needs — landing on "Commit → PR" for a repository
+    // whose only outstanding work is a release is how the first task to do
+    // ends up hidden.
+    let hinted = wants
+        .map(|w| w.flow_hint())
+        .and_then(|hint| runnable.iter().find(|f| f.id == hint));
+
+    hinted
+        .or_else(|| runnable.first())
         .map(|f| (f.id.clone(), f.first_node(), String::new()))
         .unwrap_or_default()
 }
@@ -494,9 +507,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             // Several PR-scoped runs can be in flight for this repo+flow at
             // once — the sidebar shows whichever most needs a look, the same
             // way `phase_of` already picks the most urgent status within one.
+            // Every flow, not just the one on screen: a review parked at an
+            // approval must still show while the commit flow is selected.
             phase: states_snapshot
                 .iter()
-                .filter(|((r, f, _), _)| *r == repo.path && *f == flow_id)
+                .filter(|((r, _, _), _)| *r == repo.path)
                 .map(|(_, s)| phase_of(s))
                 .min_by_key(|p| p.priority())
                 .unwrap_or(Phase::Idle),
@@ -647,7 +662,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     },
                     on_select: move |path: String| {
                         let (flow_id, node_id, pr_id) =
-                            default_selection(&book.read(), &states.read(), &path);
+                            default_selection(
+                                &book.read(),
+                                &states.read(),
+                                &path,
+                                statuses.read().get(&path).map(|s| s.wants()),
+                            );
                         selected_repo.set(Some(path));
                         if !flow_id.is_empty() {
                             selected_flow.set(flow_id);
@@ -1343,6 +1363,30 @@ mod tests {
     }
 
     #[test]
+    fn with_nothing_running_the_flow_follows_what_the_repository_needs() {
+        // Clicking a repository whose only outstanding work is a release must
+        // not land on "Commit → PR" and show nothing to do.
+        let book = FlowBook::defaults();
+        let states = States::new();
+
+        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", Some(Wants::Merge));
+        assert_eq!(flow_id, "review_and_merge");
+        assert_eq!(node_id, book.get("review_and_merge").unwrap().first_node());
+
+        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Commit));
+        assert_eq!(flow_id, "commit_and_pr");
+    }
+
+    #[test]
+    fn a_hint_naming_a_flow_that_does_not_exist_falls_back() {
+        // Wants::Release points at a flow id nobody has built yet.
+        let book = FlowBook::defaults();
+        let states = States::new();
+        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Release));
+        assert_eq!(flow_id, book.runnable().first().unwrap().id);
+    }
+
+    #[test]
     fn a_running_task_is_selected_over_an_idle_flow() {
         let book = FlowBook::defaults();
         let flow = commit_and_pr();
@@ -1354,7 +1398,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo");
+        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None);
         assert_eq!(flow_id, flow.id);
         assert_eq!(node_id, "scan");
         assert_eq!(pr_id, "");
@@ -1371,7 +1415,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/other-repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo");
+        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", None);
         // Nothing running here — falls back to the first runnable flow's
         // first node, same as an untouched repository.
         assert_eq!(flow_id, book.runnable().first().unwrap().id);
@@ -1391,7 +1435,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (_, node_id, _) = default_selection(&book, &states, "/repo");
+        let (_, node_id, _) = default_selection(&book, &states, "/repo", None);
         assert_eq!(node_id, "commit");
     }
 }

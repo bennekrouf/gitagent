@@ -152,22 +152,36 @@ impl RepoStatus {
     /// Uncommitted work outranks a pull request that is merely running its
     /// checks, but never outranks one that is ready for a decision — finishing
     /// something beats starting something.
+    /// The most urgent thing this repository needs, across everything it could
+    /// need — not just whatever the flow on screen happens to cover.
+    ///
+    /// Every candidate is collected and the ranking picks the winner, rather
+    /// than the first arm of a match short-circuiting the rest. That
+    /// distinction is the bug this replaced: an open pull request whose checks
+    /// were still running reported "waiting", and a release sitting behind it
+    /// was never even considered.
     pub fn wants(&self) -> Wants {
-        match &self.pr {
-            Some(pr) => match pr.checks {
-                Checks::Passing | Checks::Unknown => Wants::Merge,
-                Checks::Failing => Wants::Attention,
-                Checks::Pending if self.changes > 0 => Wants::Commit,
-                Checks::Pending => Wants::Wait,
-            },
-            // Uncommitted work outranks a pending release: it is the more
-            // perishable of the two, and shipping can wait a minute.
-            None if self.changes > 0 => Wants::Commit,
-            // Committed, but going nowhere until it is pushed and proposed.
-            None if self.unmerged > 0 => Wants::OpenPr,
-            None if self.release.due() => Wants::Release,
-            None => Wants::Nothing,
-        }
+        let from_pr = self.pr.as_ref().and_then(|pr| match pr.checks {
+            Checks::Passing | Checks::Unknown => Some(Wants::Merge),
+            Checks::Failing => Some(Wants::Attention),
+            // Nothing to decide yet — but that is not the same as nothing to
+            // do, so this contributes no candidate rather than winning.
+            Checks::Pending => None,
+        });
+
+        [
+            from_pr,
+            (self.changes > 0).then_some(Wants::Commit),
+            // Only without a pull request: with one, the commits are already
+            // proposed and the decision is the pull request's.
+            (self.pr.is_none() && self.unmerged > 0).then_some(Wants::OpenPr),
+            self.release.due().then_some(Wants::Release),
+            self.pr.is_some().then_some(Wants::Wait),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(Wants::Nothing)
     }
 
     /// One line for the sidebar.
@@ -587,6 +601,50 @@ mod tests {
         assert_eq!(status(0, None).wants(), Wants::Nothing);
         assert!(!Wants::Nothing.needs_a_person());
         assert!(!Wants::Wait.needs_a_person());
+    }
+
+    #[test]
+    fn a_release_is_not_hidden_behind_a_pull_request_still_building() {
+        // The reported bug: "Clean" (or "checks running") while a release was
+        // plainly due. A pending PR is not a decision, so it must not mask one.
+        let mut s = status(0, Some(Checks::Pending));
+        s.release = ReleaseState {
+            last_tag: Some("v0.3.17".into()),
+            commits: 3,
+            prs: vec!["#6".into()],
+            releases: true,
+        };
+        assert_eq!(s.wants(), Wants::Release);
+    }
+
+    #[test]
+    fn a_pending_pull_request_with_nothing_else_is_still_a_wait() {
+        let s = status(0, Some(Checks::Pending));
+        assert_eq!(s.wants(), Wants::Wait);
+    }
+
+    #[test]
+    fn a_decision_on_a_pull_request_still_outranks_a_release() {
+        let mut s = status(0, Some(Checks::Passing));
+        s.release = ReleaseState {
+            last_tag: Some("v1".into()),
+            commits: 9,
+            prs: vec![],
+            releases: true,
+        };
+        assert_eq!(s.wants(), Wants::Merge);
+    }
+
+    #[test]
+    fn a_red_check_outranks_everything_behind_it() {
+        let mut s = status(4, Some(Checks::Failing));
+        s.release = ReleaseState {
+            last_tag: Some("v1".into()),
+            commits: 2,
+            prs: vec![],
+            releases: true,
+        };
+        assert_eq!(s.wants(), Wants::Attention);
     }
 
     #[test]

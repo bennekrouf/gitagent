@@ -33,6 +33,15 @@ impl Phase {
         }
     }
 
+    /// Whether this phase is about a run happening *now*.
+    ///
+    /// Only those are worth showing instead of what the repository needs. A
+    /// finished run says "done" forever otherwise, hiding the release that
+    /// became due the moment it landed.
+    pub fn is_live(self) -> bool {
+        matches!(self, Phase::Running | Phase::NeedsApproval | Phase::Failed)
+    }
+
     pub fn note(self) -> &'static str {
         match self {
             Phase::Idle => "",
@@ -183,7 +192,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                 move |_| props.on_select.call(path.clone())
                             },
                             span {
-                            class: if entry.phase == Phase::Idle {
+                            class: if !entry.phase.is_live() {
                                 format!("dot dot-{}", entry.wants.map(|w| w.css()).unwrap_or("pending"))
                             } else {
                                 format!("dot dot-{}", entry.phase.css())
@@ -226,7 +235,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             }
                             // A run in progress outranks anything the probe found:
                             // it is more recent, and it is already yours.
-                            if !entry.phase.note().is_empty() {
+                            if entry.phase.is_live() {
                                 span { class: "sidebar-note status-{entry.phase.css()}", "{entry.phase.note()}" }
                             } else {
                                 match entry.wants {
