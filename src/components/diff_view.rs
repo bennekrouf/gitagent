@@ -94,6 +94,14 @@ fn first_line(file: &FileDiff) -> String {
 pub struct DiffViewProps {
     pub diff: String,
     pub is_light: bool,
+    /// Paths currently deselected. Everything is included by default, so an
+    /// empty list means "all of it".
+    #[props(default)]
+    pub excluded: Vec<String>,
+    /// Present only where deselecting means something. Without it the headers
+    /// render exactly as before, with no checkbox at all.
+    #[props(default)]
+    pub on_toggle: Option<EventHandler<String>>,
 }
 
 #[component]
@@ -120,8 +128,25 @@ pub fn DiffView(props: DiffViewProps) -> Element {
                         && file.new_path != "/dev/null";
 
                     rsx! {
-                        div { class: "diff-file", key: "{file.old_path}:{file.new_path}",
+                        div {
+                            class: if props.excluded.contains(&path) {
+                                "diff-file diff-file-off"
+                            } else {
+                                "diff-file"
+                            },
+                            key: "{file.old_path}:{file.new_path}",
                             div { class: "diff-file-head",
+                                if let Some(toggle) = props.on_toggle {
+                                    input {
+                                        class: "diff-file-check",
+                                        r#type: "checkbox",
+                                        checked: !props.excluded.contains(&path),
+                                        onchange: {
+                                            let path = path.clone();
+                                            move |_| toggle.call(path.clone())
+                                        },
+                                    }
+                                }
                                 if renamed {
                                     span { class: "diff-file-path", "{file.old_path} → {file.new_path}" }
                                 } else {

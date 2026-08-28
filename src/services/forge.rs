@@ -124,7 +124,7 @@ impl Check {
 }
 
 /// Everything that must be true before a run can reach `open_pr`.
-pub async fn check_credentials(forge: &Forge) -> Vec<Check> {
+pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
     match forge {
         Forge::GitHub => {
             if !git::has_gh().await {
@@ -187,6 +187,30 @@ pub async fn check_credentials(forge: &Forge) -> Vec<Check> {
                 Err(_) => checks.push(Check::fail(
                     "az login",
                     "not signed in — run `az login`, or set AZURE_DEVOPS_EXT_PAT",
+                )),
+            }
+
+            // `az account show` only proves an AAD sign-in. Azure DevOps is a
+            // separate credential, and `az repos pr create` fails on it at the
+            // very end of a run — after a branch and a push. This exercises the
+            // same path (including org/project detection from the remote), so
+            // the failure lands here instead.
+            match git::run(repo, "az", &["repos", "list", "--output", "none"]).await {
+                Ok(_) => checks.push(Check::pass("azure devops auth", "can reach the project")),
+                Err(e) if e.contains("you need to run the login command") => {
+                    checks.push(Check::fail(
+                        "azure devops auth",
+                        "not signed in to Azure DevOps — run `az login` again, or \
+                         `az devops login` with a PAT. Neither can be done from here: \
+                         both need a terminal.",
+                    ))
+                }
+                Err(e) => checks.push(Check::fail(
+                    "azure devops auth",
+                    e.lines()
+                        .next()
+                        .unwrap_or("could not reach the project")
+                        .to_string(),
                 )),
             }
             checks

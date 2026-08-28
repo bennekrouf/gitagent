@@ -36,6 +36,10 @@ pub struct StepOutcome {
     /// The step ran fine and found there was nothing for it to do. The run
     /// stops here, but it did not go wrong — no red, no retry, no fix to offer.
     pub nothing_to_do: bool,
+    /// Files this step produced that a later one will act on, offered for
+    /// deselection right here. `scan` fills this so the choice can be made
+    /// against the diff, rather than against a list of paths at the approval.
+    pub items: Vec<ProposalItem>,
 }
 
 impl StepOutcome {
@@ -46,6 +50,7 @@ impl StepOutcome {
             log: reason,
             artifacts: vec![],
             nothing_to_do: true,
+            items: vec![],
         }
     }
 }
@@ -173,10 +178,25 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
 
 /// The items a gated node lets the human pick through before approving.
 /// Only `commit` offers any today.
+///
+/// A file deselected earlier in the run stays deselected here. `scan` offers
+/// the same list against the actual diff, which is the better place to decide,
+/// and the approval must not quietly re-check what was already dropped.
 pub fn proposal_items(node: &NodeSpec, state: &RunState) -> Vec<ProposalItem> {
     if node.step != Step::Commit {
         return vec![];
     }
+
+    // Read from every node rather than a named one, so this keeps working when
+    // a flow built in Setup calls its scanning step something else.
+    let dropped: std::collections::HashSet<&str> = state
+        .runs
+        .values()
+        .flat_map(|run| run.items.iter())
+        .filter(|item| !item.included)
+        .map(|item| item.key.as_str())
+        .collect();
+
     state
         .artifact("commit_paths")
         .lines()
@@ -190,7 +210,7 @@ pub fn proposal_items(node: &NodeSpec, state: &RunState) -> Vec<ProposalItem> {
                 .find_map(|l| l.strip_prefix(&format!("{path}\t")))
                 .unwrap_or("modified")
                 .to_string(),
-            included: true,
+            included: !dropped.contains(path),
         })
         .collect()
 }
@@ -279,6 +299,7 @@ async fn run_remote(
             (format!("{}_exit", node.id), "0".to_string()),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -314,6 +335,7 @@ async fn run_script(
             (format!("{}_exit", node.id), "0".to_string()),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -374,7 +396,7 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
 
     log.push('\n');
 
-    for check in forge::check_credentials(&forge).await {
+    for check in forge::check_credentials(&forge, repo).await {
         log.push_str(&format!(
             "{}  {:<24} {}\n",
             if check.ok { "ok  " } else { "FAIL" },
@@ -425,6 +447,7 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
             ("base".into(), base),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -538,7 +561,8 @@ async fn already_committed(
             ("untracked".into(), String::new()),
         ],
         nothing_to_do: false,
-    }))
+            items: vec![],
+        }))
 }
 
 async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
@@ -577,7 +601,18 @@ async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     let log = format!("branch: {branch}\n\n{stat}\n\n{listing}\n");
     let untracked: Vec<&git::FileChange> = changes.iter().filter(|c| c.is_untracked()).collect();
 
+    let items = changes
+        .iter()
+        .map(|c| ProposalItem {
+            key: c.path.clone(),
+            label: c.path.clone(),
+            note: c.note().to_string(),
+            included: true,
+        })
+        .collect();
+
     Ok(StepOutcome {
+        items,
         summary: format!("{} file(s) changed on {branch}", changes.len()),
         log,
         artifacts: vec![
@@ -660,6 +695,7 @@ async fn draft_commit(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, 
             ("commit_body".into(), body),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -745,6 +781,7 @@ async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure
                 ("commit_sha".into(), sha),
             ],
             nothing_to_do: false,
+            items: vec![],
         });
     }
 
@@ -801,6 +838,7 @@ async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure
             ("commit_sha".into(), sha),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -851,6 +889,7 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
         log: format!("{title}\n\n{body}"),
         artifacts: vec![("pr_title".into(), title), ("pr_body".into(), body)],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -862,6 +901,7 @@ async fn push(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
         log: out.clone(),
         artifacts: vec![("push_output".into(), out)],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -881,6 +921,7 @@ async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
         log: url.clone(),
         artifacts: vec![("pr_url".into(), url)],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -1115,6 +1156,58 @@ mod tests {
             requires_approval: false,
             config: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_file_deselected_at_the_scan_stays_deselected_at_the_commit() {
+        let mut s = RunState::default();
+        s.artifacts
+            .insert("commit_paths".into(), "keep.rs\ndrop.rs".into());
+        s.runs.entry("scan".into()).or_default().items = vec![
+            ProposalItem {
+                key: "keep.rs".into(),
+                label: "keep.rs".into(),
+                note: "modified".into(),
+                included: true,
+            },
+            ProposalItem {
+                key: "drop.rs".into(),
+                label: "drop.rs".into(),
+                note: "modified".into(),
+                included: false,
+            },
+        ];
+
+        let items = proposal_items(&spec(Step::Commit), &s);
+        let dropped = items.iter().find(|i| i.key == "drop.rs").unwrap();
+        let kept = items.iter().find(|i| i.key == "keep.rs").unwrap();
+        assert!(!dropped.included, "the approval must not re-check it");
+        assert!(kept.included);
+    }
+
+    #[test]
+    fn a_deselection_is_found_whatever_the_scanning_step_is_called() {
+        // A flow built in Setup can name its scan step anything.
+        let mut s = RunState::default();
+        s.artifacts.insert("commit_paths".into(), "drop.rs".into());
+        s.runs.entry("look_at_things".into()).or_default().items = vec![ProposalItem {
+            key: "drop.rs".into(),
+            label: "drop.rs".into(),
+            note: "modified".into(),
+            included: false,
+        }];
+        assert!(!proposal_items(&spec(Step::Commit), &s)[0].included);
+    }
+
+    #[test]
+    fn scan_offers_every_change_checked() {
+        // Checked by default: the common case is committing everything.
+        let mut s = RunState::default();
+        s.artifacts
+            .insert("commit_paths".into(), "a.rs\nb.rs".into());
+        let items = proposal_items(&spec(Step::Commit), &s);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|i| i.included));
     }
 
     #[test]

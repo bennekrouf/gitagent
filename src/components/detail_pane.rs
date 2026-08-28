@@ -45,6 +45,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     let toggle_id = spec.id.clone();
     let remedy_id = spec.id.clone();
     let retry_id = spec.id.clone();
+    let diff_id = spec.id.clone();
     let failed = matches!(run.status, NodeStatus::Failed | NodeStatus::Rejected);
     let nothing_selected = run.has_nothing_selected();
     let chosen = run.items.iter().filter(|i| i.included).count();
@@ -211,8 +212,40 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
             }
 
             if let Some(diff) = props.diff.clone().filter(|d| !d.trim().is_empty()) {
-                div { class: "log-head", "Diff" }
-                DiffView { diff, is_light: props.is_light }
+                {
+                    // A step that offered files (scan does) lets them be
+                    // dropped here, against the diff — which is the only place
+                    // the contents are visible to judge by.
+                    let selectable = !run.items.is_empty();
+                    let excluded: Vec<String> = run
+                        .items
+                        .iter()
+                        .filter(|i| !i.included)
+                        .map(|i| i.key.clone())
+                        .collect();
+                    let node = diff_id.clone();
+                    rsx! {
+                        div { class: "log-head",
+                            span { "Diff" }
+                            if selectable {
+                                span { class: "items-count",
+                                    "{chosen} of {run.items.len()} files selected"
+                                }
+                            }
+                        }
+                        DiffView {
+                            diff,
+                            is_light: props.is_light,
+                            excluded,
+                            on_toggle: selectable.then(|| {
+                                let on_toggle = props.on_toggle;
+                                EventHandler::new(move |path: String| {
+                                    on_toggle.call((node.clone(), path))
+                                })
+                            }),
+                        }
+                    }
+                }
             } else if !run.log.is_empty() {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
                 pre {
