@@ -374,7 +374,7 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
 
     log.push('\n');
 
-    for check in forge::check_credentials(&forge).await {
+    for check in forge::check_credentials(&forge, repo).await {
         log.push_str(&format!(
             "{}  {:<24} {}\n",
             if check.ok { "ok  " } else { "FAIL" },

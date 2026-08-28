@@ -24,15 +24,24 @@ pub struct ReleaseState {
     pub commits: usize,
     /// Pull request numbers among them, newest first.
     pub prs: Vec<String>,
+    /// Whether this repository releases at all.
+    ///
+    /// Without this, any repository that has simply never been tagged reports
+    /// its entire history as pending — a 349-commit Node project with no
+    /// release tooling claiming "release due" is noise, not a signal.
+    pub releases: bool,
 }
 
 impl ReleaseState {
     pub fn due(&self) -> bool {
-        self.commits > 0
+        self.releases && self.commits > 0
     }
 
     /// One line for the detail panes.
     pub fn summary(&self) -> String {
+        if !self.releases {
+            return "not released from here".into();
+        }
         if !self.due() {
             return match &self.last_tag {
                 Some(tag) => format!("released at {tag}"),
@@ -86,6 +95,37 @@ pub fn pr_numbers(subjects: &[String]) -> Vec<String> {
     found
 }
 
+/// Files that mean "this repository is released from here".
+///
+/// Deliberately release-*specific* names rather than any CI definition at
+/// all. `.github/workflows/release.yml` says what it is for; a bare
+/// `azure-pipelines.yml` does not — it is just as likely to be build-and-
+/// test, and treating every Azure DevOps repo that has CI as a releasing one
+/// would put back exactly the noise this check exists to remove. So the
+/// Azure entries match the same shape as the GitHub one: a pipeline that
+/// names itself a release.
+const RELEASE_MARKERS: &[&str] = &[
+    "scripts/release.sh",
+    ".github/workflows/release.yml",
+    ".github/workflows/release.yaml",
+    "azure-pipelines-release.yml",
+    "azure-pipelines-release.yaml",
+    ".azuredevops/release.yml",
+    ".azuredevops/release.yaml",
+    ".pipelines/release.yml",
+    ".pipelines/release.yaml",
+];
+
+/// Evidence that this repository is one that gets released: it has been
+/// tagged before, or it carries the tooling to tag itself.
+fn releases_from_here(repo: &str, has_tag: bool) -> bool {
+    if has_tag {
+        return true;
+    }
+    let root = std::path::Path::new(repo);
+    RELEASE_MARKERS.iter().any(|marker| root.join(marker).exists())
+}
+
 pub async fn status(repo: &str, base: &str) -> ReleaseState {
     let remote_base = format!("origin/{base}");
     let last_tag = git::run(
@@ -97,6 +137,12 @@ pub async fn status(repo: &str, base: &str) -> ReleaseState {
     .ok()
     .map(|t| t.trim().to_string())
     .filter(|t| !t.is_empty());
+
+    // Short-circuit before walking the log: with no tag and no tooling the
+    // range would be the whole history, which is both meaningless and slow.
+    if !releases_from_here(repo, last_tag.is_some()) {
+        return ReleaseState::default();
+    }
 
     let range = match &last_tag {
         Some(tag) => format!("{tag}..{remote_base}"),
@@ -115,6 +161,7 @@ pub async fn status(repo: &str, base: &str) -> ReleaseState {
         last_tag,
         commits: subjects.len(),
         prs: pr_numbers(&subjects),
+        releases: true,
     }
 }
 
@@ -165,6 +212,7 @@ mod tests {
             last_tag: Some("v0.1.9".into()),
             commits: 0,
             prs: vec![],
+            releases: true,
         };
         assert!(!state.due());
         assert_eq!(state.summary(), "released at v0.1.9");
@@ -176,6 +224,7 @@ mod tests {
             last_tag: Some("v0.1.9".into()),
             commits: 1,
             prs: vec!["#16".into()],
+            releases: true,
         };
         assert!(state.due());
         assert_eq!(state.summary(), "1 commit since v0.1.9 (#16)");
@@ -187,26 +236,106 @@ mod tests {
             last_tag: Some("v1.0.0".into()),
             commits: 3,
             prs: vec!["#3".into(), "#2".into()],
+            releases: true,
         };
         assert_eq!(state.summary(), "3 commits since v1.0.0 (#3, #2)");
     }
 
     #[test]
-    fn a_repository_that_was_never_tagged_says_so() {
-        let never = ReleaseState {
+    fn a_repository_that_does_not_release_is_never_due() {
+        // mayorana: a Node project, no tags, no release tooling. Reporting its
+        // 349-commit history as a pending release is noise, not a signal.
+        let other = ReleaseState {
             last_tag: None,
-            commits: 0,
+            commits: 349,
             prs: vec![],
+            releases: false,
         };
-        assert!(!never.due(), "no commits at all is not a pending release");
-        assert_eq!(never.summary(), "never released");
+        assert!(!other.due());
+        assert_eq!(other.summary(), "not released from here");
+    }
 
+    #[test]
+    fn a_first_release_still_counts_when_the_tooling_is_there() {
         let unshipped = ReleaseState {
             last_tag: None,
             commits: 4,
             prs: vec![],
+            releases: true,
         };
         assert!(unshipped.due());
         assert_eq!(unshipped.summary(), "4 commits, never tagged");
+    }
+
+    #[test]
+    fn a_tagged_repository_with_nothing_new_is_not_due() {
+        let never = ReleaseState {
+            last_tag: None,
+            commits: 0,
+            prs: vec![],
+            releases: true,
+        };
+        assert!(!never.due(), "no commits at all is not a pending release");
+        assert_eq!(never.summary(), "never released");
+    }
+
+    #[test]
+    fn a_previous_tag_is_evidence_enough_on_its_own() {
+        assert!(releases_from_here("/nonexistent", true));
+        assert!(!releases_from_here("/nonexistent", false));
+    }
+
+    fn temp_repo(marker: Option<&str>) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gitagent-test-release-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(marker) = marker {
+            let path = dir.join(marker);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+        }
+        dir
+    }
+
+    /// An Azure DevOps repository on its first release has no tag and none of
+    /// the GitHub files, and used to be written off as "not released from
+    /// here" — the same wrong answer this check was added to remove.
+    #[test]
+    fn an_untagged_azure_devops_repository_is_recognised() {
+        for marker in [
+            "azure-pipelines-release.yml",
+            ".azuredevops/release.yml",
+            ".pipelines/release.yaml",
+        ] {
+            let dir = temp_repo(Some(marker));
+            assert!(
+                releases_from_here(dir.to_str().unwrap(), false),
+                "{marker} should count as release tooling"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A pipeline that does not name itself a release is not evidence of one.
+    /// Most `azure-pipelines.yml` files are build-and-test, and counting them
+    /// would report every CI-enabled repo as having a release pending.
+    #[test]
+    fn a_plain_ci_pipeline_is_not_release_tooling() {
+        let dir = temp_repo(Some("azure-pipelines.yml"));
+        assert!(!releases_from_here(dir.to_str().unwrap(), false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_repository_with_no_markers_at_all_is_not_released_from_here() {
+        let dir = temp_repo(None);
+        assert!(!releases_from_here(dir.to_str().unwrap(), false));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

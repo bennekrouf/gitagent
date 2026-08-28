@@ -63,11 +63,32 @@ pub async fn run(repo: &str, program: &str, args: &[&str]) -> Result<String, Str
             stderr
         };
         Err(format!(
-            "`{program} {}` failed: {}",
-            args.join(" "),
-            detail.trim()
+            "{}\n\nwhile running: `{program} {}`",
+            detail.trim(),
+            short_command(args)
         ))
     }
+}
+
+/// The command line, short enough to stay readable in an error.
+///
+/// A pull request body is a legitimate argument and can run to hundreds of
+/// words; echoing it verbatim buries the one line that says what went wrong.
+/// Long arguments are elided rather than dropped, so the shape of the command
+/// is still recognisable.
+pub fn short_command(args: &[&str]) -> String {
+    const ARG_CAP: usize = 40;
+    args.iter()
+        .map(|arg| {
+            if arg.chars().count() <= ARG_CAP {
+                (*arg).to_string()
+            } else {
+                let head: String = arg.chars().take(ARG_CAP).collect();
+                format!("{head}… ({} chars)", arg.chars().count())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub async fn current_branch(repo: &str) -> Result<String, String> {
@@ -544,6 +565,31 @@ mod tests {
         let changes = vec![change("D ", "logic_apps/local.settings.json")];
         let wanted = vec!["logic_apps/local.settings.json".to_string()];
         assert!(needs_staging(&changes, &wanted).is_empty());
+    }
+
+    #[test]
+    fn a_long_argument_is_elided_rather_than_echoed_whole() {
+        // A pull request body is a legitimate argument; printing it verbatim
+        // buries the line that says what went wrong.
+        let body = "x".repeat(800);
+        let args = vec!["repos", "pr", "create", "--description", body.as_str()];
+        let short = short_command(&args);
+        assert!(short.len() < 120, "got {} chars", short.len());
+        assert!(short.contains("(800 chars)"));
+        assert!(short.starts_with("repos pr create --description"));
+    }
+
+    #[test]
+    fn short_arguments_survive_untouched() {
+        let args = vec!["push", "-u", "origin", "main"];
+        assert_eq!(short_command(&args), "push -u origin main");
+    }
+
+    #[test]
+    fn eliding_counts_characters_not_bytes() {
+        let arg = "é".repeat(100);
+        let args = vec![arg.as_str()];
+        assert!(short_command(&args).contains("(100 chars)"));
     }
 
     #[test]

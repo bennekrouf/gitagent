@@ -66,6 +66,7 @@ fn main() {
     // inherit the terminal's PATH, so gh, az and cargo would all read as
     // "not installed".
     services::env::adopt_login_path();
+    services::env::adopt_login_env();
 
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
