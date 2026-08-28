@@ -213,6 +213,11 @@ async fn drive(
                     };
                     run.summary = outcome.summary;
                     run.log = outcome.log;
+                    // A step may offer files for deselection (scan does), and
+                    // a re-run must not silently restore ones already dropped.
+                    if !outcome.items.is_empty() {
+                        run.items = outcome.items;
+                    }
                 }
                 // Nothing to do is still nothing downstream can build on.
                 if nothing {

@@ -849,3 +849,10 @@ body {
     text-transform: none; letter-spacing: 0;
 }
 .pr-link:hover { color: var(--green); text-decoration: underline; }
+
+
+/* ── Deselecting a file against its own diff ──────────────────────── */
+.diff-file-check { accent-color: var(--green); cursor: pointer; margin: 0 2px 0 0; }
+.diff-file-off { opacity: 0.42; }
+.diff-file-off .diff-file-path { text-decoration: line-through; }
+.log-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }

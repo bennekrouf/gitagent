@@ -133,6 +133,7 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
                     ("pr_head".into(), head),
                 ],
                 nothing_to_do: false,
+                items: vec![],
             })
         }
         Forge::AzureDevOps => {
@@ -199,6 +200,7 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
                     ("pr_head".into(), head),
                 ],
                 nothing_to_do: false,
+                items: vec![],
             })
         }
         other => Err(StepFailure::from(format!(
@@ -283,6 +285,7 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
                 ("merge_state".into(), "unknown".into()),
             ],
             nothing_to_do: false,
+            items: vec![],
         });
     }
 
@@ -401,6 +404,7 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
             ("merge_state".into(), merge_state),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -439,6 +443,7 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
             ("pr_stat".into(), stat.trim().to_string()),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -535,6 +540,7 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
             ("finding_count".into(), kept.len().to_string()),
         ],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -610,6 +616,7 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
         },
         artifacts: vec![("merge_output".into(), out)],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 
@@ -622,6 +629,7 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
         log: log.trim().to_string(),
         artifacts: vec![("sync_output".into(), log)],
         nothing_to_do: false,
+        items: vec![],
     })
 }
 

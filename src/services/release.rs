@@ -123,7 +123,9 @@ fn releases_from_here(repo: &str, has_tag: bool) -> bool {
         return true;
     }
     let root = std::path::Path::new(repo);
-    RELEASE_MARKERS.iter().any(|marker| root.join(marker).exists())
+    RELEASE_MARKERS
+        .iter()
+        .any(|marker| root.join(marker).exists())
 }
 
 pub async fn status(repo: &str, base: &str) -> ReleaseState {
