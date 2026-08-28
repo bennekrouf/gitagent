@@ -8,6 +8,7 @@ pub mod forge;
 pub mod git;
 pub mod graph;
 pub mod llm;
+pub mod notify;
 pub mod probe;
 pub mod release;
 pub mod remote;

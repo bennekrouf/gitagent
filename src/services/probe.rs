@@ -60,6 +60,8 @@ pub enum Wants {
     Attention,
     /// Uncommitted work.
     Commit,
+    /// Committed work on a topic branch with no pull request behind it.
+    OpenPr,
     /// Merged work that has not been tagged.
     Release,
     /// A pull request whose checks are still running. Nothing to do yet.
@@ -73,7 +75,7 @@ impl Wants {
     pub fn needs_a_person(self) -> bool {
         matches!(
             self,
-            Wants::Merge | Wants::Attention | Wants::Commit | Wants::Release
+            Wants::Merge | Wants::Attention | Wants::Commit | Wants::OpenPr | Wants::Release
         )
     }
 
@@ -82,6 +84,7 @@ impl Wants {
             Wants::Merge => "ready to merge",
             Wants::Attention => "checks failing",
             Wants::Commit => "uncommitted",
+            Wants::OpenPr => "needs a PR",
             Wants::Release => "release due",
             Wants::Wait => "checks running",
             Wants::Nothing => "clean",
@@ -93,6 +96,7 @@ impl Wants {
             Wants::Merge => "done",
             Wants::Attention => "failed",
             Wants::Commit => "awaiting",
+            Wants::OpenPr => "awaiting",
             Wants::Release => "running",
             Wants::Wait => "running",
             Wants::Nothing => "skipped",
@@ -133,6 +137,13 @@ pub struct RepoStatus {
     /// the branch is caught up — not just "unpushed work exists".
     pub ahead: usize,
     pub behind: usize,
+    /// Commits on the checked-out branch that the base branch does not have.
+    ///
+    /// Distinct from `ahead`, which compares against the *upstream* — a branch
+    /// that was never pushed has no upstream, so `ahead` is 0 while the work
+    /// plainly exists. That gap is why a branch with a commit and no pull
+    /// request used to report "nothing to do".
+    pub unmerged: usize,
     /// Merged work the last tag does not reach.
     pub release: ReleaseState,
 }
@@ -152,6 +163,8 @@ impl RepoStatus {
             // Uncommitted work outranks a pending release: it is the more
             // perishable of the two, and shipping can wait a minute.
             None if self.changes > 0 => Wants::Commit,
+            // Committed, but going nowhere until it is pushed and proposed.
+            None if self.unmerged > 0 => Wants::OpenPr,
             None if self.release.due() => Wants::Release,
             None => Wants::Nothing,
         }
@@ -162,6 +175,7 @@ impl RepoStatus {
         match (&self.pr, self.changes) {
             (Some(pr), _) if pr.files > 0 => format!("#{} · {}f", pr.number, pr.files),
             (Some(pr), _) => format!("#{}", pr.number),
+            (None, 0) if self.unmerged > 0 => format!("{} ahead", self.unmerged),
             (None, 0) => String::new(),
             (None, n) => n.to_string(),
         }
@@ -229,14 +243,20 @@ pub fn affordance(
     };
 
     match flow_id {
-        COMMIT_FLOW => match status.changes {
-            0 => Affordance::stop(
+        COMMIT_FLOW => match (status.changes, status.unmerged) {
+            // Clean tree, but commits sitting on a branch with no pull
+            // request: the flow can still push them and propose them.
+            (0, 0) => Affordance::stop(
                 "Nothing to commit",
-                "The working tree is clean — there is nothing for this flow to do",
+                "The working tree is clean and the branch has nothing the base \
+                 branch does not — there is nothing for this flow to do",
             ),
-            1 => Affordance::go(again("Commit 1 file".into())),
-            n => Affordance::go(again(format!("Commit {n} files"))),
+            (0, 1) => Affordance::go(again("Push 1 commit & open PR".into())),
+            (0, n) => Affordance::go(again(format!("Push {n} commits & open PR"))),
+            (1, _) => Affordance::go(again("Commit 1 file".into())),
+            (n, _) => Affordance::go(again(format!("Commit {n} files"))),
         },
+
         // A PR picked from the sidebar's list always enables the run — it
         // does not have to be the one for the checked-out branch. Only fall
         // back to "does the checked-out branch have one" when nothing was
@@ -281,6 +301,7 @@ pub async fn probe(repo: &str) -> RepoStatus {
     let (ahead, behind) = ahead_behind(repo).await;
     let (base, _) = git::default_remote_branch(repo).await;
     let release = release::status(repo, &base).await;
+    let unmerged = unmerged_commits(repo, &base).await;
 
     RepoStatus {
         branch,
@@ -291,8 +312,26 @@ pub async fn probe(repo: &str) -> RepoStatus {
         prs_error,
         ahead,
         behind,
+        unmerged,
         release,
     }
+}
+
+/// Commits the checked-out branch has that the base branch does not.
+///
+/// Prefers the remote-tracking base, since that is what a pull request would
+/// actually target; falls back to the local one for a repository that has not
+/// been fetched.
+async fn unmerged_commits(repo: &str, base: &str) -> usize {
+    for reference in [format!("origin/{base}"), base.to_string()] {
+        let range = format!("{reference}..HEAD");
+        if let Ok(out) = git::run(repo, "git", &["rev-list", "--count", &range]).await {
+            if let Ok(n) = out.trim().parse::<usize>() {
+                return n;
+            }
+        }
+    }
+    0
 }
 
 /// How far the checked-out branch and its upstream have diverged. `(0, 0)`
@@ -497,6 +536,7 @@ mod tests {
             branch: "master".into(),
             changes,
             forge: Forge::GitHub,
+            unmerged: 0,
             release: ReleaseState::default(),
             pr: pr.map(|checks| PrBrief {
                 number: "2".into(),
@@ -550,10 +590,57 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_with_commits_and_no_pull_request_asks_for_one() {
+        // ais-tracing: on feat/azure-error-handling, 1 ahead of master, clean
+        // tree, no PR. This used to report "nothing to do" from every angle.
+        let mut s = status(0, None);
+        s.unmerged = 1;
+        assert_eq!(s.wants(), Wants::OpenPr);
+        assert!(s.wants().needs_a_person());
+        assert_eq!(s.summary(), "1 ahead");
+    }
+
+    #[test]
+    fn that_branch_can_actually_be_acted_on() {
+        let mut s = status(0, None);
+        s.unmerged = 1;
+        let a = affordance(COMMIT_FLOW, Some(&s), false, false, "");
+        assert!(a.enabled, "the button must not be dead");
+        assert_eq!(a.label, "Push 1 commit & open PR");
+    }
+
+    #[test]
+    fn uncommitted_work_is_still_the_first_thing_offered() {
+        let mut s = status(3, None);
+        s.unmerged = 1;
+        assert_eq!(s.wants(), Wants::Commit);
+        assert_eq!(
+            affordance(COMMIT_FLOW, Some(&s), false, false, "").label,
+            "Commit 3 files"
+        );
+    }
+
+    #[test]
+    fn a_branch_already_on_the_base_is_still_nothing_to_do() {
+        let s = status(0, None);
+        assert_eq!(s.wants(), Wants::Nothing);
+        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "").enabled);
+    }
+
+    #[test]
+    fn an_open_pull_request_outranks_an_unmerged_branch() {
+        let mut s = status(0, Some(Checks::Passing));
+        s.unmerged = 2;
+        assert_eq!(s.wants(), Wants::Merge);
+    }
+
+    #[test]
     fn the_ranking_puts_actionable_repositories_first() {
         let mut all = vec![
             Wants::Nothing,
             Wants::Wait,
+            Wants::Release,
+            Wants::OpenPr,
             Wants::Commit,
             Wants::Merge,
             Wants::Attention,
@@ -565,6 +652,8 @@ mod tests {
                 Wants::Merge,
                 Wants::Attention,
                 Wants::Commit,
+                Wants::OpenPr,
+                Wants::Release,
                 Wants::Wait,
                 Wants::Nothing
             ]
