@@ -575,9 +575,22 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
 /// automatically, but closing the pull request is always an available way
 /// out, worth offering right where the failure is shown rather than sending
 /// the human to a terminal.
-fn merge_failure(number: &str, message: String) -> StepFailure {
+fn merge_failure(number: &str, base: &str, message: String) -> StepFailure {
     let mut remedies = vec![];
     if message.contains("not mergeable") {
+        // The constructive option first. It cannot finish the job — a content
+        // conflict needs a person — but it is the step that person would take
+        // first, and it leaves the tree ready to resolve rather than sending
+        // them to a terminal to work out what to type.
+        //
+        // Not retryable afterwards: the merge stops mid-way on a conflict, and
+        // offering "retry the merge" against a half-merged tree would be a
+        // trap. Resolve, commit, push, then run the flow again.
+        remedies.push(Remedy::terminal(
+            &format!("Bring {base} in — you resolve any conflicts"),
+            "git",
+            &["merge", &format!("origin/{base}")],
+        ));
         remedies.push(Remedy::terminal(
             &format!("Abandon — close #{number} without merging"),
             "gh",
@@ -604,7 +617,7 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
             &["pr", "merge", &number, "--squash", "--delete-branch"],
         )
         .await
-        .map_err(|e| merge_failure(&number, e))?,
+        .map_err(|e| merge_failure(&number, state.artifact("pr_base"), e))?,
         Forge::AzureDevOps => {
             git::run(
                 repo,
@@ -780,25 +793,39 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
     }
 
     #[test]
-    fn a_merge_conflict_offers_abandoning_the_pull_request() {
+    fn a_merge_conflict_offers_resolving_before_abandoning() {
         let failure = merge_failure(
             "8",
+            "master",
             "X Pull request bennekrouf/gitagent#8 is not mergeable: the merge commit cannot be cleanly created.".to_string(),
         );
-        assert_eq!(failure.remedies.len(), 1);
-        let remedy = &failure.remedies[0];
+        assert_eq!(failure.remedies.len(), 2);
+
+        // Constructive first: closing the pull request should never be the
+        // only thing on offer for a conflict.
+        let update = &failure.remedies[0];
+        assert_eq!(update.program, "git");
+        assert_eq!(update.args, vec!["merge", "origin/master"]);
         assert!(
-            !remedy.retry_after,
-            "closing the PR ends the run, it doesn't unblock the merge"
+            !update.retry_after,
+            "a conflicted merge leaves work to do; retrying the merge would be a trap"
         );
-        assert_eq!(remedy.program, "gh");
-        assert_eq!(remedy.args, vec!["pr", "close", "8", "--comment",
-            "Closing — conflicts with the base branch and this run is being abandoned rather than resolved."]);
+
+        let abandon = &failure.remedies[1];
+        assert_eq!(abandon.program, "gh");
+        assert_eq!(abandon.args[0..3], ["pr", "close", "8"]);
+        assert!(!abandon.retry_after);
+    }
+
+    #[test]
+    fn the_update_remedy_targets_the_pull_requests_own_base() {
+        let failure = merge_failure("1", "develop", "not mergeable".to_string());
+        assert_eq!(failure.remedies[0].args, vec!["merge", "origin/develop"]);
     }
 
     #[test]
     fn a_merge_failure_for_any_other_reason_offers_nothing() {
-        let failure = merge_failure("8", "gh: authentication required".to_string());
+        let failure = merge_failure("8", "master", "gh: authentication required".to_string());
         assert!(failure.remedies.is_empty());
     }
 }
