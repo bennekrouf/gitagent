@@ -68,6 +68,13 @@ impl NodeDef {
 pub struct FlowDef {
     pub id: String,
     pub label: String,
+    /// Which repository states this flow is the answer to, by `Need::key`.
+    ///
+    /// Declared rather than inferred from the id, so a flow called "Deploy
+    /// VPS" can answer the release need without having to be named `release`.
+    /// Empty means the flow is never auto-selected — it still runs when picked.
+    #[serde(default)]
+    pub handles: Vec<String>,
     #[serde(default, rename = "node")]
     pub nodes: Vec<NodeDef>,
 }
@@ -106,6 +113,11 @@ impl FlowDef {
                 })
                 .collect(),
         }
+    }
+
+    /// Whether this flow says it answers `need`.
+    pub fn answers(&self, need: crate::services::probe::Need) -> bool {
+        self.handles.iter().any(|h| h == need.key())
     }
 
     pub fn first_node(&self) -> String {
@@ -350,6 +362,7 @@ impl FlowBook {
                 FlowDef {
                     id: "commit_and_pr".into(),
                     label: "Commit → PR".into(),
+                    handles: vec!["uncommitted".into(), "unpushed_branch".into()],
                     nodes: vec![
                         NodeDef::from_catalogue("preflight", "preflight"),
                         dep(
@@ -378,6 +391,7 @@ impl FlowBook {
                 FlowDef {
                     id: "review_and_merge".into(),
                     label: "Review → Merge".into(),
+                    handles: vec!["open_pull_request".into()],
                     nodes: vec![
                         // Reviewing needs the same credential check committing
                         // does: without it, `gh pr view` fails with a raw CLI
@@ -488,6 +502,7 @@ mod tests {
         FlowDef {
             id: "commit_and_pr".into(),
             label: "Commit → PR".into(),
+            handles: vec![],
             nodes: vec![
                 node("preflight", "preflight", &[]),
                 node("scan", "scan_changes", &["preflight"]),
@@ -503,6 +518,47 @@ mod tests {
     #[test]
     fn a_well_formed_flow_has_no_problems() {
         assert_eq!(validate(&commit_flow()), vec![]);
+    }
+
+    #[test]
+    fn a_flow_answers_a_need_by_declaring_it_not_by_its_name() {
+        use crate::services::probe::Need;
+        let book = FlowBook::defaults();
+
+        let commit = book.get("commit_and_pr").unwrap();
+        assert!(commit.answers(Need::Uncommitted));
+        assert!(commit.answers(Need::UnpushedBranch));
+        assert!(!commit.answers(Need::OpenPullRequest));
+
+        let review = book.get("review_and_merge").unwrap();
+        assert!(review.answers(Need::OpenPullRequest));
+        assert!(!review.answers(Need::Release));
+    }
+
+    #[test]
+    fn a_flow_called_anything_can_answer_the_release_need() {
+        use crate::services::probe::Need;
+        // mayorana deploys to a VPS rather than tagging a release.
+        let flow = FlowDef {
+            id: "deploy_vps".into(),
+            label: "Deploy VPS".into(),
+            handles: vec!["release".into()],
+            nodes: vec![],
+        };
+        assert!(flow.answers(Need::Release));
+        assert!(!flow.answers(Need::Uncommitted));
+    }
+
+    #[test]
+    fn a_flow_declaring_nothing_is_never_auto_selected() {
+        use crate::services::probe::Need;
+        let flow = FlowDef {
+            id: "x".into(),
+            label: "x".into(),
+            handles: vec![],
+            nodes: vec![],
+        };
+        assert!(Need::ALL.into_iter().all(|need| !flow.answers(need)));
     }
 
     #[test]
@@ -621,6 +677,7 @@ mod tests {
         let f = FlowDef {
             id: "x".into(),
             label: "x".into(),
+            handles: vec![],
             nodes: vec![
                 node("preflight", "preflight", &[]),
                 node("scan", "scan_changes", &[]),

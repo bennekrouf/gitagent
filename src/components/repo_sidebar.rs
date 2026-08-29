@@ -18,6 +18,9 @@ pub enum Phase {
     Done,
     /// Ran and found nothing to do.
     Nothing,
+    /// Stopped because the person declined an approval. Deliberate, so it is
+    /// not a failure and must not be reported as one.
+    Declined,
     Failed,
 }
 
@@ -29,6 +32,7 @@ impl Phase {
             Phase::NeedsApproval => "awaiting",
             Phase::Done => "done",
             Phase::Nothing => "skipped",
+            Phase::Declined => "rejected",
             Phase::Failed => "failed",
         }
     }
@@ -49,6 +53,7 @@ impl Phase {
             Phase::NeedsApproval => "needs you",
             Phase::Done => "done",
             Phase::Nothing => "nothing to do",
+            Phase::Declined => "declined",
             Phase::Failed => "failed",
         }
     }
@@ -63,8 +68,9 @@ impl Phase {
             Phase::Failed => 1,
             Phase::Running => 2,
             Phase::Nothing => 3,
-            Phase::Done => 4,
-            Phase::Idle => 5,
+            Phase::Declined => 4,
+            Phase::Done => 5,
+            Phase::Idle => 6,
         }
     }
 }
@@ -81,11 +87,10 @@ pub fn phase_of(state: &RunState) -> Phase {
         Phase::NeedsApproval
     } else if statuses.contains(&NodeStatus::Running) {
         Phase::Running
-    } else if statuses
-        .iter()
-        .any(|s| matches!(s, NodeStatus::Failed | NodeStatus::Rejected))
-    {
+    } else if statuses.contains(&NodeStatus::Failed) {
         Phase::Failed
+    } else if statuses.contains(&NodeStatus::Rejected) {
+        Phase::Declined
     } else if statuses.contains(&NodeStatus::Skipped) {
         Phase::Nothing
     } else if statuses.iter().all(|s| s.is_terminal()) {
@@ -318,12 +323,35 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_node_reads_as_failed_not_as_done() {
+    fn declining_an_approval_is_not_a_failure() {
+        // Saying no is a deliberate stop. Reporting it as "failed" sends you
+        // hunting for a broken task that was never broken.
         let mut s = started();
         for node in commit_and_pr_flow().nodes {
             s.set_status(&node.id, NodeStatus::Done);
         }
         s.set_status("push", NodeStatus::Rejected);
+        assert_eq!(phase_of(&s), Phase::Declined);
+        assert!(
+            !phase_of(&s).is_live(),
+            "settled, so it never hides what is due"
+        );
+    }
+
+    #[test]
+    fn a_real_failure_still_reads_as_one() {
+        let mut s = started();
+        s.set_status("preflight", NodeStatus::Failed);
+        s.propagate_block(&commit_and_pr_flow());
+        assert_eq!(phase_of(&s), Phase::Failed);
+        assert!(phase_of(&s).is_live());
+    }
+
+    #[test]
+    fn a_failure_outranks_a_decline_when_both_are_present() {
+        let mut s = started();
+        s.set_status("commit", NodeStatus::Rejected);
+        s.set_status("draft_pr", NodeStatus::Failed);
         assert_eq!(phase_of(&s), Phase::Failed);
     }
 }

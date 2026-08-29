@@ -93,7 +93,14 @@ fn default_selection(
 
     // A person being waited on outranks everything else, same precedence as
     // the sidebar's dot — check every flow for one before falling back.
-    for status in [NodeStatus::AwaitingApproval, NodeStatus::Running] {
+    // Same order the sidebar's dot uses, and it must include Failed: the
+    // status is now read across every flow, so a failure in one the user is
+    // not looking at would otherwise report "failed" with no way to reach it.
+    for status in [
+        NodeStatus::AwaitingApproval,
+        NodeStatus::Failed,
+        NodeStatus::Running,
+    ] {
         for flow in &runnable {
             // Any PR-scoped run for this repo+flow, not just a no-PR one — a
             // review under a specific PR must not be missed just because it
@@ -117,8 +124,8 @@ fn default_selection(
     // whose only outstanding work is a release is how the first task to do
     // ends up hidden.
     let hinted = wants
-        .map(|w| w.flow_hint())
-        .and_then(|hint| runnable.iter().find(|f| f.id == hint));
+        .and_then(|w| w.need())
+        .and_then(|need| runnable.iter().find(|f| f.answers(need)));
 
     hinted
         .or_else(|| runnable.first())
@@ -383,9 +390,17 @@ fn refresh_all(
                     .min_by_key(|(_, wants)| *wants);
 
                 if let Some((path, wants)) = best {
-                    let hint = wants.flow_hint().to_string();
-                    if book.read().get(&hint).is_some() {
-                        selected_flow.set(hint);
+                    // Open on whichever flow says it answers this, whatever
+                    // its name.
+                    let answering = wants.need().and_then(|need| {
+                        book.read()
+                            .runnable()
+                            .iter()
+                            .find(|f| f.answers(need))
+                            .map(|f| f.id.clone())
+                    });
+                    if let Some(id) = answering {
+                        selected_flow.set(id);
                     }
                     selected_repo.set(Some(path));
                 }
