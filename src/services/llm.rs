@@ -20,19 +20,86 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub const DEEPSEEK_KEY_ENV: &str = "DEEPSEEK_API_KEY";
+/// A remote provider that speaks the OpenAI wire format.
+///
+/// Every one of these takes `POST {base}/chat/completions` with a bearer token
+/// and honours `response_format: {"type": "json_object"}` — including Cohere,
+/// through its compatibility endpoint. So they share one client rather than
+/// one each, and adding another is a row in this table.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Remote {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub base_url: &'static str,
+    pub model: &'static str,
+    /// Where the API key is read from. Never stored on disk.
+    pub env: &'static str,
+}
+
+pub const REMOTES: &[Remote] = &[
+    Remote {
+        key: "deepseek",
+        label: "DeepSeek",
+        base_url: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+        env: "DEEPSEEK_API_KEY",
+    },
+    Remote {
+        key: "openai",
+        label: "OpenAI",
+        base_url: "https://api.openai.com/v1",
+        model: "gpt-4o-mini",
+        env: "OPENAI_API_KEY",
+    },
+    Remote {
+        key: "mistral",
+        label: "Mistral",
+        base_url: "https://api.mistral.ai/v1",
+        model: "mistral-large-latest",
+        env: "MISTRAL_API_KEY",
+    },
+    Remote {
+        key: "cohere",
+        label: "Cohere",
+        // Cohere's native API is its own shape; this is the compatibility one.
+        base_url: "https://api.cohere.ai/compatibility/v1",
+        model: "command-r-plus",
+        env: "COHERE_API_KEY",
+    },
+    Remote {
+        key: "groq",
+        label: "Groq",
+        base_url: "https://api.groq.com/openai/v1",
+        model: "llama-3.3-70b-versatile",
+        env: "GROQ_API_KEY",
+    },
+    Remote {
+        key: "openrouter",
+        label: "OpenRouter",
+        base_url: "https://openrouter.ai/api/v1",
+        model: "anthropic/claude-3.5-sonnet",
+        env: "OPENROUTER_API_KEY",
+    },
+];
+
+pub fn remote(key: &str) -> &'static Remote {
+    REMOTES.iter().find(|r| r.key == key).unwrap_or(&REMOTES[0])
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ProviderKind {
     Ollama,
-    DeepSeek,
+    /// Any OpenAI-compatible endpoint. `DeepSeek` is the old name for this,
+    /// kept as an alias so an existing settings.json still loads.
+    #[serde(alias = "DeepSeek")]
+    Remote,
 }
 
 impl ProviderKind {
     pub fn label(self) -> &'static str {
         match self {
             ProviderKind::Ollama => "ollama (local)",
-            ProviderKind::DeepSeek => "DeepSeek (remote)",
+            ProviderKind::Remote => "remote API",
         }
     }
 }
@@ -44,8 +111,20 @@ pub struct LlmConfig {
     pub ollama_model: String,
     /// Explicit, because ollama's default of 4096 is smaller than any real diff.
     pub ollama_num_ctx: u32,
-    pub deepseek_url: String,
-    pub deepseek_model: String,
+    /// Which entry of `REMOTES` is selected, by `Remote::key`.
+    #[serde(default = "default_remote")]
+    pub remote: String,
+    /// Overrides the preset's base URL when non-empty — for a proxy, a
+    /// self-hosted vLLM, or a provider not in the list.
+    #[serde(default, alias = "deepseek_url")]
+    pub remote_url: String,
+    /// Overrides the preset's model when non-empty.
+    #[serde(default, alias = "deepseek_model")]
+    pub remote_model: String,
+}
+
+fn default_remote() -> String {
+    REMOTES[0].key.to_string()
 }
 
 impl Default for LlmConfig {
@@ -55,8 +134,9 @@ impl Default for LlmConfig {
             ollama_url: "http://localhost:11434".into(),
             ollama_model: "qwen2.5-coder:14b".into(),
             ollama_num_ctx: 16384,
-            deepseek_url: "https://api.deepseek.com/v1".into(),
-            deepseek_model: "deepseek-chat".into(),
+            remote: default_remote(),
+            remote_url: String::new(),
+            remote_model: String::new(),
         }
     }
 }
@@ -65,15 +145,42 @@ impl LlmConfig {
     pub fn active_model(&self) -> &str {
         match self.kind {
             ProviderKind::Ollama => &self.ollama_model,
-            ProviderKind::DeepSeek => &self.deepseek_model,
+            ProviderKind::Remote => self.remote_model_name(),
         }
     }
 }
 
-pub fn deepseek_key() -> Option<String> {
-    std::env::var(DEEPSEEK_KEY_ENV)
-        .ok()
-        .filter(|k| !k.is_empty())
+impl LlmConfig {
+    pub fn preset(&self) -> &'static Remote {
+        remote(&self.remote)
+    }
+
+    /// The preset's value unless overridden — so switching provider needs one
+    /// click, and a proxy or self-hosted endpoint is still one field away.
+    pub fn remote_base_url(&self) -> &str {
+        if self.remote_url.trim().is_empty() {
+            self.preset().base_url
+        } else {
+            self.remote_url.trim()
+        }
+    }
+
+    pub fn remote_model_name(&self) -> &str {
+        if self.remote_model.trim().is_empty() {
+            self.preset().model
+        } else {
+            self.remote_model.trim()
+        }
+    }
+
+    /// The API key for the selected provider, from its environment variable.
+    pub fn remote_key(&self) -> Option<String> {
+        api_key(self.preset().env)
+    }
+}
+
+pub fn api_key(env: &str) -> Option<String> {
+    std::env::var(env).ok().filter(|k| !k.is_empty())
 }
 
 fn client() -> Result<reqwest::Client, String> {
@@ -104,7 +211,7 @@ pub async fn complete_json(
 
     let raw = match cfg.kind {
         ProviderKind::Ollama => call_ollama(cfg, &system, user, schema).await?,
-        ProviderKind::DeepSeek => call_deepseek(cfg, &system, user).await?,
+        ProviderKind::Remote => call_openai_compatible(cfg, &system, user).await?,
     };
 
     parse_object(&raw)
@@ -172,15 +279,23 @@ async fn call_ollama(
         .ok_or_else(|| format!("ollama reply had no message.content: {text}"))
 }
 
-async fn call_deepseek(cfg: &LlmConfig, system: &str, user: &str) -> Result<String, String> {
-    let key = deepseek_key()
-        .ok_or_else(|| format!("{DEEPSEEK_KEY_ENV} is not set — export it and restart the app"))?;
+/// One client for every OpenAI-compatible provider. Only the base URL, the
+/// model and the key's environment variable differ between them.
+async fn call_openai_compatible(
+    cfg: &LlmConfig,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    let preset = cfg.preset();
+    let key = cfg
+        .remote_key()
+        .ok_or_else(|| format!("{} is not set — export it and restart the app", preset.env))?;
     let url = format!(
         "{}/chat/completions",
-        cfg.deepseek_url.trim_end_matches('/')
+        cfg.remote_base_url().trim_end_matches('/')
     );
     let body = json!({
-        "model": cfg.deepseek_model,
+        "model": cfg.remote_model_name(),
         "stream": false,
         "temperature": 0,
         "response_format": { "type": "json_object" },
@@ -241,21 +356,26 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
                 ))
             }
         }
-        ProviderKind::DeepSeek => {
-            if deepseek_key().is_none() {
-                return Err(format!("{DEEPSEEK_KEY_ENV} is not set"));
-            }
-            let url = format!("{}/models", cfg.deepseek_url.trim_end_matches('/'));
+        ProviderKind::Remote => {
+            let preset = cfg.preset();
+            let Some(key) = cfg.remote_key() else {
+                return Err(format!("{} is not set", preset.env));
+            };
+            let url = format!("{}/models", cfg.remote_base_url().trim_end_matches('/'));
             let resp = client()?
                 .get(&url)
-                .bearer_auth(deepseek_key().unwrap_or_default())
+                .bearer_auth(key)
                 .send()
                 .await
                 .map_err(|e| format!("unreachable: {e}"))?;
             if resp.status().is_success() {
-                Ok(format!("authenticated, using {}", cfg.deepseek_model))
+                Ok(format!(
+                    "{} authenticated, using {}",
+                    preset.label,
+                    cfg.remote_model_name()
+                ))
             } else {
-                Err(format!("{} — check the API key", resp.status()))
+                Err(format!("{} — check {}", resp.status(), preset.env))
             }
         }
     }
@@ -285,6 +405,83 @@ mod tests {
     #[test]
     fn a_bare_array_is_rejected() {
         assert!(parse_object("[1, 2, 3]").is_err());
+    }
+
+    #[test]
+    fn every_provider_is_reachable_by_key_and_none_collide() {
+        let mut keys: Vec<&str> = REMOTES.iter().map(|r| r.key).collect();
+        let count = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "duplicate provider key");
+        for entry in REMOTES {
+            assert_eq!(remote(entry.key).label, entry.label);
+        }
+    }
+
+    #[test]
+    fn an_unknown_provider_falls_back_rather_than_panicking() {
+        assert_eq!(remote("does-not-exist").key, REMOTES[0].key);
+    }
+
+    #[test]
+    fn each_provider_reads_its_own_environment_variable() {
+        // Switching provider must not keep looking for the previous key.
+        for (key, env) in [
+            ("openai", "OPENAI_API_KEY"),
+            ("mistral", "MISTRAL_API_KEY"),
+            ("cohere", "COHERE_API_KEY"),
+        ] {
+            let cfg = LlmConfig {
+                kind: ProviderKind::Remote,
+                remote: key.into(),
+                ..LlmConfig::default()
+            };
+            assert_eq!(cfg.preset().env, env);
+        }
+    }
+
+    #[test]
+    fn the_preset_supplies_url_and_model_until_overridden() {
+        let mut cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            remote: "mistral".into(),
+            ..LlmConfig::default()
+        };
+        assert_eq!(cfg.remote_base_url(), "https://api.mistral.ai/v1");
+        assert_eq!(cfg.remote_model_name(), "mistral-large-latest");
+
+        cfg.remote_url = "http://localhost:8000/v1".into();
+        cfg.remote_model = "my-own-model".into();
+        assert_eq!(cfg.remote_base_url(), "http://localhost:8000/v1");
+        assert_eq!(cfg.remote_model_name(), "my-own-model");
+    }
+
+    #[test]
+    fn whitespace_is_not_an_override() {
+        let cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            remote_url: "   ".into(),
+            ..LlmConfig::default()
+        };
+        assert_eq!(cfg.remote_base_url(), cfg.preset().base_url);
+    }
+
+    #[test]
+    fn a_settings_file_written_before_this_change_still_loads() {
+        // The old shape named DeepSeek directly and had its own url/model keys.
+        let old = r#"{
+            "kind": "DeepSeek",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "qwen2.5-coder:14b",
+            "ollama_num_ctx": 16384,
+            "deepseek_url": "https://api.deepseek.com/v1",
+            "deepseek_model": "deepseek-chat"
+        }"#;
+        let cfg: LlmConfig = serde_json::from_str(old).expect("old settings must still parse");
+        assert_eq!(cfg.kind, ProviderKind::Remote);
+        assert_eq!(cfg.remote_base_url(), "https://api.deepseek.com/v1");
+        assert_eq!(cfg.remote_model_name(), "deepseek-chat");
     }
 
     #[test]

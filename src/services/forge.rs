@@ -231,6 +231,26 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
 
 /// Opens the pull request on whichever forge this repository lives on.
 /// Returns the PR URL.
+/// Whether a create failed only because the pull request is already there.
+///
+/// Both platforms say so in their own words; neither is an error worth
+/// stopping a run over, because the outcome the step wanted already holds.
+pub fn already_exists(error: &str) -> bool {
+    let e = error.to_lowercase();
+    e.contains("already exists")
+        // Azure DevOps: "TF401179: An active pull request for the source and
+        // target branch already exists."
+        || e.contains("tf401179")
+}
+
+/// The pull request URL out of a "already exists" message, when it carries
+/// one. `gh` does; `az` does not, so the caller falls back to looking it up.
+pub fn url_in(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find(|word| word.starts_with("https://") && word.contains("/pull"))
+        .map(|w| w.trim_end_matches(['.', ',', ')']).to_string())
+}
+
 pub async fn create_pr(
     forge: &Forge,
     repo: &str,
@@ -240,7 +260,23 @@ pub async fn create_pr(
     body: &str,
 ) -> Result<String, String> {
     match forge {
-        Forge::GitHub => git::gh_pr_create(repo, base, head, title, body).await,
+        Forge::GitHub => match git::gh_pr_create(repo, base, head, title, body).await {
+            Ok(url) => Ok(url),
+            // Re-running a flow whose pull request already landed is not a
+            // failure; adopt the existing one and carry on.
+            Err(e) if already_exists(&e) => match url_in(&e) {
+                Some(url) => Ok(url),
+                None => git::run(
+                    repo,
+                    "gh",
+                    &["pr", "view", head, "--json", "url", "-q", ".url"],
+                )
+                .await
+                .map(|out| out.trim().to_string())
+                .map_err(|_| e),
+            },
+            Err(e) => Err(e),
+        },
         Forge::AzureDevOps => {
             // `--detect true` is the default: az reads the org, project and
             // repository straight off the git remote.
@@ -263,7 +299,39 @@ pub async fn create_pr(
                     "json",
                 ],
             )
-            .await?;
+            .await;
+
+            let out = match out {
+                Ok(out) => out,
+                Err(e) if already_exists(&e) => {
+                    // az does not name the pull request in the error, so ask.
+                    let listed = git::run(
+                        repo,
+                        "az",
+                        &[
+                            "repos",
+                            "pr",
+                            "list",
+                            "--source-branch",
+                            head,
+                            "--status",
+                            "active",
+                            "--output",
+                            "json",
+                        ],
+                    )
+                    .await
+                    .map_err(|_| e.clone())?;
+
+                    let first = serde_json::from_str::<serde_json::Value>(&listed)
+                        .ok()
+                        .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
+                        .ok_or(e)?;
+                    return Ok(azure_pr_url(&first.to_string())
+                        .unwrap_or_else(|| "pull request already open".into()));
+                }
+                Err(e) => return Err(e),
+            };
             Ok(azure_pr_url(&out).unwrap_or_else(|| out.trim().to_string()))
         }
         Forge::Unsupported(host) => Err(format!(
@@ -344,6 +412,42 @@ mod tests {
         );
         assert_eq!(r.display, "az extension add --name azure-devops");
         assert!(!r.done);
+    }
+
+    #[test]
+    fn both_platforms_ways_of_saying_it_already_exists_are_recognised() {
+        assert!(already_exists(
+            "a pull request for branch \"refactor/azure-services\" into branch \"master\" already exists"
+        ));
+        assert!(already_exists(
+            "ERROR: TF401179: An active pull request for the source and target branch already exists."
+        ));
+        assert!(!already_exists(
+            "fatal: could not read Username for 'https://github.com'"
+        ));
+    }
+
+    #[test]
+    fn the_existing_pull_request_is_taken_from_the_message() {
+        let msg = "a pull request for branch \"x\" into branch \"master\" already exists: \
+                   https://github.com/bennekrouf/ais-runner/pull/19";
+        assert_eq!(
+            url_in(msg).unwrap(),
+            "https://github.com/bennekrouf/ais-runner/pull/19"
+        );
+    }
+
+    #[test]
+    fn trailing_punctuation_is_not_part_of_the_url() {
+        let msg = "already exists: https://github.com/o/r/pull/7.";
+        assert_eq!(url_in(msg).unwrap(), "https://github.com/o/r/pull/7");
+    }
+
+    #[test]
+    fn a_message_with_no_link_asks_the_caller_to_look_it_up() {
+        assert_eq!(url_in("TF401179: already exists"), None);
+        // A non-PR link is not mistaken for one.
+        assert_eq!(url_in("see https://github.com/o/r/actions"), None);
     }
 
     #[test]

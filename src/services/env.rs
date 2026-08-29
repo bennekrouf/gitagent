@@ -25,6 +25,11 @@
 /// terminal would hand over the entire environment.
 const INHERITED: &[&str] = &[
     "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY",
+    "MISTRAL_API_KEY",
+    "COHERE_API_KEY",
+    "GROQ_API_KEY",
+    "OPENROUTER_API_KEY",
     "AZURE_DEVOPS_EXT_PAT",
     "GH_TOKEN",
     "GITHUB_TOKEN",

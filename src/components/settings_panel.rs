@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 
-use crate::services::llm::{self, LlmConfig, ProviderKind, DEEPSEEK_KEY_ENV};
+use crate::services::llm::{self, LlmConfig, ProviderKind, REMOTES};
 use crate::services::store;
 
 #[derive(Props, Clone, PartialEq)]
@@ -35,7 +35,8 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     };
 
     let current = cfg.read().clone();
-    let key_present = llm::deepseek_key().is_some();
+    let preset = current.preset();
+    let key_present = current.remote_key().is_some();
 
     rsx! {
         div { class: "modal-backdrop", onclick: close,
@@ -50,7 +51,7 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
 
                 div { class: "modal-body",
                     div { class: "field-row",
-                        for kind in [ProviderKind::Ollama, ProviderKind::DeepSeek] {
+                        for kind in [ProviderKind::Ollama, ProviderKind::Remote] {
                             button {
                                 key: "{kind:?}",
                                 class: if current.kind == kind { "seg seg-on" } else { "seg" },
@@ -95,31 +96,67 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                              silently truncates a real diff. This value is sent with every call."
                         }
                     } else {
+                        div { class: "items",
+                            for entry in REMOTES.iter() {
+                                label {
+                                    key: "{entry.key}",
+                                    class: if current.remote == entry.key { "item" } else { "item item-off" },
+                                    input {
+                                        r#type: "radio",
+                                        name: "remote-provider",
+                                        checked: current.remote == entry.key,
+                                        onchange: move |_| {
+                                            let mut w = cfg.write();
+                                            w.remote = entry.key.to_string();
+                                            // Overrides belonged to the old
+                                            // provider; clearing them falls
+                                            // back to this one's defaults.
+                                            w.remote_url.clear();
+                                            w.remote_model.clear();
+                                        },
+                                    }
+                                    span { class: "item-label", "{entry.label}" }
+                                    span {
+                                        class: if llm::api_key(entry.env).is_some() {
+                                            "item-note note-new"
+                                        } else {
+                                            "item-note note-deleted"
+                                        },
+                                        if llm::api_key(entry.env).is_some() { "key set" } else { "no key" }
+                                    }
+                                }
+                            }
+                        }
+
                         label { class: "field",
                             span { "Base URL" }
                             input {
-                                value: "{current.deepseek_url}",
-                                oninput: move |e| cfg.write().deepseek_url = e.value(),
+                                value: "{current.remote_url}",
+                                placeholder: "{preset.base_url}",
+                                oninput: move |e| cfg.write().remote_url = e.value(),
                             }
                         }
                         label { class: "field",
                             span { "Model" }
                             input {
-                                value: "{current.deepseek_model}",
-                                oninput: move |e| cfg.write().deepseek_model = e.value(),
+                                value: "{current.remote_model}",
+                                placeholder: "{preset.model}",
+                                oninput: move |e| cfg.write().remote_model = e.value(),
                             }
                         }
                         div { class: if key_present { "key-state key-ok" } else { "key-state key-missing" },
                             if key_present {
-                                "{DEEPSEEK_KEY_ENV} found in the environment"
+                                "{preset.env} found in the environment"
                             } else {
-                                "{DEEPSEEK_KEY_ENV} is not set — export it and restart GitAgent"
+                                "{preset.env} is not set — export it and restart GitAgent"
                             }
                         }
                         p { class: "field-note",
-                            "The key is read from the environment on every call and never written \
-                             to disk. This endpoint is OpenAI-compatible, so the same client will \
-                             cover other remote providers later."
+                            "All of these speak the OpenAI wire format, so they share one client. \
+                             Leave URL and model empty to use the provider's defaults, or fill \
+                             them in for a proxy, a self-hosted vLLM, or a provider not listed. \
+                             The key is read from the environment on every call and never written \
+                             to disk."
                         }
                     }
 
