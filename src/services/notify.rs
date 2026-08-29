@@ -11,6 +11,51 @@
 
 use crate::services::graph::NodeStatus;
 
+/// Whether notifications can be raised without hijacking the screen.
+///
+/// macOS attributes every notification to an installed application bundle. An
+/// unbundled binary — anything run with `cargo run` — has none, so the system
+/// puts up a "choose an application" dialog *every time*, which is far worse
+/// than no notification at all. `set_application` claims our bundle id, and
+/// fails when the app is not installed; that failure is the signal to stay
+/// quiet rather than to fall back to the dialog.
+static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// The identifier the packaged `.app` is built with — see release.yml.
+#[cfg(target_os = "macos")]
+const BUNDLE_ID: &str = "com.gitagent.app";
+
+/// Call once at startup, before anything can raise a notification.
+pub fn init() {
+    let ok = claim_application();
+    let _ = ENABLED.set(ok);
+}
+
+#[cfg(target_os = "macos")]
+fn claim_application() -> bool {
+    match notify_rust::set_application(BUNDLE_ID) {
+        Ok(()) => true,
+        Err(e) => {
+            // Normal when running unbundled; say so once rather than opening a
+            // dialog on every approval.
+            eprintln!(
+                "desktop notifications off: could not claim {BUNDLE_ID} ({e}). \
+                 This is expected outside the packaged app."
+            );
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claim_application() -> bool {
+    true
+}
+
+fn enabled() -> bool {
+    *ENABLED.get().unwrap_or(&false)
+}
+
 /// Whether a status change is worth a notification.
 ///
 /// Two conditions, both necessary. The status has to be one that stops the run
@@ -77,6 +122,9 @@ pub fn window_focused() -> bool {
 /// Fire-and-forget. Never blocks the caller, never fails loudly — a machine
 /// with notifications turned off should still run every flow.
 pub fn raise(summary: String, body: String) {
+    if !enabled() {
+        return;
+    }
     tokio::task::spawn_blocking(move || {
         if let Err(e) = notify_rust::Notification::new()
             .summary(&summary)
@@ -91,6 +139,13 @@ pub fn raise(summary: String, body: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_is_raised_before_the_application_is_claimed() {
+        // Guards the macOS dialog: `raise` must be inert until `init` has run
+        // and succeeded, so an unbundled binary stays silent.
+        assert!(!enabled(), "ENABLED is unset in tests");
+    }
 
     #[test]
     fn an_approval_behind_your_back_is_worth_interrupting_for() {

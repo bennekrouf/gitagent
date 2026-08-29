@@ -66,6 +66,9 @@ fn main() {
     // inherit the terminal's PATH, so gh, az and cargo would all read as
     // "not installed".
     services::env::adopt_login_path();
+    // Claim the notification bundle before any run can raise one — see
+    // services::notify for why an unclaimed one is worse than silence.
+    services::notify::init();
     services::env::adopt_login_env();
 
     if std::env::var("RUST_LOG").is_err() {
