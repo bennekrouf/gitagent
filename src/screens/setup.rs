@@ -12,6 +12,7 @@ use crate::components::dag_view::DagView;
 use crate::services::catalogue::{self, CATALOGUE};
 use crate::services::flowdef::{can_depend_on, default_deps, validate, FlowBook, NodeDef};
 use crate::services::graph::NodeKind;
+use crate::services::probe::Need;
 use crate::services::remote;
 use crate::services::store::{self, Layout};
 
@@ -159,6 +160,7 @@ pub fn Setup(props: SetupProps) -> Element {
                                 w.flows.push(crate::services::flowdef::FlowDef {
                                     id: id.clone(),
                                     label: "New flow".into(),
+                                    handles: vec![],
                                     nodes: vec![],
                                 });
                                 w.save();
@@ -230,6 +232,39 @@ pub fn Setup(props: SetupProps) -> Element {
                                             node_id.set(String::new());
                                         },
                                         "Delete flow"
+                                    }
+                                }
+
+                                // What this flow is the answer to. Declared
+                                // rather than guessed from its name, so a flow
+                                // called anything at all can be the one the app
+                                // opens on.
+                                div { class: "handles",
+                                    div { class: "items-head",
+                                        span { class: "items-head-label", "Open this flow when a repository has" }
+                                    }
+                                    div { class: "items",
+                                        for need in Need::ALL {
+                                            label {
+                                                key: "{need.key()}",
+                                                class: if flow.answers(need) { "item" } else { "item item-off" },
+                                                input {
+                                                    r#type: "checkbox",
+                                                    checked: flow.answers(need),
+                                                    onchange: move |_| {
+                                                        edit_flow(&move |f| {
+                                                            let key = need.key().to_string();
+                                                            if f.handles.contains(&key) {
+                                                                f.handles.retain(|h| h != &key);
+                                                            } else {
+                                                                f.handles.push(key.clone());
+                                                            }
+                                                        });
+                                                    },
+                                                }
+                                                span { class: "item-label", "{need.label()}" }
+                                            }
+                                        }
                                     }
                                 }
 

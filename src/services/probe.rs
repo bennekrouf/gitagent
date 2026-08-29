@@ -104,13 +104,18 @@ impl Wants {
     }
 
     /// Which flow to open on when this repository is chosen.
-    pub fn flow_hint(self) -> &'static str {
+    /// The kind of work this state represents, which a flow declares it
+    /// answers. Names a *need*, not a flow — so "Deploy VPS" can answer the
+    /// release need without being called `release`.
+    ///
+    /// `None` for states nobody acts on.
+    pub fn need(self) -> Option<Need> {
         match self {
-            Wants::Merge | Wants::Attention | Wants::Wait => "review_and_merge",
-            // Only matches if a flow with this id exists; the workspace checks
-            // before switching, so an unnamed release flow simply does nothing.
-            Wants::Release => "release",
-            _ => "commit_and_pr",
+            Wants::Commit => Some(Need::Uncommitted),
+            Wants::OpenPr => Some(Need::UnpushedBranch),
+            Wants::Merge | Wants::Attention | Wants::Wait => Some(Need::OpenPullRequest),
+            Wants::Release => Some(Need::Release),
+            Wants::Nothing => None,
         }
     }
 }
@@ -203,6 +208,50 @@ impl RepoStatus {
 /// dirty tree, the review flow needs an open pull request. A flow the app does
 /// not ship — anything built in Setup — is always offered, because only its
 /// author knows when it makes sense to run.
+/// What a flow is for. A flow declares which of these it answers, and the app
+/// opens on it when a repository is in that state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Need {
+    Uncommitted,
+    UnpushedBranch,
+    OpenPullRequest,
+    Release,
+}
+
+impl Need {
+    pub const ALL: [Need; 4] = [
+        Need::Uncommitted,
+        Need::UnpushedBranch,
+        Need::OpenPullRequest,
+        Need::Release,
+    ];
+
+    /// Stable identifier for the flow file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Need::Uncommitted => "uncommitted",
+            Need::UnpushedBranch => "unpushed_branch",
+            Need::OpenPullRequest => "open_pull_request",
+            Need::Release => "release",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Need::Uncommitted => "Uncommitted changes",
+            Need::UnpushedBranch => "A branch with no pull request",
+            Need::OpenPullRequest => "An open pull request",
+            Need::Release => "Merged work not yet released",
+        }
+    }
+
+    /// Used by the round-trip test that keeps `key` and `ALL` in step.
+    #[cfg(test)]
+    pub fn from_key(key: &str) -> Option<Need> {
+        Need::ALL.into_iter().find(|n| n.key() == key)
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Affordance {
     pub enabled: bool,
@@ -764,10 +813,22 @@ mod tests {
     }
 
     #[test]
-    fn a_pull_request_opens_the_review_flow_and_a_dirty_tree_the_commit_flow() {
-        assert_eq!(Wants::Merge.flow_hint(), "review_and_merge");
-        assert_eq!(Wants::Attention.flow_hint(), "review_and_merge");
-        assert_eq!(Wants::Commit.flow_hint(), "commit_and_pr");
+    fn every_state_worth_acting_on_names_the_need_behind_it() {
+        assert_eq!(Wants::Merge.need(), Some(Need::OpenPullRequest));
+        assert_eq!(Wants::Attention.need(), Some(Need::OpenPullRequest));
+        assert_eq!(Wants::Wait.need(), Some(Need::OpenPullRequest));
+        assert_eq!(Wants::Commit.need(), Some(Need::Uncommitted));
+        assert_eq!(Wants::OpenPr.need(), Some(Need::UnpushedBranch));
+        assert_eq!(Wants::Release.need(), Some(Need::Release));
+        assert_eq!(Wants::Nothing.need(), None);
+    }
+
+    #[test]
+    fn need_keys_survive_a_round_trip_through_the_flow_file() {
+        for need in Need::ALL {
+            assert_eq!(Need::from_key(need.key()), Some(need));
+        }
+        assert_eq!(Need::from_key("deploy_vps"), None);
     }
 
     #[test]

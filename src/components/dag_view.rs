@@ -310,6 +310,7 @@ mod tests {
         let flow = FlowDef {
             id: "x".into(),
             label: "x".into(),
+            handles: vec![],
             nodes: vec![],
         };
         assert_eq!(layout(&flow), Layout::default());
