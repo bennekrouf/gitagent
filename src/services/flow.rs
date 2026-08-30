@@ -893,9 +893,33 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
     })
 }
 
+/// A push git refused because the branch is behind its remote.
+///
+/// Universal enough to detect from output alone, and the fix is exactly the
+/// one git itself suggests — so offer it rather than printing a hint and
+/// sending the person to a terminal. Rebase rather than merge: it keeps the
+/// linear history these repositories already have.
+fn pull_remedy(output: &str) -> Vec<Remedy> {
+    let rejected = output.contains("non-fast-forward")
+        || output.contains("tip of your current branch is behind")
+        || output.contains("Updates were rejected");
+
+    if !rejected {
+        return vec![];
+    }
+    vec![Remedy::new(
+        "Pull, and replay your commits on top",
+        "git",
+        &["pull", "--rebase"],
+    )]
+}
+
 async fn push(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let branch = state.artifact("work_branch").to_string();
-    let out = git::push(repo, &branch).await?;
+    let out = git::push(repo, &branch).await.map_err(|e| StepFailure {
+        remedies: pull_remedy(&e),
+        message: e,
+    })?;
     Ok(StepOutcome {
         summary: format!("pushed {branch}"),
         log: out.clone(),
@@ -1156,6 +1180,28 @@ mod tests {
             requires_approval: false,
             config: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_rejected_push_offers_the_pull_git_itself_suggests() {
+        let output = "\
+ ! [rejected]        HEAD -> main (non-fast-forward)
+error: failed to push some refs to 'github.com:bennekrouf/gitagent.git'
+hint: Updates were rejected because the tip of your current branch is behind";
+        let remedies = pull_remedy(output);
+        assert_eq!(remedies.len(), 1);
+        assert_eq!(remedies[0].program, "git");
+        assert_eq!(remedies[0].args, vec!["pull", "--rebase"]);
+        assert!(
+            remedies[0].retry_after,
+            "once the branch is caught up the step is worth running again"
+        );
+    }
+
+    #[test]
+    fn a_push_that_failed_for_another_reason_offers_nothing() {
+        assert!(pull_remedy("Permission denied (publickey).").is_empty());
+        assert!(pull_remedy("").is_empty());
     }
 
     #[test]
