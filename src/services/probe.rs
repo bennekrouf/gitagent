@@ -54,6 +54,10 @@ impl PrBrief {
 /// on, so it is stated once, here, and tested.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Wants {
+    /// A rebase, merge or cherry-pick stopped part-way. Nothing else in the
+    /// repository can move until it is finished or abandoned, so it outranks
+    /// everything — including a decision on a pull request.
+    Resolve,
     /// A pull request whose checks are green — a decision is waiting.
     Merge,
     /// A pull request whose checks are red.
@@ -75,12 +79,18 @@ impl Wants {
     pub fn needs_a_person(self) -> bool {
         matches!(
             self,
-            Wants::Merge | Wants::Attention | Wants::Commit | Wants::OpenPr | Wants::Release
+            Wants::Resolve
+                | Wants::Merge
+                | Wants::Attention
+                | Wants::Commit
+                | Wants::OpenPr
+                | Wants::Release
         )
     }
 
     pub fn note(self) -> &'static str {
         match self {
+            Wants::Resolve => "unfinished rebase",
             Wants::Merge => "ready to merge",
             Wants::Attention => "checks failing",
             Wants::Commit => "uncommitted",
@@ -93,6 +103,7 @@ impl Wants {
 
     pub fn css(self) -> &'static str {
         match self {
+            Wants::Resolve => "failed",
             Wants::Merge => "done",
             Wants::Attention => "failed",
             Wants::Commit => "awaiting",
@@ -113,6 +124,9 @@ impl Wants {
         match self {
             Wants::Commit => Some(Need::Uncommitted),
             Wants::OpenPr => Some(Need::UnpushedBranch),
+            // No flow answers this: it is finished in preflight, which offers
+            // continue and abort where the person is already looking.
+            Wants::Resolve => None,
             Wants::Merge | Wants::Attention | Wants::Wait => Some(Need::OpenPullRequest),
             Wants::Release => Some(Need::Release),
             Wants::Nothing => None,
@@ -151,6 +165,8 @@ pub struct RepoStatus {
     pub unmerged: usize,
     /// Merged work the last tag does not reach.
     pub release: ReleaseState,
+    /// A git operation that stopped part-way, if any.
+    pub in_progress: Option<git::InProgress>,
 }
 
 impl RepoStatus {
@@ -166,6 +182,12 @@ impl RepoStatus {
     /// were still running reported "waiting", and a release sitting behind it
     /// was never even considered.
     pub fn wants(&self) -> Wants {
+        // Nothing else is worth reporting while git is mid-operation: every
+        // other answer would be advice you cannot act on.
+        if self.in_progress.is_some() {
+            return Wants::Resolve;
+        }
+
         let from_pr = self.pr.as_ref().and_then(|pr| match pr.checks {
             Checks::Passing | Checks::Unknown => Some(Wants::Merge),
             Checks::Failing => Some(Wants::Attention),
@@ -365,6 +387,7 @@ pub async fn probe(repo: &str) -> RepoStatus {
     let (base, _) = git::default_remote_branch(repo).await;
     let release = release::status(repo, &base).await;
     let unmerged = unmerged_commits(repo, &base).await;
+    let in_progress = git::in_progress(repo).await;
 
     RepoStatus {
         branch,
@@ -377,6 +400,7 @@ pub async fn probe(repo: &str) -> RepoStatus {
         behind,
         unmerged,
         release,
+        in_progress,
     }
 }
 
@@ -600,6 +624,7 @@ mod tests {
             changes,
             forge: Forge::GitHub,
             unmerged: 0,
+            in_progress: None,
             release: ReleaseState::default(),
             pr: pr.map(|checks| PrBrief {
                 number: "2".into(),
@@ -650,6 +675,22 @@ mod tests {
         assert_eq!(status(0, None).wants(), Wants::Nothing);
         assert!(!Wants::Nothing.needs_a_person());
         assert!(!Wants::Wait.needs_a_person());
+    }
+
+    #[test]
+    fn an_unfinished_rebase_outranks_everything_else() {
+        // Mid-rebase, every other answer is advice you cannot act on.
+        let mut s = status(4, Some(Checks::Passing));
+        s.unmerged = 2;
+        s.in_progress = Some(git::InProgress::Rebase);
+        assert_eq!(s.wants(), Wants::Resolve);
+        assert!(s.wants().needs_a_person());
+    }
+
+    #[test]
+    fn no_flow_claims_the_unfinished_state() {
+        // It is settled in preflight, not by picking a flow.
+        assert_eq!(Wants::Resolve.need(), None);
     }
 
     #[test]
@@ -744,6 +785,7 @@ mod tests {
     #[test]
     fn the_ranking_puts_actionable_repositories_first() {
         let mut all = vec![
+            Wants::Resolve,
             Wants::Nothing,
             Wants::Wait,
             Wants::Release,
@@ -756,6 +798,7 @@ mod tests {
         assert_eq!(
             all,
             vec![
+                Wants::Resolve,
                 Wants::Merge,
                 Wants::Attention,
                 Wants::Commit,

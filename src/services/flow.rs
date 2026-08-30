@@ -340,6 +340,65 @@ async fn run_script(
 }
 
 async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
+    // Before anything else: a repository part-way through a rebase or a merge
+    // cannot do anything a flow would ask of it, and the state is the single
+    // most disorienting one git has — the prompt says HEAD, ordinary commands
+    // refuse, and nothing says which of continue/abort applies. Say where you
+    // are and offer both moves.
+    if let Some(state) = git::in_progress(repo).await {
+        let changes = git::status(repo).await.unwrap_or_default();
+        let stuck = git::conflicted(&changes);
+
+        let what = if stuck.is_empty() {
+            format!(
+                "A {} is in progress with nothing left conflicting — it just needs finishing.",
+                state.label()
+            )
+        } else {
+            format!(
+                "A {} is in progress. Git is waiting on {} file(s):\n{}\n\n\
+                 Resolve them in your editor — each has <<<<<<< markers — then \
+                 finish below. Nothing else can run until this is settled.",
+                state.label(),
+                stuck.len(),
+                stuck
+                    .iter()
+                    .map(|p| format!("  {p}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
+
+        let finish_args = state.finish_args();
+        let abort_args = state.abort_args();
+        let finish: Vec<&str> = finish_args.iter().map(|s| &**s).collect();
+        let abort: Vec<&str> = abort_args.iter().map(|s| &**s).collect();
+
+        return Err(StepFailure {
+            message: what,
+            remedies: vec![
+                Remedy::new(
+                    &format!(
+                        "Finish the {} — only once every file is resolved",
+                        state.label()
+                    ),
+                    "git",
+                    &finish,
+                ),
+                // Terminal on purpose: aborting throws the work away, so the
+                // run should not quietly carry on as if nothing happened.
+                Remedy::terminal(
+                    &format!(
+                        "Abandon the {} and go back to where you were",
+                        state.label()
+                    ),
+                    "git",
+                    &abort,
+                ),
+            ],
+        });
+    }
+
     let mut log = String::new();
     let mut failures: Vec<String> = vec![];
 

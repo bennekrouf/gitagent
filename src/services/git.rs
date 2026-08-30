@@ -41,6 +41,84 @@ impl FileChange {
     }
 }
 
+/// A git operation that stopped part-way and is waiting to be finished.
+///
+/// These states are the reason someone ends up "lost": the shell prompt says
+/// `HEAD` instead of a branch, ordinary commands refuse, and nothing on screen
+/// says which of continue/abort/skip applies. All of them are plainly
+/// detectable, so the app can say where you are and what the three moves are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InProgress {
+    Rebase,
+    Merge,
+    CherryPick,
+    Revert,
+}
+
+impl InProgress {
+    pub fn label(self) -> &'static str {
+        match self {
+            InProgress::Rebase => "rebase",
+            InProgress::Merge => "merge",
+            InProgress::CherryPick => "cherry-pick",
+            InProgress::Revert => "revert",
+        }
+    }
+
+    /// The git subcommand that owns `--continue` and `--abort`.
+    pub fn command(self) -> &'static str {
+        match self {
+            InProgress::Rebase => "rebase",
+            InProgress::Merge => "merge",
+            InProgress::CherryPick => "cherry-pick",
+            InProgress::Revert => "revert",
+        }
+    }
+
+    /// A merge has no `--continue`: it is finished by committing.
+    pub fn finish_args(self) -> Vec<String> {
+        match self {
+            InProgress::Merge => vec!["commit".into(), "--no-edit".into()],
+            other => vec![other.command().into(), "--continue".into()],
+        }
+    }
+
+    pub fn abort_args(self) -> Vec<String> {
+        vec![self.command().into(), "--abort".into()]
+    }
+}
+
+/// Which files git is waiting on a decision for.
+///
+/// Porcelain marks a conflict with `U` in either column, plus `AA` (both
+/// added) and `DD` (both deleted), neither of which contains a `U`.
+pub fn conflicted(changes: &[FileChange]) -> Vec<String> {
+    changes
+        .iter()
+        .filter(|c| c.code.contains('U') || c.code == "AA" || c.code == "DD")
+        .map(|c| c.path.clone())
+        .collect()
+}
+
+/// Detects an interrupted operation from the marker files git leaves behind.
+pub async fn in_progress(repo: &str) -> Option<InProgress> {
+    let git_dir = run(repo, "git", &["rev-parse", "--git-dir"]).await.ok()?;
+    let dir = std::path::Path::new(repo).join(git_dir.trim());
+
+    for (marker, state) in [
+        ("rebase-merge", InProgress::Rebase),
+        ("rebase-apply", InProgress::Rebase),
+        ("MERGE_HEAD", InProgress::Merge),
+        ("CHERRY_PICK_HEAD", InProgress::CherryPick),
+        ("REVERT_HEAD", InProgress::Revert),
+    ] {
+        if dir.join(marker).exists() {
+            return Some(state);
+        }
+    }
+    None
+}
+
 /// Runs a command in `repo` and returns stdout, or stderr as the error.
 pub async fn run(repo: &str, program: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(program)
@@ -556,6 +634,50 @@ mod tests {
         FileChange {
             code: code.into(),
             path: path.into(),
+        }
+    }
+
+    #[test]
+    fn a_conflict_is_recognised_in_every_shape_porcelain_reports_it() {
+        let changes = vec![
+            change("UU", "both-modified.rs"),
+            change("AA", "both-added.rs"),
+            change("DD", "both-deleted.rs"),
+            change("AU", "added-by-us.rs"),
+            change("UD", "deleted-by-them.rs"),
+            change(" M", "just-modified.rs"),
+            change("??", "new.rs"),
+        ];
+        let stuck = conflicted(&changes);
+        assert_eq!(stuck.len(), 5);
+        assert!(!stuck.contains(&"just-modified.rs".to_string()));
+        assert!(!stuck.contains(&"new.rs".to_string()));
+    }
+
+    #[test]
+    fn a_rebase_is_finished_with_continue_and_a_merge_with_a_commit() {
+        // `git merge --continue` exists but a plain merge is finished by
+        // committing; getting this wrong is exactly the confusion to avoid.
+        assert_eq!(
+            InProgress::Rebase.finish_args(),
+            vec!["rebase", "--continue"]
+        );
+        assert_eq!(InProgress::Merge.finish_args(), vec!["commit", "--no-edit"]);
+        assert_eq!(
+            InProgress::CherryPick.finish_args(),
+            vec!["cherry-pick", "--continue"]
+        );
+    }
+
+    #[test]
+    fn every_interrupted_operation_can_be_backed_out() {
+        for state in [
+            InProgress::Rebase,
+            InProgress::Merge,
+            InProgress::CherryPick,
+            InProgress::Revert,
+        ] {
+            assert_eq!(state.abort_args()[1], "--abort", "{state:?}");
         }
     }
 
