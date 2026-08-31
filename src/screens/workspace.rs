@@ -26,7 +26,7 @@ use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
-use crate::services::probe::{self, RepoStatus, Wants};
+use crate::services::probe::{self, Need, RepoStatus, Wants};
 use crate::services::store::Layout;
 use crate::services::{git, store};
 
@@ -88,6 +88,7 @@ fn default_selection(
     states: &States,
     repo: &str,
     wants: Option<Wants>,
+    open_prs: &[probe::PrBrief],
 ) -> (String, String, String) {
     let runnable = book.runnable();
 
@@ -123,13 +124,21 @@ fn default_selection(
     // repository actually needs — landing on "Commit → PR" for a repository
     // whose only outstanding work is a release is how the first task to do
     // ends up hidden.
-    let hinted = wants
-        .and_then(|w| w.need())
-        .and_then(|need| runnable.iter().find(|f| f.answers(need)));
+    let need = wants.and_then(|w| w.need());
+    let hinted = need.and_then(|need| runnable.iter().find(|f| f.answers(need)));
+
+    // For a review, pick the pull request too. "Which one?" is a question the
+    // app can already answer, and leaving the slot empty means arriving at a
+    // review flow with nothing selected to review.
+    let pr_id = match need {
+        Some(Need::OpenPullRequest) => open_prs.first().map(|pr| pr.number.clone()),
+        _ => None,
+    }
+    .unwrap_or_default();
 
     hinted
         .or_else(|| runnable.first())
-        .map(|f| (f.id.clone(), f.first_node(), String::new()))
+        .map(|f| (f.id.clone(), f.first_node(), pr_id))
         .unwrap_or_default()
 }
 
@@ -682,6 +691,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 &states.read(),
                                 &path,
                                 statuses.read().get(&path).map(|s| s.wants()),
+                                statuses
+                                    .read()
+                                    .get(&path)
+                                    .map(|s| s.prs.clone())
+                                    .unwrap_or_default()
+                                    .as_slice(),
                             );
                         selected_repo.set(Some(path));
                         if !flow_id.is_empty() {
@@ -1377,6 +1392,50 @@ mod tests {
         FlowBook::defaults().get("commit_and_pr").unwrap().clone()
     }
 
+    fn brief(number: &str) -> probe::PrBrief {
+        probe::PrBrief {
+            number: number.into(),
+            title: "t".into(),
+            url: "u".into(),
+            checks: probe::Checks::Passing,
+            files: 1,
+            additions: 1,
+            deletions: 0,
+            commits: 1,
+        }
+    }
+
+    #[test]
+    fn arriving_at_a_review_picks_the_pull_request_too() {
+        // Landing on the review flow with nothing selected to review leaves
+        // the person to answer a question the app already knows.
+        let book = FlowBook::defaults();
+        let states = States::new();
+        let prs = [brief("7"), brief("9")];
+
+        let (flow_id, _, pr_id) =
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &prs);
+        assert_eq!(flow_id, "review_and_merge");
+        assert_eq!(pr_id, "7", "the first one, matching the order shown");
+    }
+
+    #[test]
+    fn a_commit_flow_selects_no_pull_request() {
+        let book = FlowBook::defaults();
+        let states = States::new();
+        let (_, _, pr_id) =
+            default_selection(&book, &states, "/repo", Some(Wants::Commit), &[brief("7")]);
+        assert!(pr_id.is_empty(), "nothing to scope a commit run to");
+    }
+
+    #[test]
+    fn a_review_with_no_pull_requests_listed_selects_none() {
+        let book = FlowBook::defaults();
+        let states = States::new();
+        let (_, _, pr_id) = default_selection(&book, &states, "/repo", Some(Wants::Merge), &[]);
+        assert!(pr_id.is_empty());
+    }
+
     #[test]
     fn with_nothing_running_the_flow_follows_what_the_repository_needs() {
         // Clicking a repository whose only outstanding work is a release must
@@ -1384,11 +1443,12 @@ mod tests {
         let book = FlowBook::defaults();
         let states = States::new();
 
-        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", Some(Wants::Merge));
+        let (flow_id, node_id, _) =
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &[]);
         assert_eq!(flow_id, "review_and_merge");
         assert_eq!(node_id, book.get("review_and_merge").unwrap().first_node());
 
-        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Commit));
+        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Commit), &[]);
         assert_eq!(flow_id, "commit_and_pr");
     }
 
@@ -1397,7 +1457,7 @@ mod tests {
         // Wants::Release points at a flow id nobody has built yet.
         let book = FlowBook::defaults();
         let states = States::new();
-        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Release));
+        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Release), &[]);
         assert_eq!(flow_id, book.runnable().first().unwrap().id);
     }
 
@@ -1413,7 +1473,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None);
+        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None, &[]);
         assert_eq!(flow_id, flow.id);
         assert_eq!(node_id, "scan");
         assert_eq!(pr_id, "");
@@ -1430,7 +1490,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/other-repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", None);
+        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", None, &[]);
         // Nothing running here — falls back to the first runnable flow's
         // first node, same as an untouched repository.
         assert_eq!(flow_id, book.runnable().first().unwrap().id);
@@ -1450,7 +1510,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (_, node_id, _) = default_selection(&book, &states, "/repo", None);
+        let (_, node_id, _) = default_selection(&book, &states, "/repo", None, &[]);
         assert_eq!(node_id, "commit");
     }
 }
