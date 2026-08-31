@@ -11,6 +11,7 @@
 use super::forge::{self, Forge};
 use super::git;
 use super::release::{self, ReleaseState};
+use super::store;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Checks {
@@ -371,6 +372,38 @@ pub fn is_open(value: &serde_json::Value) -> bool {
     }
 }
 
+/// How `base_branch` reports a base that came from the per-repo override
+/// rather than auto-detection. Preflight keys an extra check off this, so it
+/// is a constant rather than the same string spelled out in two modules.
+pub const OVERRIDDEN: &str = "set for this repository";
+
+/// The base branch this repository's pull requests target, and how that was
+/// decided.
+///
+/// The override wins over auto-detection, and every caller resolves it the
+/// same way. They did not used to: preflight and the Branches panel read the
+/// override while `probe` went straight to detection, so a repository whose
+/// pull requests target `develop` had its unmerged count measured against
+/// `origin/HEAD` — `main`, 1536 commits back — and a clean tree offered
+/// "Push 1536 commits & open PR".
+///
+/// Takes the override rather than loading it, because the workspace holds it
+/// in a signal the Base button writes to; a fresh read from disk there would
+/// lag a click behind.
+pub async fn base_branch(repo: &str, override_base: Option<String>) -> (String, String) {
+    match override_base {
+        Some(base) => (base, OVERRIDDEN.to_string()),
+        None => git::default_remote_branch(repo).await,
+    }
+}
+
+/// `base_branch` for callers with no signal to read — the override comes from
+/// disk.
+pub async fn stored_base_branch(repo: &str) -> (String, String) {
+    let override_base = store::load_repo_bases().get(repo).map(str::to_string);
+    base_branch(repo, override_base).await
+}
+
 pub async fn probe(repo: &str) -> RepoStatus {
     let branch = git::current_branch(repo).await.unwrap_or_default();
     let changes = git::status(repo).await.map(|c| c.len()).unwrap_or(0);
@@ -384,7 +417,7 @@ pub async fn probe(repo: &str) -> RepoStatus {
         Err(e) => (vec![], Some(e)),
     };
     let (ahead, behind) = ahead_behind(repo).await;
-    let (base, _) = git::default_remote_branch(repo).await;
+    let (base, _) = stored_base_branch(repo).await;
     let release = release::status(repo, &base).await;
     let unmerged = unmerged_commits(repo, &base).await;
     let in_progress = git::in_progress(repo).await;
@@ -989,6 +1022,36 @@ mod tests {
         pr.additions = 9297;
         pr.deletions = 4567;
         assert_eq!(pr.size(), "115 files  +9297  −4567");
+    }
+
+    #[tokio::test]
+    async fn an_override_decides_the_base_without_asking_git() {
+        // ais_tom_platform: PRs target `develop`, but origin/HEAD in that
+        // clone still points at `main`, 1536 commits back. Detection would
+        // answer `main`; the override must win, and must say it did so
+        // preflight can check the branch actually exists on origin.
+        let (base, how) = base_branch("/no/such/repo", Some("develop".into())).await;
+        assert_eq!(base, "develop");
+        assert_eq!(how, OVERRIDDEN);
+    }
+
+    #[test]
+    fn a_base_that_is_1536_commits_behind_is_what_produced_the_bad_button() {
+        // The symptom the override exists to prevent: clean tree, no PR, and
+        // an unmerged count measured against the wrong base.
+        let mut s = status(0, None);
+        s.unmerged = 1536;
+        assert_eq!(s.wants(), Wants::OpenPr);
+        assert_eq!(
+            affordance(COMMIT_FLOW, Some(&s), false, false, "").label,
+            "Push 1536 commits & open PR"
+        );
+
+        // Measured against the base the repository actually targets, there is
+        // nothing to offer.
+        s.unmerged = 0;
+        assert_eq!(s.wants(), Wants::Nothing);
+        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "").enabled);
     }
 
     #[test]
