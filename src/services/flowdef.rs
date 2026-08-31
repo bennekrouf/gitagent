@@ -426,7 +426,10 @@ impl FlowBook {
             return Self::defaults();
         };
         match toml::from_str::<FlowBook>(&text) {
-            Ok(book) if !book.flows.is_empty() => book,
+            Ok(mut book) if !book.flows.is_empty() => {
+                book.adopt_missing_declarations();
+                book
+            }
             _ => Self::defaults(),
         }
     }
@@ -436,6 +439,26 @@ impl FlowBook {
         let _ = std::fs::create_dir_all(&dir);
         if let Ok(text) = toml::to_string_pretty(self) {
             let _ = std::fs::write(dir.join(FLOWS_FILE), text);
+        }
+    }
+
+    /// Fills in `handles` for shipped flows saved before the field existed.
+    ///
+    /// Without this, an existing `flows.toml` loads with every flow declaring
+    /// nothing, so no flow answers any need and selection silently falls back
+    /// to whichever flow happens to be first — landing on "Commit → PR" for a
+    /// repository whose only outstanding work is a release.
+    ///
+    /// Only ever fills an *empty* list, so a deliberate choice to clear the
+    /// declarations is left alone.
+    pub fn adopt_missing_declarations(&mut self) {
+        let shipped = Self::defaults();
+        for flow in &mut self.flows {
+            if flow.handles.is_empty() {
+                if let Some(original) = shipped.get(&flow.id) {
+                    flow.handles = original.handles.clone();
+                }
+            }
         }
     }
 
@@ -518,6 +541,49 @@ mod tests {
     #[test]
     fn a_well_formed_flow_has_no_problems() {
         assert_eq!(validate(&commit_flow()), vec![]);
+    }
+
+    #[test]
+    fn a_book_saved_before_declarations_existed_gets_them_back() {
+        // The real flows.toml on disk predates `handles`, so both shipped
+        // flows loaded declaring nothing and selection always fell back.
+        let mut book = FlowBook::defaults();
+        for flow in &mut book.flows {
+            flow.handles.clear();
+        }
+
+        book.adopt_missing_declarations();
+        assert_eq!(
+            book.get("commit_and_pr").unwrap().handles,
+            vec!["uncommitted".to_string(), "unpushed_branch".to_string()]
+        );
+        assert_eq!(
+            book.get("review_and_merge").unwrap().handles,
+            vec!["open_pull_request".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_deliberate_choice_to_declare_nothing_survives() {
+        // Only an *unmodified* shipped flow is backfilled; a flow of your own
+        // that answers nothing keeps answering nothing.
+        let mut book = FlowBook::defaults();
+        book.flows.push(FlowDef {
+            id: "deploy_vps".into(),
+            label: "Deploy VPS".into(),
+            handles: vec![],
+            nodes: vec![],
+        });
+        book.adopt_missing_declarations();
+        assert!(book.get("deploy_vps").unwrap().handles.is_empty());
+    }
+
+    #[test]
+    fn backfilling_never_overwrites_what_is_already_declared() {
+        let mut book = FlowBook::defaults();
+        book.flows[0].handles = vec!["release".into()];
+        book.adopt_missing_declarations();
+        assert_eq!(book.get("commit_and_pr").unwrap().handles, vec!["release"]);
     }
 
     #[test]
