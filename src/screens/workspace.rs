@@ -51,10 +51,7 @@ pub struct WorkspaceProps {
 /// one is set, else whatever auto-detection finds, same fallback preflight
 /// itself uses.
 async fn resolved_base(repo: &str, override_base: Option<String>) -> String {
-    match override_base {
-        Some(base) => base,
-        None => git::default_remote_branch(repo).await.0,
-    }
+    probe::base_branch(repo, override_base).await.0
 }
 
 /// Raises an OS notification when a run stops for a person and the window is

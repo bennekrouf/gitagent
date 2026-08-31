@@ -410,19 +410,11 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
         forge.label()
     ));
 
-    // An explicit override — set from the workspace's Base button when a
-    // repository's pull requests don't target its default branch (a
-    // "develop" workflow, say) — always wins over auto-detection. Read fresh
-    // rather than threaded through a node's own config: one setting per
-    // repository, not one that has to be repeated on every flow's Preflight
-    // node to actually apply everywhere.
-    let override_base = super::store::load_repo_bases()
-        .get(repo)
-        .map(str::to_string);
-    let (base, how) = match override_base {
-        Some(base) => (base, "set for this repository".to_string()),
-        None => git::default_remote_branch(repo).await,
-    };
+    // Read fresh from the workspace's Base setting rather than threaded
+    // through a node's own config: one setting per repository, not one that
+    // has to be repeated on every flow's Preflight node to actually apply
+    // everywhere.
+    let (base, how) = super::probe::stored_base_branch(repo).await;
     let branch = git::current_branch(repo).await?;
     log.push_str(&format!("base    {base}  ({how})\nbranch  {branch}\n"));
     if git::is_protected(&branch) {
@@ -438,7 +430,7 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
     // an override copied from another project's naming convention
     // ("develop") sailed through preflight, then failed only at the PR step
     // with a bare `gh pr create` error instead of a clear, early message.
-    if how == "set for this repository" {
+    if how == super::probe::OVERRIDDEN {
         let git_ref = format!("refs/remotes/origin/{base}");
         if git::branch_exists(repo, &git_ref).await {
             log.push_str(&format!("ok    base branch on origin  {base}\n"));
