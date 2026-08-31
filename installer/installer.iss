@@ -31,7 +31,12 @@ OutputBaseFilename=gitagent-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; Per-user by default, so a developer on a locked-down machine installs with
+; no UAC prompt at all. IT keeps the machine-wide path via the command line:
+;   installer.exe /ALLUSERS /VERYSILENT
+; One artifact serves both audiences instead of forcing everyone to elevate.
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -63,14 +68,17 @@ Source: "..\assets\icon.ico";                    DestDir: "{app}"; Flags: ignore
 #endif
 
 [Icons]
+; {autodesktop}/{group} resolve per privilege level — matching {autopf} above.
+; Hardcoding {autodesktop} here with PrivilegesRequired=lowest fails with
+; "IPersistFile::Save failed; code 0x80070005" on every non-elevated install.
 #if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 #else
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 #endif
 
 [Run]
