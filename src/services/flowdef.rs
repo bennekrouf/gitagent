@@ -489,6 +489,17 @@ impl FlowBook {
             .collect()
     }
 
+    /// Every flow, each with whatever is wrong with it.
+    ///
+    /// What the tab strip lists, as opposed to `runnable`, which is what may
+    /// actually be started. A flow that stopped validating used to vanish from
+    /// the strip altogether, which reads exactly like having deleted it — the
+    /// flow is still in `flows.toml` and one edit from working, so it is shown
+    /// and marked instead.
+    pub fn listed(&self) -> Vec<(&FlowDef, Vec<Problem>)> {
+        self.flows.iter().map(|f| (f, validate(f))).collect()
+    }
+
     /// Copies a flow's nodes into a new flow, `_copy`/`_copy_2`/... suffixed.
     /// Returns the new id, or `None` if `id` does not name an existing flow.
     pub fn duplicate(&mut self, id: &str) -> Option<String> {
@@ -668,6 +679,24 @@ mod tests {
         book.flows[0].nodes[1].deps = vec!["ghost".into()];
         assert_eq!(book.flows.len(), 2);
         assert_eq!(book.runnable().len(), 1);
+    }
+
+    #[test]
+    fn an_invalid_flow_is_still_listed_so_it_can_be_seen_and_marked() {
+        // `runnable` dropping it is what the executor needs; the tab strip
+        // needs the opposite, or a flow one edit from working looks deleted.
+        let mut book = FlowBook::defaults();
+        book.flows[0].nodes[1].deps = vec!["ghost".into()];
+
+        let listed = book.listed();
+        assert_eq!(listed.len(), 2, "every flow is listed, broken or not");
+
+        let (broken, problems) = &listed[0];
+        assert_eq!(broken.id, "commit_and_pr");
+        assert!(!problems.is_empty(), "and carries what is wrong with it");
+        assert!(problems[0].message().contains("ghost"));
+
+        assert!(listed[1].1.is_empty(), "the healthy one has nothing to say");
     }
 
     #[test]

@@ -230,7 +230,8 @@ impl RepoStatus {
 /// The rules are per flow because the precondition is: the commit flow needs a
 /// dirty tree, the review flow needs an open pull request. A flow the app does
 /// not ship — anything built in Setup — is always offered, because only its
-/// author knows when it makes sense to run.
+/// author knows when it makes sense to run. A flow that does not validate is
+/// refused whichever it is.
 /// What a flow is for. A flow declares which of these it answers, and the app
 /// opens on it when a repository is in that state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -310,7 +311,20 @@ pub fn affordance(
     probing: bool,
     already_ran: bool,
     selected_pr: &str,
+    problems: &[String],
 ) -> Affordance {
+    // A flow that does not validate is never handed to the executor, so this
+    // outranks everything below it: whatever the repository has waiting, this
+    // flow cannot be the thing that acts on it. Said here rather than at the
+    // button so it is one rule with the rest of them, and tested with them.
+    if let Some(first) = problems.first() {
+        let reason = match problems.len() {
+            1 => format!("{first} Fix it in Setup."),
+            n => format!("{first} And {} more. Fix them in Setup.", n - 1),
+        };
+        return Affordance::stop("Flow is broken", reason);
+    }
+
     let Some(status) = status else {
         return if probing {
             Affordance::stop("Checking…", "Still reading this repository")
@@ -785,7 +799,7 @@ mod tests {
     fn that_branch_can_actually_be_acted_on() {
         let mut s = status(0, None);
         s.unmerged = 1;
-        let a = affordance(COMMIT_FLOW, Some(&s), false, false, "");
+        let a = affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]);
         assert!(a.enabled, "the button must not be dead");
         assert_eq!(a.label, "Push 1 commit & open PR");
     }
@@ -796,7 +810,7 @@ mod tests {
         s.unmerged = 1;
         assert_eq!(s.wants(), Wants::Commit);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&s), false, false, "").label,
+            affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).label,
             "Commit 3 files"
         );
     }
@@ -805,7 +819,7 @@ mod tests {
     fn a_branch_already_on_the_base_is_still_nothing_to_do() {
         let s = status(0, None);
         assert_eq!(s.wants(), Wants::Nothing);
-        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "").enabled);
+        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).enabled);
     }
 
     #[test]
@@ -910,10 +924,10 @@ mod tests {
     #[test]
     fn committing_is_offered_only_when_there_is_something_to_commit() {
         let clean = status(0, None);
-        assert!(!affordance(COMMIT_FLOW, Some(&clean), false, false, "").enabled);
+        assert!(!affordance(COMMIT_FLOW, Some(&clean), false, false, "", &[]).enabled);
 
         let dirty = status(3, None);
-        let a = affordance(COMMIT_FLOW, Some(&dirty), false, false, "");
+        let a = affordance(COMMIT_FLOW, Some(&dirty), false, false, "", &[]);
         assert!(a.enabled);
         assert_eq!(a.label, "Commit 3 files");
     }
@@ -922,7 +936,7 @@ mod tests {
     fn the_button_counts_one_file_in_the_singular() {
         let one = status(1, None);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&one), false, false, "").label,
+            affordance(COMMIT_FLOW, Some(&one), false, false, "", &[]).label,
             "Commit 1 file"
         );
     }
@@ -930,12 +944,12 @@ mod tests {
     #[test]
     fn reviewing_is_offered_only_when_a_pull_request_exists() {
         let none = status(0, None);
-        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "");
+        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "", &[]);
         assert!(!a.enabled);
         assert!(a.reason.contains("master"), "says which branch");
 
         let open = status(0, Some(Checks::Passing));
-        let b = affordance(REVIEW_FLOW, Some(&open), false, false, "");
+        let b = affordance(REVIEW_FLOW, Some(&open), false, false, "", &[]);
         assert!(b.enabled);
         assert_eq!(b.label, "Review #2");
     }
@@ -946,7 +960,7 @@ mod tests {
         // explicitly picked from the sidebar's list — Start must not stay
         // disabled just because HEAD points somewhere else.
         let none = status(0, None);
-        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "9");
+        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "9", &[]);
         assert!(a.enabled);
         assert_eq!(a.label, "Review #9");
     }
@@ -955,20 +969,60 @@ mod tests {
     fn the_same_repository_can_offer_one_flow_and_refuse_the_other() {
         // Committed and pushed: nothing left to commit, a PR now to review.
         let after = status(0, Some(Checks::Passing));
-        assert!(!affordance(COMMIT_FLOW, Some(&after), false, false, "").enabled);
-        assert!(affordance(REVIEW_FLOW, Some(&after), false, false, "").enabled);
+        assert!(!affordance(COMMIT_FLOW, Some(&after), false, false, "", &[]).enabled);
+        assert!(affordance(REVIEW_FLOW, Some(&after), false, false, "", &[]).enabled);
 
         // And the other way round, before any of that happened.
         let before = status(4, None);
-        assert!(affordance(COMMIT_FLOW, Some(&before), false, false, "").enabled);
-        assert!(!affordance(REVIEW_FLOW, Some(&before), false, false, "").enabled);
+        assert!(affordance(COMMIT_FLOW, Some(&before), false, false, "", &[]).enabled);
+        assert!(!affordance(REVIEW_FLOW, Some(&before), false, false, "", &[]).enabled);
+    }
+
+    #[test]
+    fn a_broken_flow_is_refused_however_much_work_is_waiting() {
+        // The tab is now shown rather than hidden, so the button is what has
+        // to say no — and it must say no even for a repository that is
+        // otherwise perfectly ready to run this flow.
+        let dirty = status(3, None);
+        let problems = vec!["`push` depends on `commit`, which is not in this flow.".to_string()];
+        let a = affordance(COMMIT_FLOW, Some(&dirty), false, false, "", &problems);
+        assert!(!a.enabled);
+        assert_eq!(a.label, "Flow is broken");
+        assert!(
+            a.reason.contains("`push` depends on `commit`"),
+            "says what is wrong"
+        );
+        assert!(a.reason.contains("Setup"), "says where to fix it");
+    }
+
+    #[test]
+    fn several_problems_name_the_first_and_count_the_rest() {
+        let problems = vec!["One is wrong.".to_string(), "Two is wrong.".to_string()];
+        let a = affordance(
+            COMMIT_FLOW,
+            Some(&status(3, None)),
+            false,
+            false,
+            "",
+            &problems,
+        );
+        assert_eq!(a.reason, "One is wrong. And 1 more. Fix them in Setup.");
+    }
+
+    #[test]
+    fn a_broken_flow_outranks_even_a_pull_request_waiting_to_be_reviewed() {
+        let open = status(0, Some(Checks::Passing));
+        let problems = vec!["This flow has no steps.".to_string()];
+        assert!(!affordance(REVIEW_FLOW, Some(&open), false, false, "7", &problems).enabled);
+        // And without the problems it is offered as before.
+        assert!(affordance(REVIEW_FLOW, Some(&open), false, false, "7", &[]).enabled);
     }
 
     #[test]
     fn a_second_run_says_again() {
         let dirty = status(2, None);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&dirty), false, true, "").label,
+            affordance(COMMIT_FLOW, Some(&dirty), false, true, "", &[]).label,
             "Commit 2 files again"
         );
     }
@@ -976,7 +1030,7 @@ mod tests {
     #[test]
     fn a_flow_built_in_setup_is_never_second_guessed() {
         let clean = status(0, None);
-        let a = affordance("release", Some(&clean), false, false, "");
+        let a = affordance("release", Some(&clean), false, false, "", &[]);
         assert!(
             a.enabled,
             "only its author knows when a custom flow applies"
@@ -985,9 +1039,9 @@ mod tests {
 
     #[test]
     fn an_unprobed_repository_waits_rather_than_guessing() {
-        assert!(!affordance(COMMIT_FLOW, None, true, false, "").enabled);
+        assert!(!affordance(COMMIT_FLOW, None, true, false, "", &[]).enabled);
         // But a probe that never returned must not lock the button forever.
-        assert!(affordance(COMMIT_FLOW, None, false, false, "").enabled);
+        assert!(affordance(COMMIT_FLOW, None, false, false, "", &[]).enabled);
     }
 
     #[test]
@@ -1043,7 +1097,7 @@ mod tests {
         s.unmerged = 1536;
         assert_eq!(s.wants(), Wants::OpenPr);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&s), false, false, "").label,
+            affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).label,
             "Push 1536 commits & open PR"
         );
 
@@ -1051,7 +1105,7 @@ mod tests {
         // nothing to offer.
         s.unmerged = 0;
         assert_eq!(s.wants(), Wants::Nothing);
-        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "").enabled);
+        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).enabled);
     }
 
     #[test]

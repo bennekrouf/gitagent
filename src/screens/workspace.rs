@@ -428,12 +428,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut selected_repo = use_signal(|| Option::<String>::None);
     // Loaded once per mount, so returning from Setup picks up any edits.
     let mut book = use_signal(FlowBook::load);
-    let first_flow = book
-        .read()
-        .runnable()
-        .first()
-        .map(|f| f.id.clone())
-        .unwrap_or_default();
+    // A runnable flow by preference — never open on a broken one while a
+    // working one exists. But if every flow is broken, select the first anyway:
+    // an empty column explains nothing, whereas the selected tab's banner says
+    // exactly what to fix.
+    let first_flow = {
+        let book = book.read();
+        book.runnable()
+            .first()
+            .or(book.flows.first().as_ref())
+            .map(|f| f.id.clone())
+            .unwrap_or_default()
+    };
     let mut selected_flow = use_signal(|| first_flow);
     // Which open PR a review run is scoped to. Empty means "whatever the
     // checked-out branch has open" — the same default behaviour as before
@@ -459,7 +465,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut branches_busy = use_signal(|| Option::<String>::None);
     let mut base_editor_open = use_signal(|| Option::<String>::None);
     let mut base_editor_value = use_signal(String::new);
-    let mut hidden_open = use_signal(|| false);
+    // Which repository's hidden-flow list is open, rather than a single flag
+    // for all of them: opening it on one repository used to leave it open on
+    // the next one you selected, which reads as a panel that will not close.
+    let mut hidden_open = use_signal(|| Option::<String>::None);
 
     // Pane widths, dragged by the dividers and remembered on disk.
     let saved = use_signal(store::load_layout);
@@ -497,12 +506,25 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         .collect();
     let states_snapshot = states.read().clone();
     let flows = book.read().clone();
-    let runnable: Vec<(String, String)> = flows
-        .runnable()
+    // Every flow, not just the runnable ones: a broken flow is shown, marked,
+    // and refused, rather than quietly disappearing from the strip.
+    let listed: Vec<(String, String, Vec<String>)> = flows
+        .listed()
         .iter()
-        .map(|f| (f.id.clone(), f.label.clone()))
+        .map(|(f, problems)| {
+            (
+                f.id.clone(),
+                f.label.clone(),
+                problems.iter().map(|p| p.message()).collect(),
+            )
+        })
         .collect();
     let flow_id = selected_flow.read().clone();
+    let flow_problems: Vec<String> = listed
+        .iter()
+        .find(|(id, _, _)| id == &flow_id)
+        .map(|(_, _, problems)| problems.clone())
+        .unwrap_or_default();
     let current = flows.get(&flow_id).cloned();
     let graph: Graph = current
         .as_ref()
@@ -751,6 +773,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             *probing.read() > 0,
                             state.started,
                             &pr_id,
+                            &flow_problems,
                         );
                         // Both flows end with a pull request worth linking to:
                         // the one just opened, or the one just merged.
@@ -758,16 +781,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let finished = state.started && state.is_finished(&graph);
 
                         let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
-                        let visible_tabs: Vec<(String, String)> = runnable
+                        let visible_tabs: Vec<(String, String, Vec<String>)> = listed
                             .iter()
-                            .filter(|(id, _)| !hidden_here.contains(id))
+                            .filter(|(id, _, _)| !hidden_here.contains(id))
                             .cloned()
                             .collect();
-                        // A label for a hidden flow can vanish from `runnable`
-                        // entirely (deleted in Setup, or now invalid) — fall
-                        // back to the id so the restore list never disappears
-                        // silently for a flow that still exists in flows.toml
-                        // but currently fails validation.
+                        let showing_hidden = !hidden_here.is_empty()
+                            && hidden_open.read().as_deref() == Some(repo.as_str());
+                        // A label for a hidden flow can vanish from `listed`
+                        // entirely — deleted in Setup — so fall back to the id
+                        // rather than letting the restore list lose a row.
                         let hidden_tabs: Vec<(String, String)> = hidden_here
                             .iter()
                             .map(|id| {
@@ -861,12 +884,24 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 }
 
                                 div { class: "flow-tabs",
-                                    for (id, label) in visible_tabs.iter().cloned() {
+                                    for (id, label, problems) in visible_tabs.iter().cloned() {
                                         div {
                                             key: "{id}",
-                                            class: if id == flow_id { "flow-tab flow-tab-on" } else { "flow-tab" },
+                                            class: match (id == flow_id, problems.is_empty()) {
+                                                (true, true) => "flow-tab flow-tab-on",
+                                                (true, false) => "flow-tab flow-tab-on flow-tab-broken",
+                                                (false, true) => "flow-tab",
+                                                (false, false) => "flow-tab flow-tab-broken",
+                                            },
                                             button {
                                                 class: "flow-tab-main",
+                                                // The tab still selects: seeing why a flow is
+                                                // broken is the point of showing it.
+                                                title: if problems.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    problems.join("\n")
+                                                },
                                                 onclick: {
                                                     let id = id.clone();
                                                     let first = flows.get(&id)
@@ -881,6 +916,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                         selected_pr.set(String::new());
                                                     }
                                                 },
+                                                if !problems.is_empty() {
+                                                    span { class: "flow-tab-warn", "\u{26a0}" }
+                                                }
                                                 "{label}"
                                                 if running.read().iter().any(|(r, f, _)| r == &repo && f == &id) {
                                                     span { class: "flow-tab-dot" }
@@ -903,18 +941,29 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     }
                                     if !hidden_tabs.is_empty() {
                                         button {
-                                            class: "flow-tab-hidden-count",
-                                            title: "Flows hidden for this repository",
-                                            onclick: move |_| {
-                                                let now = *hidden_open.read();
-                                                hidden_open.set(!now);
+                                            class: if showing_hidden {
+                                                "flow-tab-hidden-count flow-tab-hidden-count-on"
+                                            } else {
+                                                "flow-tab-hidden-count"
+                                            },
+                                            title: if showing_hidden {
+                                                "Hide this list again"
+                                            } else {
+                                                "Flows hidden for this repository"
+                                            },
+                                            onclick: {
+                                                let repo = repo.clone();
+                                                move |_| {
+                                                    let open = hidden_open.read().as_deref() == Some(repo.as_str());
+                                                    hidden_open.set(if open { None } else { Some(repo.clone()) });
+                                                }
                                             },
                                             "{hidden_tabs.len()} hidden"
                                         }
                                     }
                                 }
 
-                                if *hidden_open.read() && !hidden_tabs.is_empty() {
+                                if showing_hidden {
                                     div { class: "hidden-flows",
                                         for (id, label) in hidden_tabs.iter().cloned() {
                                             div { key: "{id}", class: "hidden-flow",
@@ -932,6 +981,30 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                     "Show"
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+
+                                // A tooltip on the tab is not enough once the
+                                // broken flow is the one you are looking at:
+                                // the graph below is drawn from a definition
+                                // that will not run, and nothing else on screen
+                                // would say why.
+                                if !flow_problems.is_empty() {
+                                    div { class: "flow-broken",
+                                        div { class: "flow-broken-head",
+                                            span { class: "flow-broken-mark", "\u{26a0}" }
+                                            "This flow cannot run"
+                                        }
+                                        ul { class: "flow-broken-list",
+                                            for problem in flow_problems.iter().cloned() {
+                                                li { key: "{problem}", "{problem}" }
+                                            }
+                                        }
+                                        button {
+                                            class: "btn",
+                                            onclick: move |_| setup_open.set(true),
+                                            "Fix in Setup"
                                         }
                                     }
                                 }
