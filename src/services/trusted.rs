@@ -42,21 +42,29 @@ impl Verdict {
 ///
 /// `None` means there is nothing more to do, or nothing a flow can do: an
 /// unfinished rebase needs a person and no flow claims it.
+///
+/// Deliberately keyed on `need()` rather than `needs_a_person()`. A pull
+/// request whose checks are still running is `Wants::Wait`, which no person is
+/// expected to act on — and gating on that is what stopped every trusted run
+/// dead after the commit flow, because a pull request opened seconds ago
+/// *always* has pending checks. The review flow is still the right answer
+/// there: it reads the diff, which is worth doing while CI runs, and the merge
+/// rules in this same module already refuse to merge on pending checks. So the
+/// chain moves on and stops at the merge, where a person can see why.
 pub fn next_flow(book: &FlowBook, status: &RepoStatus) -> Option<(String, String)> {
-    let wants = status.wants();
-    if !wants.needs_a_person() {
-        return None;
-    }
-    let need = wants.need()?;
+    let need = status.wants().need()?;
     let flow = book.runnable().into_iter().find(|f| f.answers(need))?;
 
     // A review has to know which pull request it is about; leaving the slot
     // empty falls back to "whatever the checked-out branch has open", which is
-    // not the same question.
+    // not the same question. The checked-out branch's own pull request comes
+    // first: it is the one the commit flow just opened, and `prs` is every open
+    // pull request on the repository in whatever order the forge listed them.
     let pr = match need {
         Need::OpenPullRequest => status
-            .prs
-            .first()
+            .pr
+            .as_ref()
+            .or(status.prs.first())
             .map(|pr| pr.number.clone())
             .unwrap_or_default(),
         _ => String::new(),
@@ -240,6 +248,46 @@ mod tests {
             next_flow(&book, &has_pr),
             Some(("review_and_merge".into(), "7".into())),
             "and it names the pull request to review"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_whose_checks_are_still_running_does_not_end_the_chain() {
+        // The reported bug: a trusted run never got past the commit flow. A
+        // pull request opened seconds ago always has pending checks, which is
+        // `Wants::Wait` — nothing a *person* is expected to do, so the old
+        // `needs_a_person` gate returned `None` and the chain stopped every
+        // single time, on every repository. Reviewing is still the right next
+        // flow; the merge rules below are what refuse to merge on pending CI.
+        let just_pushed = repo(0, 0, Some(Checks::Pending), false);
+        assert_eq!(just_pushed.wants(), crate::services::probe::Wants::Wait);
+        assert!(
+            !just_pushed.wants().needs_a_person(),
+            "the state the old gate rejected"
+        );
+        assert_eq!(
+            next_flow(&FlowBook::defaults(), &just_pushed),
+            Some(("review_and_merge".into(), "7".into()))
+        );
+
+        // And it stops at the merge rather than merging on pending checks, so
+        // moving the chain on has not weakened anything.
+        let pending = state("looks_safe", "0", "pending");
+        assert!(decide(&node(Step::Merge), &pending).reason().is_some());
+    }
+
+    #[test]
+    fn the_review_is_scoped_to_the_checked_out_branchs_own_pull_request() {
+        // `prs` is every open pull request on the repository, in whatever
+        // order the forge listed them — reviewing its first entry would review
+        // somebody else's branch instead of the one just pushed.
+        let mut many = repo(0, 0, Some(Checks::Passing), false);
+        let mut other = many.prs[0].clone();
+        other.number = "3".into();
+        many.prs.insert(0, other);
+        assert_eq!(
+            next_flow(&FlowBook::defaults(), &many),
+            Some(("review_and_merge".into(), "7".into()))
         );
     }
 
