@@ -139,6 +139,37 @@ impl FlowDef {
             .unwrap_or_else(|| key.to_string())
     }
 
+    /// Wires a test step between this flow's scan and its commit, if it has
+    /// both and no test step already. Returns whether anything changed.
+    ///
+    /// It hangs off the scan rather than off the commit's own dependencies, so
+    /// the suite runs while the message is still being drafted — the shape the
+    /// shipped flow has, arrived at from whatever the flow already looked like.
+    pub fn insert_test_step(&mut self) -> bool {
+        if self.nodes.iter().any(|n| n.step == "run_tests") {
+            return false;
+        }
+        let Some(scan) = self
+            .nodes
+            .iter()
+            .position(|n| n.step.starts_with("scan_changes"))
+        else {
+            return false;
+        };
+        let Some(commit) = self.nodes.iter().position(|n| n.step == "commit") else {
+            return false;
+        };
+
+        let id = self.free_id("test");
+        let after = self.nodes[scan].id.clone();
+        self.nodes[commit].deps.push(id.clone());
+        self.nodes.insert(
+            scan + 1,
+            dep(NodeDef::from_catalogue(&id, "run_tests"), &[&after]),
+        );
+        true
+    }
+
     /// Removes a node and every reference to it, so deleting can never leave a
     /// dangling dependency behind.
     pub fn remove_node(&mut self, id: &str) {
@@ -347,9 +378,20 @@ pub fn default_deps(flow: &FlowDef, selected: &str) -> Vec<String> {
 /// Every flow the app knows, and the file they live in.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct FlowBook {
+    /// One-time adoptions already applied to this book.
+    ///
+    /// Without it, a step someone deliberately deleted would be helpfully put
+    /// back on the next launch, and there would be no way to refuse it.
+    /// Declared before `flows` because TOML puts plain values before the
+    /// `[[flow]]` tables, not after them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adopted: Vec<String>,
     #[serde(default, rename = "flow")]
     pub flows: Vec<FlowDef>,
 }
+
+/// Names the one-time adoption that adds the test step to an existing book.
+pub const ADOPTED_TEST_STEP: &str = "run_tests";
 
 const FLOWS_FILE: &str = "flows.toml";
 
@@ -358,6 +400,7 @@ impl FlowBook {
     /// so this stays the definition of standard rather than a one-time seed.
     pub fn defaults() -> Self {
         Self {
+            adopted: vec![ADOPTED_TEST_STEP.to_string()],
             flows: vec![
                 FlowDef {
                     id: "commit_and_pr".into(),
@@ -433,7 +476,9 @@ impl FlowBook {
         match toml::from_str::<FlowBook>(&text) {
             Ok(mut book) if !book.flows.is_empty() => {
                 book.adopt_missing_declarations();
-                book.adopt_missing_test_step();
+                if book.adopt_missing_test_step() {
+                    book.save();
+                }
                 book
             }
             _ => Self::defaults(),
@@ -468,29 +513,29 @@ impl FlowBook {
         }
     }
 
-    /// Adds the test step to a commit flow saved before that step existed.
+    /// Adds the test step to every commit-shaped flow saved before that step
+    /// existed. Returns whether the book now needs writing back.
     ///
-    /// Only to one still shaped exactly as shipped. The check is the shipped
-    /// flow with the test node taken back out — `remove_node` strips the edge
-    /// into `commit` too, so what it compares against is precisely the graph
-    /// this used to be. Once you have rewired the flow it is yours, and
-    /// silently inserting a node into someone's graph is a worse surprise than
-    /// a step they have to add themselves.
-    pub fn adopt_missing_test_step(&mut self) {
-        let Some(shipped) = Self::defaults().get("commit_and_pr").cloned() else {
-            return;
-        };
-        let mut before = shipped.clone();
-        before.remove_node("test");
-        if before.nodes == shipped.nodes {
-            return; // The step is gone from the defaults; nothing to adopt.
+    /// Shape, not equality. The first version of this only upgraded a flow
+    /// still byte-identical to the shipped one, which is to say nobody's: a
+    /// real `flows.toml` has a base pinned on preflight and a couple of extra
+    /// nodes on the end, and it was silently skipped. Anything that scans a
+    /// working tree and then commits it is a commit flow, whatever else has
+    /// been wired into it.
+    ///
+    /// It runs once ever, recorded in `adopted`. A step you delete has to stay
+    /// deleted, or the next launch quietly overrules you.
+    pub fn adopt_missing_test_step(&mut self) -> bool {
+        if self.adopted.iter().any(|a| a == ADOPTED_TEST_STEP) {
+            return false;
         }
-
+        self.adopted.push(ADOPTED_TEST_STEP.to_string());
         for flow in &mut self.flows {
-            if flow.id == shipped.id && flow.nodes == before.nodes {
-                flow.nodes = shipped.nodes.clone();
-            }
+            flow.insert_test_step();
         }
+        // Even when no flow changed, the marker did — and it is only worth
+        // anything if it survives the launch that set it.
+        true
     }
 
     pub fn get(&self, id: &str) -> Option<&FlowDef> {
@@ -730,52 +775,198 @@ mod tests {
         assert!(listed[1].1.is_empty(), "the healthy one has nothing to say");
     }
 
+    /// A commit flow the way one actually looks after a while in use: a base
+    /// pinned on preflight, two extra nodes on the end, and no test step.
+    fn a_used_commit_flow() -> FlowDef {
+        let mut flow = FlowBook::defaults().get("commit_and_pr").unwrap().clone();
+        flow.remove_node("test");
+        flow.nodes[0].config.insert("base".into(), "main".into());
+        flow.nodes.push(dep(
+            NodeDef::from_catalogue("find_pr", "find_pr"),
+            &["open_pr"],
+        ));
+        flow.nodes
+            .push(dep(NodeDef::from_catalogue("sync", "sync"), &["find_pr"]));
+        flow
+    }
+
     #[test]
     fn a_commit_flow_saved_before_the_test_step_picks_it_up() {
         // Everyone with an existing flows.toml would otherwise never see the
         // step, because defaults only apply when the file is absent.
-        let mut book = FlowBook::defaults();
-        book.get_mut("commit_and_pr").unwrap().remove_node("test");
-        assert!(!book
-            .get("commit_and_pr")
-            .unwrap()
-            .nodes
-            .iter()
-            .any(|n| n.id == "test"));
+        let mut book = FlowBook {
+            adopted: vec![],
+            flows: vec![a_used_commit_flow()],
+        };
+        assert!(book.adopt_missing_test_step());
 
-        book.adopt_missing_test_step();
-
-        let commit_flow = book.get("commit_and_pr").unwrap();
-        let test = commit_flow.nodes.iter().find(|n| n.id == "test").unwrap();
-        assert_eq!(test.step, "run_tests");
+        let flow = &book.flows[0];
+        let test = flow.nodes.iter().find(|n| n.step == "run_tests").unwrap();
         assert_eq!(test.deps, vec!["scan".to_string()]);
-        let commit = commit_flow.nodes.iter().find(|n| n.id == "commit").unwrap();
+        let commit = flow.nodes.iter().find(|n| n.id == "commit").unwrap();
         assert!(commit.deps.contains(&"test".to_string()));
+        assert!(validate(flow).is_empty(), "{:?}", validate(flow));
     }
 
     #[test]
-    fn a_commit_flow_you_have_rewired_is_left_alone() {
-        let mut book = FlowBook::defaults();
-        {
-            let flow = book.get_mut("commit_and_pr").unwrap();
-            flow.remove_node("test");
-            flow.remove_node("draft_pr");
-        }
+    fn a_customised_commit_flow_keeps_everything_it_already_had() {
+        let mut book = FlowBook {
+            adopted: vec![],
+            flows: vec![a_used_commit_flow()],
+        };
         book.adopt_missing_test_step();
-        assert!(!book
-            .get("commit_and_pr")
-            .unwrap()
-            .nodes
-            .iter()
-            .any(|n| n.id == "test"));
+
+        let flow = &book.flows[0];
+        assert_eq!(
+            flow.nodes[0].setting("base"),
+            "main",
+            "the pinned base survives"
+        );
+        assert!(
+            flow.nodes.iter().any(|n| n.id == "sync"),
+            "so do added nodes"
+        );
     }
 
     #[test]
-    fn adopting_twice_changes_nothing() {
+    fn a_flow_that_does_not_commit_is_left_alone() {
+        // The "Release" flow: preflight and a script. Nothing to test between.
+        let mut book = FlowBook {
+            adopted: vec![],
+            flows: vec![FlowDef {
+                id: "release".into(),
+                label: "Release".into(),
+                handles: vec![],
+                nodes: vec![
+                    NodeDef::from_catalogue("preflight", "preflight"),
+                    dep(
+                        NodeDef::from_catalogue("run_script", "run_script"),
+                        &["preflight"],
+                    ),
+                ],
+            }],
+        };
+        book.adopt_missing_test_step();
+        assert!(!book.flows[0].nodes.iter().any(|n| n.step == "run_tests"));
+    }
+
+    #[test]
+    fn a_test_step_you_deleted_stays_deleted() {
+        // The marker is the whole point: without it, every launch would put
+        // back a step you had just removed, with no way to refuse it.
+        let mut book = FlowBook {
+            adopted: vec![],
+            flows: vec![a_used_commit_flow()],
+        };
+        assert!(book.adopt_missing_test_step());
+
+        book.flows[0].remove_node("test");
+        assert!(!book.adopt_missing_test_step(), "it only ever runs once");
+        assert!(!book.flows[0].nodes.iter().any(|n| n.step == "run_tests"));
+    }
+
+    #[test]
+    fn the_shipped_book_has_nothing_to_adopt() {
         let mut book = FlowBook::defaults();
         let before = book.clone();
-        book.adopt_missing_test_step();
+        assert!(!book.adopt_missing_test_step());
         assert_eq!(book, before);
+    }
+
+    #[test]
+    fn adoption_survives_a_round_trip_through_the_file() {
+        // The marker is only worth anything if it is written back.
+        let mut book = FlowBook {
+            adopted: vec![],
+            flows: vec![a_used_commit_flow()],
+        };
+        book.adopt_missing_test_step();
+
+        let text = toml::to_string_pretty(&book).unwrap();
+        let read_back: FlowBook = toml::from_str(&text).unwrap();
+        assert_eq!(read_back, book);
+        let mut read_back = read_back;
+        assert!(!read_back.adopt_missing_test_step());
+    }
+
+    #[test]
+    fn a_real_flows_file_gets_the_step() {
+        // Copied from a `flows.toml` that had been in use for a while — the
+        // exact file the first version of this migration silently skipped,
+        // because it insisted on a flow identical to the shipped one.
+        let text = r#"
+[[flow]]
+id = "commit_and_pr"
+label = "Commit → PR"
+handles = []
+
+[[flow.node]]
+id = "preflight"
+step = "preflight"
+
+[flow.node.config]
+base = "main"
+
+[[flow.node]]
+id = "scan"
+step = "scan_changes"
+deps = ["preflight"]
+
+[[flow.node]]
+id = "draft_commit"
+step = "draft_commit"
+deps = ["scan"]
+
+[[flow.node]]
+id = "commit"
+step = "commit"
+deps = ["draft_commit"]
+
+[[flow.node]]
+id = "draft_pr"
+step = "draft_pr"
+deps = ["draft_commit"]
+
+[[flow.node]]
+id = "push"
+step = "push"
+deps = ["commit"]
+
+[[flow.node]]
+id = "open_pr"
+step = "open_pr"
+deps = ["push", "draft_pr"]
+
+[[flow.node]]
+id = "find_pr"
+step = "find_pr"
+deps = ["open_pr"]
+
+[[flow.node]]
+id = "sync"
+step = "sync"
+deps = ["find_pr"]
+"#;
+
+        let mut book: FlowBook = toml::from_str(text).unwrap();
+        assert!(book.adopt_missing_test_step());
+
+        let flow = book.get("commit_and_pr").unwrap();
+        let test = flow
+            .nodes
+            .iter()
+            .find(|n| n.step == "run_tests")
+            .expect("the step must land in a flow that scans and commits");
+        assert_eq!(test.deps, vec!["scan".to_string()]);
+        assert!(flow
+            .nodes
+            .iter()
+            .find(|n| n.id == "commit")
+            .unwrap()
+            .deps
+            .contains(&"test".to_string()));
+        // And the result is a flow that still runs.
+        assert!(validate(flow).is_empty(), "{:?}", validate(flow));
     }
 
     #[test]
