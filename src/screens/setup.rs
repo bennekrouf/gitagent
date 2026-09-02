@@ -242,6 +242,22 @@ pub fn Setup(props: SetupProps) -> Element {
                                 div { class: "handles",
                                     div { class: "items-head",
                                         span { class: "items-head-label", "Open this flow when a repository has" }
+                                        // A flow declaring nothing still runs
+                                        // when you start it by hand — it is
+                                        // just invisible to anything that
+                                        // picks a flow on your behalf, which
+                                        // includes a trusted run's next leg.
+                                        // Duplicating a flow copies its nodes
+                                        // and not its purpose, so this is the
+                                        // normal state of a new flow rather
+                                        // than a rare mistake.
+                                        if flow.handles.is_empty() {
+                                            span {
+                                                class: "handles-none",
+                                                title: "Nothing opens this flow automatically, and a trusted run will never continue into it.",
+                                                "answers nothing yet"
+                                            }
+                                        }
                                     }
                                     div { class: "items",
                                         for need in Need::ALL {

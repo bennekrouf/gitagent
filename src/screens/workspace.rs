@@ -510,6 +510,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // only while that is wanted: taking it out mid-run hands the next approval
     // straight back to the person, without disturbing the run itself.
     let mut trusted = use_signal(BTreeSet::<Key>::new);
+    // Why the last trusted run stopped, when the reason was not "there is
+    // nothing left". Cleared when the next one starts.
+    let mut chain_note = use_signal(String::new);
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     // Which flows the *current* repository has chosen not to see — a filter
@@ -639,25 +642,48 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         // Settings live in a per-window signal but one file on disk. Re-reading
         // here is what stops a second window running against a stale provider.
         llm_config_mut.set(store::load_settings());
+        chain_note.set(String::new());
 
         // An ordinary Start runs the flow on screen. A trusted run is for the
         // repository, not for one flow, so it starts on whichever flow answers
         // what the repository actually needs — which is how "Trusted run" on
         // the Commit → PR tab does the release a repository is waiting for
         // instead of refusing because there is nothing to commit.
+        //
+        // Falling back to the flow on screen matters as much as the preference
+        // does. `next_flow` answers "what does this repository most need",
+        // which is `None` for a repository that needs nothing in particular —
+        // and that used to disable the button on every tab at once, including
+        // a "Deploy VPS" flow whose whole point is that you run it when you
+        // decide to, not when a probe says so.
         let opening = if trust {
             statuses
                 .read()
                 .get(&repo)
                 .and_then(|status| trusted::next_flow(&book.read(), status))
+                .or_else(|| Some((selected_flow.read().clone(), selected_pr.read().clone())))
         } else {
             Some((selected_flow.read().clone(), selected_pr.read().clone()))
         };
         let Some((mut id, mut pr)) = opening else {
+            // Nothing to start at all. Silently doing nothing is what made
+            // this button feel broken, so say why.
+            if trust {
+                if let Some(status) = statuses.read().get(&repo) {
+                    chain_note.set(trusted::why_stopped(&book.read(), status).unwrap_or_default());
+                }
+            }
             return;
         };
 
         spawn(async move {
+            // Whether the run is *currently* trusted, which is not the same as
+            // the button that started it. A run started with plain Start and
+            // adopted part-way — "stop asking me" at an approval — has to chain
+            // like any other trusted run from that point, so this is re-read
+            // from the trusted set after every leg rather than captured once.
+            let mut trusting = trust;
+
             // Each turn of this loop is one flow, start to finish. Only a
             // trusted run goes round twice.
             for _ in 0..MOST_FLOWS_IN_A_TRUSTED_RUN {
@@ -682,7 +708,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 }
                 states.write().insert(key.clone(), fresh);
                 running.write().insert(key.clone());
-                if trust {
+                if trusting {
                     trusted.write().insert(key.clone());
                 } else {
                     trusted.write().remove(&key);
@@ -712,18 +738,24 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 
                 // `drive` takes the key back out when it stopped at something
                 // it would not approve, so this is also how a hold ends the
-                // chain rather than only the leg it happened on.
-                let still_trusted = trusted.read().contains(&key);
+                // chain rather than only the leg it happened on. It is equally
+                // how adoption gets picked up: the key is in the set because a
+                // person put it there mid-flight.
+                trusting = trusted.read().contains(&key);
                 trusted.write().remove(&key);
 
                 let status = probe::probe(&repo).await;
                 let finished = snapshot(&states, &key);
                 statuses.write().insert(repo.clone(), status.clone());
 
-                if !trust || !still_trusted || !trusted::may_continue(&finished, &graph) {
+                if !trusting || !trusted::may_continue(&finished, &graph) {
                     break;
                 }
                 let Some(next) = trusted::next_flow(&book.read(), &status) else {
+                    // The commonest end of a chain, and until now the most
+                    // silent: a release is due and the release flow never
+                    // declared that it handles releases.
+                    chain_note.set(trusted::why_stopped(&book.read(), &status).unwrap_or_default());
                     break;
                 };
                 // The same flow again means the last one did not move the
@@ -908,6 +940,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             &pr_id,
                             &flow_problems,
                         );
+                        // What the trusted button will actually start. The
+                        // repository's most urgent need by preference — that
+                        // is the whole point of the button — but the flow on
+                        // screen when there is no such need and this flow can
+                        // run anyway. Requiring a need meant the button was
+                        // dead on every tab whenever the probe said "nothing
+                        // in particular", which reads as "trusted runs only
+                        // work on Commit → PR".
+                        let trusted_start = trusted_next
+                            .clone()
+                            .or_else(|| can_run.enabled.then(|| (flow_id.clone(), pr_id.clone())));
+
                         // Both flows end with a pull request worth linking to:
                         // the one just opened, or the one just merged.
                         let pr_url = state.artifact("pr_url").to_string();
@@ -1023,18 +1067,47 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             span { class: "flow-tab-dot" }
                                             "Trusting…"
                                         }
+                                    } else if is_running {
+                                        // A run is already going, and you are
+                                        // most likely reading this because it
+                                        // has stopped to ask you something.
+                                        // Adopting it is a different action
+                                        // from starting one: nothing is reset,
+                                        // the approval in front of you is
+                                        // answered, and every one after it in
+                                        // this repository is too. `drive` is
+                                        // already watching the trusted set on
+                                        // its approval wait, so putting the key
+                                        // in is the whole mechanism.
+                                        button {
+                                            class: "btn btn-trusted",
+                                            title: "Approve this step, and every step after it in this repository, without asking again. Still stops at a merge the analysis or CI is unhappy about.",
+                                            onclick: {
+                                                let key = key.clone();
+                                                let mut trusted = trusted;
+                                                move |_| {
+                                                    trusted.write().insert(key.clone());
+                                                }
+                                            },
+                                            "Stop asking me"
+                                        }
                                     } else {
                                         button {
                                             class: "btn btn-trusted",
-                                            disabled: is_running || other_pr_running || trusted_next.is_none(),
-                                            title: match (&trusted_next, is_running || other_pr_running) {
-                                                (_, true) => "A run is already going in this repository.".to_string(),
+                                            disabled: other_pr_running || trusted_start.is_none(),
+                                            title: match (&trusted_start, other_pr_running) {
+                                                (_, true) => "Another pull request review is already running in this repository.".to_string(),
                                                 (None, _) => format!(
-                                                    "Nothing here needs a run — {}.",
-                                                    status_map
-                                                        .get(&repo)
-                                                        .map(|s| s.wants().note())
-                                                        .unwrap_or("still reading this repository")
+                                                    "Nothing here needs a run, and this flow cannot start — {}.",
+                                                    if can_run.reason.is_empty() {
+                                                        status_map
+                                                            .get(&repo)
+                                                            .map(|s| s.wants().note())
+                                                            .unwrap_or("still reading this repository")
+                                                            .to_string()
+                                                    } else {
+                                                        can_run.reason.clone()
+                                                    }
                                                 ),
                                                 (Some((id, _)), _) => format!(
                                                     "Work through what this repository needs, starting with \u{201c}{}\u{201d}, \
@@ -1058,6 +1131,25 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         },
                                         onclick: start,
                                         if is_running { "Running…" } else { "{can_run.label}" }
+                                    }
+                                }
+
+                                // Where the chain stopped, when it stopped for
+                                // a reason you can act on.
+                                if !chain_note.read().is_empty() {
+                                    div { class: "chain-note",
+                                        span { class: "chain-note-icon", "\u{26a0}" }
+                                        span { class: "chain-note-text", "{chain_note}" }
+                                        button {
+                                            class: "chain-note-open",
+                                            onclick: move |_| setup_open.set(true),
+                                            "Open Setup"
+                                        }
+                                        button {
+                                            class: "chain-note-close",
+                                            onclick: move |_| chain_note.set(String::new()),
+                                            "\u{2715}"
+                                        }
                                     }
                                 }
 
@@ -1085,13 +1177,22 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                     let first = flows.get(&id)
                                                         .map(|f| f.first_node())
                                                         .unwrap_or_default();
+                                                    // A tab is a flow, not one particular PR review
+                                                    // within it, so the previous tab's selection must
+                                                    // not carry over and silently scope the next
+                                                    // "Start" to it. Clearing it outright was the
+                                                    // over-correction: arriving at a review flow with
+                                                    // one open pull request and nothing selected makes
+                                                    // you click a list of one to say the only thing it
+                                                    // could have said.
+                                                    let obvious = status_map
+                                                        .get(&repo)
+                                                        .map(|s| s.default_pr())
+                                                        .unwrap_or_default();
                                                     move |_| {
                                                         selected_flow.set(id.clone());
                                                         selected_node.set(first.clone());
-                                                        // A tab is a flow, not one particular PR review
-                                                        // within it — leaving a PR selected here would
-                                                        // silently scope the next "Start" to it.
-                                                        selected_pr.set(String::new());
+                                                        selected_pr.set(obvious.clone());
                                                     }
                                                 },
                                                 if !problems.is_empty() {

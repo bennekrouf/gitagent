@@ -236,6 +236,26 @@ impl RepoStatus {
         .unwrap_or(Wants::Nothing)
     }
 
+    /// The pull request to open a review on, when nothing else has said.
+    ///
+    /// `""` only when the answer is genuinely a question. One open pull
+    /// request is not a question, and neither is a branch with its own — those
+    /// are the two cases where making the person pick from a list of one, or
+    /// from a list where only one is theirs, is just a click that says nothing.
+    pub fn default_pr(&self) -> String {
+        if let Some(pr) = &self.pr {
+            // The checked-out branch's own. Whatever else is open, this is
+            // the one being worked on.
+            return pr.number.clone();
+        }
+        match self.prs.as_slice() {
+            [only] => only.number.clone(),
+            // Several, none of them this branch's: picking one for you would
+            // be a guess, and the wrong guess merges somebody else's work.
+            _ => String::new(),
+        }
+    }
+
     /// One line for the sidebar.
     pub fn summary(&self) -> String {
         match (&self.pr, self.changes) {
@@ -681,6 +701,66 @@ fn rollup(value: &serde_json::Value) -> Checks {
         (true, _) => Checks::Failing,
         (false, true) => Checks::Pending,
         _ => Checks::Passing,
+    }
+}
+
+#[cfg(test)]
+mod default_pr_tests {
+    use super::*;
+    use crate::services::forge::Forge;
+    use crate::services::release::ReleaseState;
+
+    fn brief(number: &str) -> PrBrief {
+        PrBrief {
+            number: number.into(),
+            title: "t".into(),
+            url: "u".into(),
+            checks: Checks::Passing,
+            files: 1,
+            additions: 1,
+            deletions: 0,
+            commits: 1,
+        }
+    }
+
+    fn status(pr: Option<&str>, prs: &[&str]) -> RepoStatus {
+        RepoStatus {
+            branch: "feat/x".into(),
+            changes: 0,
+            forge: Forge::GitHub,
+            pr: pr.map(brief),
+            prs: prs.iter().map(|n| brief(n)).collect(),
+            prs_error: None,
+            ahead: 0,
+            behind: 0,
+            unmerged: 0,
+            release: ReleaseState::default(),
+            in_progress: None,
+        }
+    }
+
+    #[test]
+    fn the_only_open_pull_request_needs_no_choosing() {
+        // The reported case: open Review -> Merge, one pull request, and
+        // nothing selected. The list had exactly one entry and clicking it
+        // said nothing that was not already known.
+        assert_eq!(status(None, &["7"]).default_pr(), "7");
+    }
+
+    #[test]
+    fn the_checked_out_branchs_own_wins_over_the_rest() {
+        assert_eq!(status(Some("7"), &["3", "7", "9"]).default_pr(), "7");
+    }
+
+    #[test]
+    fn several_that_are_none_of_them_this_branchs_stays_a_question() {
+        // Guessing here picks a pull request to merge on someone's behalf.
+        assert_eq!(status(None, &["3", "9"]).default_pr(), "");
+    }
+
+    #[test]
+    fn no_pull_requests_selects_nothing() {
+        assert_eq!(status(None, &[]).default_pr(), "");
     }
 }
 

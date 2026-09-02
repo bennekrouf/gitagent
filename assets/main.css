@@ -983,3 +983,37 @@ body {
     opacity: 0.7;
 }
 .update-banner-dismiss:hover { opacity: 1; }
+
+/* Why a trusted run stopped. Sits under the run buttons because that is where
+   you are looking when nothing happened. */
+.chain-note {
+    display: flex; align-items: center; gap: 8px;
+    margin: 8px 0 0; padding: 8px 10px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--yellow) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
+    font-size: 11px; line-height: 1.5; color: var(--text2);
+}
+.chain-note-icon { color: var(--yellow); flex-shrink: 0; }
+.chain-note-text { flex: 1; min-width: 0; }
+.chain-note-open {
+    flex-shrink: 0; cursor: pointer;
+    background: none; border: 1px solid var(--border);
+    color: var(--text2); border-radius: 5px;
+    font-size: 10px; padding: 3px 8px;
+}
+.chain-note-open:hover { color: var(--text1); border-color: var(--text3); }
+.chain-note-close {
+    flex-shrink: 0; cursor: pointer;
+    background: none; border: 0; color: var(--text3);
+    font-size: 11px; padding: 0 2px; line-height: 1;
+}
+.chain-note-close:hover { color: var(--text1); }
+
+.handles-none {
+    margin-left: 8px; font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 1px 6px; border-radius: 999px;
+    background: color-mix(in srgb, var(--yellow) 18%, transparent);
+    color: var(--yellow);
+}
