@@ -12,7 +12,7 @@
 
 use super::flowdef::FlowBook;
 use super::graph::{Graph, NodeSpec, NodeStatus, RunState, Step};
-use super::probe::{Need, RepoStatus};
+use super::probe::{Need, RepoStatus, Wants};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Verdict {
@@ -61,15 +61,48 @@ pub fn next_flow(book: &FlowBook, status: &RepoStatus) -> Option<(String, String
     // first: it is the one the commit flow just opened, and `prs` is every open
     // pull request on the repository in whatever order the forge listed them.
     let pr = match need {
-        Need::OpenPullRequest => status
-            .pr
-            .as_ref()
-            .or(status.prs.first())
-            .map(|pr| pr.number.clone())
-            .unwrap_or_default(),
+        Need::OpenPullRequest => status.default_pr(),
         _ => String::new(),
     };
     Some((flow.id.clone(), pr))
+}
+
+/// Why the chain has no next flow to take on, in a sentence for the person who
+/// pressed the button. `None` when there is genuinely nothing left to do.
+///
+/// This exists because "no next flow" had exactly one presentation — the run
+/// quietly ending — and the two reasons behind it are nothing alike. A
+/// repository that is finished and a repository whose release flow never
+/// declared that it handles releases looked identical: press Trusted run,
+/// watch one flow, and get no explanation of why it stopped there. The second
+/// is a one-tick fix in Setup, and it is unfindable without being told.
+pub fn why_stopped(book: &FlowBook, status: &RepoStatus) -> Option<String> {
+    let wants = status.wants();
+    let Some(need) = wants.need() else {
+        return match wants {
+            // Answered by no flow on purpose: preflight settles it, where the
+            // continue and abort buttons already are.
+            Wants::Resolve => Some(
+                "This repository has a git operation that stopped part-way. Finish or abandon \
+                 it — Preflight offers both — before anything else can run."
+                    .into(),
+            ),
+            _ => None,
+        };
+    };
+
+    if book.runnable().iter().any(|f| f.answers(need)) {
+        return None;
+    }
+
+    // The flow may well exist and simply not say so. Naming the tick box is
+    // the whole point of the message.
+    Some(format!(
+        "This repository wants {}, but no flow says it handles that. Open Setup and tick \
+         \u{201c}{}\u{201d} on the flow that should.",
+        wants.note(),
+        need.label(),
+    ))
 }
 
 /// Whether a finished run is one a trusted run may move on from.
@@ -310,6 +343,52 @@ mod tests {
     fn a_repository_with_nothing_to_do_ends_the_chain() {
         let idle = repo(0, 0, None, false);
         assert_eq!(next_flow(&FlowBook::defaults(), &idle), None);
+    }
+
+    #[test]
+    fn a_release_no_flow_declares_says_which_box_to_tick() {
+        // The reported case, read straight off the user's own flows.toml: a
+        // flow called "Release" exists, runs a script, and has `handles = []`
+        // because duplicating a flow copies its nodes and not its purpose. The
+        // chain ended there in total silence, which is indistinguishable from
+        // the app being broken.
+        let waiting = repo(0, 0, None, true);
+        let book = FlowBook::defaults();
+        assert_eq!(next_flow(&book, &waiting), None, "nothing answers it");
+
+        let why = why_stopped(&book, &waiting).expect("and it must say so");
+        assert!(why.contains("release due"), "{why}");
+        assert!(why.contains(Need::Release.label()), "{why}");
+        assert!(why.contains("Setup"), "names where the fix is: {why}");
+    }
+
+    #[test]
+    fn a_repository_with_nothing_left_is_not_nagged() {
+        let idle = repo(0, 0, None, false);
+        assert_eq!(why_stopped(&FlowBook::defaults(), &idle), None);
+    }
+
+    #[test]
+    fn a_need_a_flow_does_answer_produces_no_complaint() {
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        assert_eq!(why_stopped(&book, &repo(0, 0, None, true)), None);
+        assert_eq!(why_stopped(&book, &repo(3, 0, None, false)), None);
+    }
+
+    #[test]
+    fn an_unfinished_rebase_is_explained_rather_than_blamed_on_the_flows() {
+        // No flow answers `Resolve` on purpose, so the "tick a box in Setup"
+        // message would send someone hunting for a setting that should not
+        // exist.
+        let mut stuck = repo(3, 0, None, false);
+        stuck.in_progress = Some(crate::services::git::InProgress::Rebase);
+        let why = why_stopped(&FlowBook::defaults(), &stuck).expect("still worth saying");
+        assert!(why.contains("Preflight"), "{why}");
+        assert!(
+            !why.contains("Setup"),
+            "not a flow-declaration problem: {why}"
+        );
     }
 
     #[test]
