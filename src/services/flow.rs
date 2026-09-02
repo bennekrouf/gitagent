@@ -25,6 +25,7 @@ use super::git;
 use super::graph::{NodeSpec, ProposalItem, Remedy, RunState, Step};
 use super::llm::{self, complete_json, LlmConfig};
 use super::remote;
+use super::testsuite;
 
 /// What a node produced. `summary` lands on the card, `log` in the detail
 /// pane, and `artifacts` crosses the edge to downstream nodes.
@@ -135,6 +136,15 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
                 format!("\n\nAnswering prompts with: {:?}", node.setting("stdin"))
             }
         ),
+        Step::RunTests => match node.setting("command").trim() {
+            "" => "The project's test suite, worked out from the repository — \
+                   `cargo test`, `npm test`, `pytest` and so on. The node log \
+                   names the file it decided from.\n\n\
+                   A failure stops the flow here; a repository with no suite \
+                   this recognises is not a failure."
+                .to_string(),
+            command => format!("sh -c '{command}'\n\nA failure stops the flow here."),
+        },
         Step::RunScript => format!(
             "sh -c '{}'\n\nin {}{}",
             node.setting("command"),
@@ -243,6 +253,7 @@ pub async fn execute(
         // Only these two shell out to a process that can run long enough for
         // live output to matter — everything else above finishes fast enough
         // that a final log is all "streaming" would ever show anyway.
+        Step::RunTests => run_tests(node, repo, on_line).await,
         Step::RunScript => run_script(node, repo, on_line).await,
         Step::RunRemote => run_remote(node, on_line).await,
     }
@@ -293,6 +304,68 @@ async fn run_remote(
             format!("{host}: {command}\n\n(no output)")
         } else {
             output.clone()
+        },
+        artifacts: vec![
+            (format!("{}_output", node.id), output),
+            (format!("{}_exit", node.id), "0".to_string()),
+        ],
+        nothing_to_do: false,
+        items: vec![],
+    })
+}
+
+/// Runs the project's test suite, and stops the flow if it fails.
+///
+/// The command is optional: left empty, it is detected from the repository.
+/// That is what lets the step ship in the default commit flow — a required
+/// setting would make the shipped flow arrive invalid.
+///
+/// A repository with no suite this recognises finishes `Done`, not `Skipped`.
+/// The difference is load-bearing: `Skipped` blocks everything downstream, and
+/// "this project has no tests" must not be the thing that stops you committing.
+async fn run_tests(
+    node: &NodeSpec,
+    repo: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<StepOutcome, StepFailure> {
+    let configured = node.setting("command").trim().to_string();
+    let (command, why) = if configured.is_empty() {
+        match testsuite::detect(std::path::Path::new(repo)) {
+            Some(suite) => (suite.command, format!("detected from {}", suite.why)),
+            None => {
+                let said = "No test suite detected in this repository, so there was nothing \
+                            to run. Set a command in Setup if that is wrong.";
+                on_line(said);
+                return Ok(StepOutcome {
+                    summary: "No test suite found".into(),
+                    log: said.into(),
+                    artifacts: vec![
+                        (format!("{}_output", node.id), String::new()),
+                        (format!("{}_exit", node.id), "none".to_string()),
+                    ],
+                    nothing_to_do: false,
+                    items: vec![],
+                });
+            }
+        }
+    } else {
+        (configured, "set in Setup".to_string())
+    };
+
+    on_line(&format!("$ {command}   ({why})"));
+    let (ok, output) = git::run_shell_streaming(repo, &command, "", on_line).await;
+    if !ok {
+        return Err(StepFailure::from(format!(
+            "Tests failed.\n\n$ {command}   ({why})\n\n{output}"
+        )));
+    }
+
+    Ok(StepOutcome {
+        summary: format!("{command} — passed"),
+        log: if output.trim().is_empty() {
+            format!("$ {command}   ({why})\n\n(no output)")
+        } else {
+            format!("$ {command}   ({why})\n\n{output}")
         },
         artifacts: vec![
             (format!("{}_output", node.id), output),
@@ -1193,7 +1266,7 @@ mod tests {
     fn rejecting_the_commit_blocks_the_push_and_the_pr() {
         let g = commit_and_pr_flow();
         let mut s = RunState::fresh(&g);
-        for id in ["preflight", "scan", "draft_commit", "draft_pr"] {
+        for id in ["preflight", "scan", "draft_commit", "draft_pr", "test"] {
             s.set_status(id, NodeStatus::Done);
         }
         s.set_status("commit", NodeStatus::Rejected);
@@ -1201,6 +1274,52 @@ mod tests {
         assert_eq!(s.status("push"), NodeStatus::Blocked);
         assert_eq!(s.status("open_pr"), NodeStatus::Blocked);
         assert!(s.is_finished(&g));
+    }
+
+    #[test]
+    fn a_failing_test_suite_stops_the_flow_before_anything_is_committed() {
+        // The reason the node sits where it does: catching a red test after
+        // the push is worth much less than catching it before the commit.
+        let g = commit_and_pr_flow();
+        let mut s = RunState::fresh(&g);
+        for id in ["preflight", "scan", "draft_commit", "draft_pr"] {
+            s.set_status(id, NodeStatus::Done);
+        }
+        s.set_status("test", NodeStatus::Failed);
+        s.propagate_block(&g);
+
+        assert_eq!(s.status("commit"), NodeStatus::Blocked);
+        assert_eq!(s.status("push"), NodeStatus::Blocked);
+        assert_eq!(s.status("open_pr"), NodeStatus::Blocked);
+    }
+
+    #[test]
+    fn the_tests_run_alongside_the_model_not_after_it() {
+        // Both hang off `scan`, so neither waits on the other — the point of
+        // the graph being a graph.
+        let g = commit_and_pr_flow();
+        let test = g.get("test").expect("the shipped flow runs the tests");
+        assert_eq!(test.deps, vec!["scan".to_string()]);
+        assert_eq!(test.step, Step::RunTests);
+
+        let commit = g.get("commit").unwrap();
+        assert!(commit.deps.contains(&"test".to_string()));
+        assert!(commit.deps.contains(&"draft_commit".to_string()));
+
+        // With the model call still in flight, the suite is already runnable.
+        let mut s = RunState::fresh(&g);
+        for id in ["preflight", "scan"] {
+            s.set_status(id, NodeStatus::Done);
+        }
+        s.set_status("draft_commit", NodeStatus::Running);
+        assert_eq!(s.next_ready(&g).map(|n| n.id), Some("test".to_string()));
+    }
+
+    #[test]
+    fn running_the_tests_does_not_stop_to_be_approved() {
+        // Nothing it does can be undone-by-approval: no history, no remote.
+        let g = commit_and_pr_flow();
+        assert!(!g.get("test").unwrap().requires_approval);
     }
 
     #[test]

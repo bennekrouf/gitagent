@@ -28,6 +28,7 @@ use crate::services::llm::LlmConfig;
 use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
 use crate::services::store::Layout;
+use crate::services::trusted;
 use crate::services::{git, store};
 
 /// One run per repository, per flow, per pull request — the third slot is
@@ -156,6 +157,7 @@ async fn drive(
     selected_repo: Signal<Option<String>>,
     selected_flow: Signal<String>,
     selected_pr: Signal<String>,
+    mut trusted: Signal<BTreeSet<Key>>,
 ) {
     let repo = key.0.clone();
 
@@ -194,6 +196,13 @@ async fn drive(
             // are not looking at the window, say so.
             announce(NodeStatus::AwaitingApproval, &key.0, &node.title, "");
 
+            // A trusted run answers the approval by writing the same decision
+            // the button writes, after a beat long enough to read the proposal
+            // it is agreeing to. Going through `decisions` rather than short-
+            // circuiting the wait is deliberate: there is exactly one path an
+            // approval can take, so what you watch happen on screen is what
+            // actually happened.
+            let mut auto: Option<trusted::Verdict> = None;
             let approved = loop {
                 let decision = states
                     .read()
@@ -202,6 +211,47 @@ async fn drive(
                 if let Some(decision) = decision {
                     break decision;
                 }
+
+                if auto.is_none() && trusted.read().contains(&key) {
+                    let verdict = trusted::decide(&node, &state);
+                    if let Some(why) = verdict.reason() {
+                        // It stopped, so it is no longer trusting: the button
+                        // goes back to offering it, and the rest of the run is
+                        // the person's again. Resuming on their approval and
+                        // carrying on clicking would be the one behaviour that
+                        // makes "it stopped for you" untrue.
+                        states
+                            .write()
+                            .entry(key.clone())
+                            .or_default()
+                            .runs
+                            .entry(node.id.clone())
+                            .or_default()
+                            .held = why.to_string();
+                        trusted.write().remove(&key);
+                        // No second notification: becoming `AwaitingApproval`
+                        // already sent one, and the reason is on the node.
+                    }
+                    auto = Some(verdict);
+                }
+
+                if auto == Some(trusted::Verdict::Approve) {
+                    // Long enough to see the node light up and read what it is
+                    // about to do, short enough that a whole flow still feels
+                    // like one action.
+                    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                    // Still trusted, and still nobody else's decision: a person
+                    // who hit Stop during that pause gets their run back.
+                    if !trusted.read().contains(&key) {
+                        auto = None;
+                        continue;
+                    }
+                    let mut w = states.write();
+                    let entry = w.entry(key.clone()).or_default();
+                    entry.decisions.entry(node.id.clone()).or_insert(true);
+                    continue;
+                }
+
                 tokio::time::sleep(std::time::Duration::from_millis(120)).await;
             };
 
@@ -321,6 +371,7 @@ fn retry_node(
     graph: Graph,
     key: Key,
     node: &str,
+    trusted: Signal<BTreeSet<Key>>,
 ) {
     states
         .write()
@@ -342,6 +393,7 @@ fn retry_node(
             selected_repo,
             selected_flow,
             selected_pr,
+            trusted,
         )
         .await;
         running.write().remove(&key);
@@ -447,6 +499,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut selected_pr = use_signal(String::new);
     let mut selected_node = use_signal(String::new);
     let mut running = use_signal(BTreeSet::<Key>::new);
+    // Runs whose approvals are being clicked through for us. A key is in here
+    // only while that is wanted: taking it out mid-run hands the next approval
+    // straight back to the person, without disturbing the run itself.
+    let mut trusted = use_signal(BTreeSet::<Key>::new);
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     // Which flows the *current* repository has chosen not to see — a filter
@@ -569,7 +625,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let cfg = props.llm_config.read().clone();
 
     let mut llm_config_mut = props.llm_config;
-    let start = move |_| {
+    let mut begin = move |trust: bool| {
         let Some(repo) = selected_repo.read().clone() else {
             return;
         };
@@ -599,6 +655,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         states.write().insert(key.clone(), fresh);
         selected_node.set(def.first_node());
         running.write().insert(key.clone());
+        if trust {
+            trusted.write().insert(key.clone());
+        } else {
+            trusted.write().remove(&key);
+        }
 
         spawn(async move {
             drive(
@@ -610,12 +671,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 selected_repo,
                 selected_flow,
                 selected_pr,
+                trusted,
             )
             .await;
             running.write().remove(&key);
+            // Trust is per run, never sticky: the next Start is an ordinary
+            // one unless it is asked for again.
+            trusted.write().remove(&key);
             reprobe(key.0.clone(), statuses);
         });
     };
+    let start = move |_: Event<MouseData>| begin(false);
+    let start_trusted = move |_: Event<MouseData>| begin(true);
 
     if *setup_open.read() {
         return rsx! {
@@ -759,6 +826,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             .map(|r| r.label.clone())
                             .unwrap_or_else(|| repo.clone());
                         let is_running = running.read().contains(&key);
+                        let is_trusted = trusted.read().contains(&key);
                         // A repo reviewing PR #7 shouldn't also be able to start
                         // reviewing #5 — two runs racing each other's git state
                         // (checkout, fetch) in the same working tree.
@@ -868,6 +936,36 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         match repo_bases.read().get(&repo) {
                                             Some(base) => format!("Base: {base}"),
                                             None => "Base: auto".to_string(),
+                                        }
+                                    }
+                                    // Two ways to start the same run. The
+                                    // trusted one answers the approvals for
+                                    // you, in the open, and stops itself at
+                                    // anything `services::trusted` refuses.
+                                    if is_trusted {
+                                        button {
+                                            class: "btn btn-trusted btn-trusted-on",
+                                            title: "Stop clicking through the approvals. The run keeps going and asks you at the next one.",
+                                            onclick: {
+                                                let key = key.clone();
+                                                move |_| { trusted.write().remove(&key); }
+                                            },
+                                            span { class: "flow-tab-dot" }
+                                            "Trusting…"
+                                        }
+                                    } else {
+                                        button {
+                                            class: "btn btn-trusted",
+                                            disabled: is_running || other_pr_running || !can_run.enabled,
+                                            title: if can_run.enabled && !is_running && !other_pr_running {
+                                                "Run it and approve each step for you, one at a time so you can watch. \
+                                                 Stops for you at a merge the analysis or CI is unhappy about."
+                                                    .to_string()
+                                            } else {
+                                                can_run.reason.clone()
+                                            },
+                                            onclick: start_trusted,
+                                            "Trusted run"
                                         }
                                     }
                                     button {
@@ -1189,7 +1287,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                         states, running, selected_node,
                                                         selected_repo, selected_flow, selected_pr,
                                                         llm_config, statuses, retry_graph,
-                                                        key, &node,
+                                                        key, &node, trusted,
                                                     );
                                                 } else if ok {
                                                     // A terminal remedy resolves the failure by
@@ -1210,7 +1308,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                 states, running, selected_node,
                                                 selected_repo, selected_flow, selected_pr,
                                                 llm_config, statuses, retry_graph.clone(),
-                                                key.clone(), &node,
+                                                key.clone(), &node, trusted,
                                             );
                                         }
                                     },

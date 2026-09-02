@@ -87,6 +87,12 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
 
             if awaiting {
                 div { class: "approval",
+                    // A trusted run that stopped here says so at the node it
+                    // stopped on, rather than leaving an approval that looks
+                    // no different from any other while the run sits still.
+                    if !run.held.is_empty() {
+                        div { class: "approval-held", "{run.held}" }
+                    }
                     if run.preview_diff.is_empty() {
                         div { class: "approval-head", "This will run:" }
                         pre { class: "approval-body", "{run.proposal}" }

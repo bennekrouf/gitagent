@@ -269,6 +269,37 @@ pub const CATALOGUE: &[StepInfo] = &[
         testable: false,
     },
     StepInfo {
+        step: Step::RunTests,
+        key: "run_tests",
+        title: "Run tests",
+        subtitle: "The project's test suite",
+        about: "Runs the test suite and stops the flow if it fails, so a red \
+                test is caught before anything is committed rather than after \
+                it is pushed. Leave the command empty and it works one out from \
+                the repository — `cargo test`, `npm test`, `pytest` and so on — \
+                naming the file it decided from. A repository with no suite it \
+                recognises is not an error: the step says so and the flow \
+                carries on.",
+        kind: NodeKind::Deterministic,
+        reads: &[],
+        writes: &["{id}_output", "{id}_exit"],
+        // Running tests changes no history and touches no remote, and stopping
+        // to approve the thing you want to happen on every run is friction for
+        // its own sake.
+        gate_by_default: false,
+        testable: false,
+        config: &[ConfigField {
+            key: "command",
+            label: "Test command",
+            placeholder: "cargo test",
+            help: "Optional. Leave it empty to detect the suite from the \
+                   repository; set it for a project whose tests need a flag, a \
+                   subdirectory, or a runner nothing can guess.",
+            multiline: false,
+            required: false,
+        }],
+    },
+    StepInfo {
         step: Step::RunScript,
         key: "run_script",
         title: "Run a script",
@@ -398,6 +429,7 @@ mod tests {
             Step::Analyse,
             Step::Merge,
             Step::Sync,
+            Step::RunTests,
             Step::RunScript,
             Step::RunRemote,
         ];
