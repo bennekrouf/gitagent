@@ -10,7 +10,9 @@
 //! might be wrong. Everything it refuses, it refuses with a sentence you can
 //! read at the node it stopped on.
 
-use super::graph::{NodeSpec, RunState, Step};
+use super::flowdef::FlowBook;
+use super::graph::{Graph, NodeSpec, NodeStatus, RunState, Step};
+use super::probe::{Need, RepoStatus};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Verdict {
@@ -27,6 +29,54 @@ impl Verdict {
             Verdict::Hold(why) => Some(why),
         }
     }
+}
+
+/// The next flow a trusted run should take on for a repository in this state,
+/// and the pull request to scope it to (empty for flows that are not
+/// PR-scoped).
+///
+/// This is what makes a trusted run a run *for a repository* rather than for
+/// one flow. Committing produces a pull request, reviewing it produces merged
+/// work, merged work produces a release — each answer is a different flow, and
+/// stopping after the first one leaves the obvious next thing undone.
+///
+/// `None` means there is nothing more to do, or nothing a flow can do: an
+/// unfinished rebase needs a person and no flow claims it.
+pub fn next_flow(book: &FlowBook, status: &RepoStatus) -> Option<(String, String)> {
+    let wants = status.wants();
+    if !wants.needs_a_person() {
+        return None;
+    }
+    let need = wants.need()?;
+    let flow = book.runnable().into_iter().find(|f| f.answers(need))?;
+
+    // A review has to know which pull request it is about; leaving the slot
+    // empty falls back to "whatever the checked-out branch has open", which is
+    // not the same question.
+    let pr = match need {
+        Need::OpenPullRequest => status
+            .prs
+            .first()
+            .map(|pr| pr.number.clone())
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    Some((flow.id.clone(), pr))
+}
+
+/// Whether a finished run is one a trusted run may move on from.
+///
+/// A failure or a rejection is where the person has to come back in, so the
+/// chain stops there rather than starting the next flow on top of a run that
+/// did not do what it said. `Skipped` and the `Blocked` nodes behind it are
+/// not trouble — that is a step reporting there was nothing to do.
+pub fn may_continue(state: &RunState, graph: &Graph) -> bool {
+    !graph.nodes.iter().any(|n| {
+        matches!(
+            state.status(&n.id),
+            NodeStatus::Failed | NodeStatus::Rejected
+        )
+    })
 }
 
 /// What a trusted run should do with `node`, given everything the run has
@@ -117,6 +167,156 @@ mod tests {
         s.artifacts.insert("finding_count".into(), findings.into());
         s.artifacts.insert("checks_state".into(), checks.into());
         s
+    }
+
+    use crate::services::flowdef::FlowBook;
+    use crate::services::forge::Forge;
+    use crate::services::probe::{Checks, PrBrief};
+    use crate::services::release::ReleaseState;
+
+    /// A minimal flow declaring it answers the release need.
+    fn release_flow() -> crate::services::flowdef::FlowDef {
+        crate::services::flowdef::FlowDef {
+            id: "release".into(),
+            label: "Release".into(),
+            handles: vec![Need::Release.key().to_string()],
+            nodes: vec![crate::services::flowdef::NodeDef::from_catalogue(
+                "preflight",
+                "preflight",
+            )],
+        }
+    }
+
+    /// A repository in whatever state the arguments describe.
+    fn repo(changes: usize, unmerged: usize, pr: Option<Checks>, release: bool) -> RepoStatus {
+        let brief = |checks| PrBrief {
+            number: "7".into(),
+            title: "t".into(),
+            url: "u".into(),
+            checks,
+            files: 1,
+            additions: 1,
+            deletions: 0,
+            commits: 1,
+        };
+        RepoStatus {
+            branch: "feat/x".into(),
+            changes,
+            forge: Forge::GitHub,
+            pr: pr.map(brief),
+            prs: pr.map(|c| vec![brief(c)]).unwrap_or_default(),
+            prs_error: None,
+            ahead: 0,
+            behind: 0,
+            unmerged,
+            release: if release {
+                ReleaseState {
+                    last_tag: Some("v1".into()),
+                    commits: 2,
+                    prs: vec![],
+                    releases: true,
+                }
+            } else {
+                ReleaseState::default()
+            },
+            in_progress: None,
+        }
+    }
+
+    #[test]
+    fn the_chain_walks_commit_then_review_then_release() {
+        // The whole point of chaining: each flow's output is the next one's
+        // input, and stopping after the first leaves the obvious work undone.
+        let book = FlowBook::defaults();
+
+        let dirty = repo(3, 0, None, false);
+        assert_eq!(
+            next_flow(&book, &dirty),
+            Some(("commit_and_pr".into(), String::new()))
+        );
+
+        let has_pr = repo(0, 0, Some(Checks::Passing), false);
+        assert_eq!(
+            next_flow(&book, &has_pr),
+            Some(("review_and_merge".into(), "7".into())),
+            "and it names the pull request to review"
+        );
+    }
+
+    #[test]
+    fn a_clean_repository_with_a_release_due_still_has_a_next_flow() {
+        // The reported case: nothing to commit, so the Commit → PR tab refuses
+        // an ordinary Start — but the repository plainly wants a release, and
+        // a trusted run is for the repository.
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        let waiting = repo(0, 0, None, true);
+        assert_eq!(waiting.wants(), crate::services::probe::Wants::Release);
+        assert_eq!(
+            next_flow(&book, &waiting),
+            Some(("release".into(), String::new()))
+        );
+    }
+
+    #[test]
+    fn a_repository_with_nothing_to_do_ends_the_chain() {
+        let idle = repo(0, 0, None, false);
+        assert_eq!(next_flow(&FlowBook::defaults(), &idle), None);
+    }
+
+    #[test]
+    fn a_need_no_flow_answers_ends_the_chain() {
+        // A release is due but no flow says it handles one: there is nothing
+        // for a trusted run to start, and inventing one would be worse.
+        let waiting = repo(0, 0, None, true);
+        assert_eq!(next_flow(&FlowBook::defaults(), &waiting), None);
+    }
+
+    #[test]
+    fn an_unfinished_rebase_ends_the_chain_even_though_it_needs_a_person() {
+        // `Resolve` is deliberately answered by no flow — it is settled in
+        // preflight — so a trusted run must stop rather than pick something.
+        let mut stuck = repo(3, 0, None, false);
+        stuck.in_progress = Some(crate::services::git::InProgress::Rebase);
+        assert!(stuck.wants().needs_a_person());
+        assert_eq!(next_flow(&FlowBook::defaults(), &stuck), None);
+    }
+
+    #[test]
+    fn a_failed_or_rejected_run_stops_the_chain() {
+        let graph = FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph();
+
+        let mut done = RunState::fresh(&graph);
+        for node in &graph.nodes {
+            done.set_status(&node.id, NodeStatus::Done);
+        }
+        assert!(may_continue(&done, &graph));
+
+        let mut failed = done.clone();
+        failed.set_status("push", NodeStatus::Failed);
+        assert!(!may_continue(&failed, &graph));
+
+        let mut rejected = done.clone();
+        rejected.set_status("commit", NodeStatus::Rejected);
+        assert!(!may_continue(&rejected, &graph));
+    }
+
+    #[test]
+    fn a_step_with_nothing_to_do_is_not_trouble() {
+        // `scan` finding an empty tree skips, blocking everything behind it.
+        // That is a flow reporting no work, not a flow going wrong.
+        let graph = FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph();
+        let mut state = RunState::fresh(&graph);
+        state.set_status("preflight", NodeStatus::Done);
+        state.set_status("scan", NodeStatus::Skipped);
+        state.propagate_block(&graph);
+        assert!(may_continue(&state, &graph));
     }
 
     #[test]
