@@ -889,3 +889,41 @@ body {
 .diff-file-off { opacity: 0.42; }
 .diff-file-off .diff-file-path { text-decoration: line-through; }
 .log-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+
+/* ── Update banner ──────────────────────────────────────────────────────── */
+/* Fixed to the top and dismissable for the session: an available update is
+   worth surfacing once, not worth blocking the workspace behind a modal. */
+.update-banner {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 999;
+    background: var(--blue);
+    color: #fff;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+.update-banner-text { flex: 1; }
+.update-banner-text strong { font-weight: 700; }
+.update-banner-link {
+    color: #fff;
+    text-decoration: underline;
+    font-weight: 600;
+    padding: 4px 10px;
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 4px;
+}
+.update-banner-link:hover { background: rgba(255,255,255,0.15); }
+.update-banner-dismiss {
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0 4px;
+    opacity: 0.7;
+}
+.update-banner-dismiss:hover { opacity: 1; }
