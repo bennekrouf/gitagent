@@ -176,6 +176,16 @@ body {
     font-size: 10px; color: var(--text3);
     text-transform: uppercase; letter-spacing: 0.6px;
 }
+/* Discreet by design: it sits between the title and the buttons and is only
+   worth a glance. The tick is the one thing allowed to be green. */
+.sidebar-tally {
+    margin-right: auto; padding-left: 8px;
+    font-size: 10px; color: var(--text3);
+    font-variant-numeric: tabular-nums;
+}
+.tally-remaining { color: var(--text2); font-weight: 600; }
+.tally-clear { color: var(--green); font-size: 11px; }
+
 .sidebar-actions { display: flex; gap: 2px; }
 .sidebar-switch {
     background: none; border: none; color: var(--text3);
