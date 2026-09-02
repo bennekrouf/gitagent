@@ -52,7 +52,11 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     // Collapsed by default — the count already says "all N selected" at a
     // glance, and most approvals want everything committed. The list is one
     // click away for the times a subset needs picking.
-    let mut show_files = use_signal(|| false);
+    // Open. The file list only exists on a node that has stopped to ask
+    // whether to commit these files, so folding away the one thing the
+    // question is about — behind an unlabelled "…" — meant the answer to "how
+    // do I choose the files" was a control nobody could find.
+    let mut show_files = use_signal(|| true);
 
     rsx! {
         div { class: "detail",
@@ -113,7 +117,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                         let now = *show_files.read();
                                         move |_| show_files.set(!now)
                                     },
-                                    "…"
+                                    if *show_files.read() { "Hide" } else { "Choose files" }
                                 }
                             }
                         }
