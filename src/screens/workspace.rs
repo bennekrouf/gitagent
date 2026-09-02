@@ -140,6 +140,13 @@ fn default_selection(
         .unwrap_or_default()
 }
 
+/// How many flows one trusted run will chain through before stopping.
+///
+/// Commit, review, release is three; the cap is not a limit anyone should
+/// reach, it is there so a pair of flows that keep handing work to each other
+/// cannot spin forever without a person noticing.
+const MOST_FLOWS_IN_A_TRUSTED_RUN: usize = 6;
+
 /// Walks one flow, for one repository, to completion.
 ///
 /// One node at a time, in dependency order. The graph already permits running
@@ -471,7 +478,7 @@ fn refresh_all(
 pub fn Workspace(props: WorkspaceProps) -> Element {
     let workspace = props.workspace.clone();
     let repos = use_signal(|| store::discover_repos(&workspace));
-    let statuses = use_signal(BTreeMap::<String, RepoStatus>::new);
+    let mut statuses = use_signal(BTreeMap::<String, RepoStatus>::new);
     let probing = use_signal(|| 0usize);
     // Auto-selection happens once, on the first probe: after that the choice is
     // yours and a refresh must not move it.
@@ -632,53 +639,101 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         // Settings live in a per-window signal but one file on disk. Re-reading
         // here is what stops a second window running against a stale provider.
         llm_config_mut.set(store::load_settings());
-        let id = selected_flow.read().clone();
-        let Some(def) = book.read().get(&id).cloned() else {
+
+        // An ordinary Start runs the flow on screen. A trusted run is for the
+        // repository, not for one flow, so it starts on whichever flow answers
+        // what the repository actually needs — which is how "Trusted run" on
+        // the Commit → PR tab does the release a repository is waiting for
+        // instead of refusing because there is nothing to commit.
+        let opening = if trust {
+            statuses
+                .read()
+                .get(&repo)
+                .and_then(|status| trusted::next_flow(&book.read(), status))
+        } else {
+            Some((selected_flow.read().clone(), selected_pr.read().clone()))
+        };
+        let Some((mut id, mut pr)) = opening else {
             return;
         };
-        let pr = selected_pr.read().clone();
-        let key: Key = (repo.clone(), id, pr.clone());
-        if running.read().contains(&key) {
-            return;
-        }
-        let graph = def.to_graph();
-        let mut fresh = RunState::fresh(&graph);
-        fresh.started = true;
-        if !pr.is_empty() {
-            // Read by `find_pr`, so this run reviews the PR that was
-            // actually picked rather than falling back to "whatever the
-            // checked-out branch has open".
-            fresh
-                .artifacts
-                .insert("selected_pr_number".into(), pr.clone());
-        }
-        states.write().insert(key.clone(), fresh);
-        selected_node.set(def.first_node());
-        running.write().insert(key.clone());
-        if trust {
-            trusted.write().insert(key.clone());
-        } else {
-            trusted.write().remove(&key);
-        }
 
         spawn(async move {
-            drive(
-                graph,
-                key.clone(),
-                llm_config,
-                states,
-                selected_node,
-                selected_repo,
-                selected_flow,
-                selected_pr,
-                trusted,
-            )
-            .await;
-            running.write().remove(&key);
-            // Trust is per run, never sticky: the next Start is an ordinary
-            // one unless it is asked for again.
-            trusted.write().remove(&key);
-            reprobe(key.0.clone(), statuses);
+            // Each turn of this loop is one flow, start to finish. Only a
+            // trusted run goes round twice.
+            for _ in 0..MOST_FLOWS_IN_A_TRUSTED_RUN {
+                let Some(def) = book.read().get(&id).cloned() else {
+                    break;
+                };
+                let key: Key = (repo.clone(), id.clone(), pr.clone());
+                if running.read().contains(&key) {
+                    break;
+                }
+
+                let graph = def.to_graph();
+                let mut fresh = RunState::fresh(&graph);
+                fresh.started = true;
+                if !pr.is_empty() {
+                    // Read by `find_pr`, so this run reviews the PR that was
+                    // actually picked rather than falling back to "whatever the
+                    // checked-out branch has open".
+                    fresh
+                        .artifacts
+                        .insert("selected_pr_number".into(), pr.clone());
+                }
+                states.write().insert(key.clone(), fresh);
+                running.write().insert(key.clone());
+                if trust {
+                    trusted.write().insert(key.clone());
+                } else {
+                    trusted.write().remove(&key);
+                }
+
+                // Follow the run on screen, so a chain that moves to another
+                // flow does not leave you watching the tab it has left.
+                if selected_repo.read().as_deref() == Some(repo.as_str()) {
+                    selected_flow.set(id.clone());
+                    selected_pr.set(pr.clone());
+                    selected_node.set(def.first_node());
+                }
+
+                drive(
+                    graph.clone(),
+                    key.clone(),
+                    llm_config,
+                    states,
+                    selected_node,
+                    selected_repo,
+                    selected_flow,
+                    selected_pr,
+                    trusted,
+                )
+                .await;
+                running.write().remove(&key);
+
+                // `drive` takes the key back out when it stopped at something
+                // it would not approve, so this is also how a hold ends the
+                // chain rather than only the leg it happened on.
+                let still_trusted = trusted.read().contains(&key);
+                trusted.write().remove(&key);
+
+                let status = probe::probe(&repo).await;
+                let finished = snapshot(&states, &key);
+                statuses.write().insert(repo.clone(), status.clone());
+
+                if !trust || !still_trusted || !trusted::may_continue(&finished, &graph) {
+                    break;
+                }
+                let Some(next) = trusted::next_flow(&book.read(), &status) else {
+                    break;
+                };
+                // The same flow again means the last one did not move the
+                // repository on. Whatever is left needs a person, not another
+                // identical lap.
+                if next == (id.clone(), pr.clone()) {
+                    break;
+                }
+                (id, pr) = next;
+            }
         });
     };
     let start = move |_: Event<MouseData>| begin(false);
@@ -826,7 +881,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             .map(|r| r.label.clone())
                             .unwrap_or_else(|| repo.clone());
                         let is_running = running.read().contains(&key);
-                        let is_trusted = trusted.read().contains(&key);
+                        // Trust is granted per leg, but the chain moves between
+                        // flows, so the button has to look at the repository
+                        // rather than at this tab's key alone.
+                        let is_trusted = trusted.read().iter().any(|(r, _, _)| r == &repo);
+                        // What a trusted run would take on, which is not
+                        // necessarily the flow on screen: a clean tree with a
+                        // release due offers one from the Commit → PR tab.
+                        let trusted_next = status_map
+                            .get(&repo)
+                            .and_then(|status| trusted::next_flow(&flows, status));
                         // A repo reviewing PR #7 shouldn't also be able to start
                         // reviewing #5 — two runs racing each other's git state
                         // (checkout, fetch) in the same working tree.
@@ -945,10 +1009,15 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     if is_trusted {
                                         button {
                                             class: "btn btn-trusted btn-trusted-on",
-                                            title: "Stop clicking through the approvals. The run keeps going and asks you at the next one.",
+                                            title: "Stop clicking through the approvals. The run keeps going and asks you at the next one, and no further flow is started.",
                                             onclick: {
-                                                let key = key.clone();
-                                                move |_| { trusted.write().remove(&key); }
+                                                let repo = repo.clone();
+                                                move |_| {
+                                                    // Every leg for this repository, not just the
+                                                    // one on screen — the chain may already have
+                                                    // moved on to another flow's key.
+                                                    trusted.write().retain(|(r, _, _)| r != &repo);
+                                                }
                                             },
                                             span { class: "flow-tab-dot" }
                                             "Trusting…"
@@ -956,13 +1025,23 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     } else {
                                         button {
                                             class: "btn btn-trusted",
-                                            disabled: is_running || other_pr_running || !can_run.enabled,
-                                            title: if can_run.enabled && !is_running && !other_pr_running {
-                                                "Run it and approve each step for you, one at a time so you can watch. \
-                                                 Stops for you at a merge the analysis or CI is unhappy about."
-                                                    .to_string()
-                                            } else {
-                                                can_run.reason.clone()
+                                            disabled: is_running || other_pr_running || trusted_next.is_none(),
+                                            title: match (&trusted_next, is_running || other_pr_running) {
+                                                (_, true) => "A run is already going in this repository.".to_string(),
+                                                (None, _) => format!(
+                                                    "Nothing here needs a run — {}.",
+                                                    status_map
+                                                        .get(&repo)
+                                                        .map(|s| s.wants().note())
+                                                        .unwrap_or("still reading this repository")
+                                                ),
+                                                (Some((id, _)), _) => format!(
+                                                    "Work through what this repository needs, starting with \u{201c}{}\u{201d}, \
+                                                     approving each step for you as you watch. Moves on to the next flow \
+                                                     when one finishes, and stops for you at a merge the analysis or CI \
+                                                     is unhappy about.",
+                                                    flows.get(id).map(|f| f.label.clone()).unwrap_or_else(|| id.clone()),
+                                                ),
                                             },
                                             onclick: start_trusted,
                                             "Trusted run"
