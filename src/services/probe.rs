@@ -102,6 +102,30 @@ impl Wants {
         }
     }
 
+    /// Whether this state is worth any words in a list of repositories.
+    ///
+    /// The two resting states get none. A column where every clean repository
+    /// says CLEAN is a column you have to read to find the one that does not —
+    /// which is exactly backwards. The dot still carries the state for anyone
+    /// who wants it.
+    pub fn is_worth_saying(self) -> bool {
+        !matches!(self, Wants::Nothing | Wants::Wait)
+    }
+
+    /// A glyph for the states worth saying something about, so a row can be
+    /// sorted by eye before it is read.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Wants::Resolve => "\u{26a0}",
+            Wants::Merge => "\u{2713}",
+            Wants::Attention => "\u{2715}",
+            Wants::Commit => "\u{270e}",
+            Wants::OpenPr => "\u{2197}",
+            Wants::Release => "\u{2191}",
+            Wants::Wait | Wants::Nothing => "",
+        }
+    }
+
     pub fn css(self) -> &'static str {
         match self {
             Wants::Resolve => "failed",

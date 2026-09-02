@@ -825,6 +825,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     on_refresh: move |_| {
                         refresh_all(repos, statuses, probing, picked, selected_repo, selected_flow, book);
                     },
+                    on_reprobe: move |path: String| reprobe(path, statuses),
                     on_select: move |path: String| {
                         let (flow_id, node_id, pr_id) =
                             default_selection(
