@@ -42,8 +42,21 @@ impl Phase {
     /// Only those are worth showing instead of what the repository needs. A
     /// finished run says "done" forever otherwise, hiding the release that
     /// became due the moment it landed.
+    ///
+    /// `Failed` is deliberately not one of them, though it used to be. A run
+    /// that failed ten minutes ago is a fact about that run, not an answer to
+    /// "what does this repository need now" — and leaving FAILED sitting in
+    /// the one slot that answers that question is how a repository with a
+    /// release due read as broken until something else was run. The failure is
+    /// still shown, as a mark beside the name; see `left_a_failure`.
     pub fn is_live(self) -> bool {
-        matches!(self, Phase::Running | Phase::NeedsApproval | Phase::Failed)
+        matches!(self, Phase::Running | Phase::NeedsApproval)
+    }
+
+    /// Whether the last run here ended badly and nothing has been run since.
+    /// Worth a mark, never worth the whole slot.
+    pub fn left_a_failure(self) -> bool {
+        matches!(self, Phase::Failed)
     }
 
     pub fn note(self) -> &'static str {
@@ -55,6 +68,16 @@ impl Phase {
             Phase::Nothing => "nothing to do",
             Phase::Declined => "declined",
             Phase::Failed => "failed",
+        }
+    }
+
+    /// A glyph for the live phases, so the eye can sort a column of rows
+    /// without reading any of them.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Phase::NeedsApproval => "\u{25c6}",
+            Phase::Running => "\u{25b8}",
+            _ => "",
         }
     }
 
@@ -140,6 +163,8 @@ pub struct RepoSidebarProps {
     pub on_select: EventHandler<String>,
     pub on_refresh: EventHandler<()>,
     pub on_change_workspace: EventHandler<()>,
+    /// Re-read one repository, without disturbing the others.
+    pub on_reprobe: EventHandler<String>,
     #[props(default = 224.0)]
     pub width: f64,
 }
@@ -210,6 +235,13 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             span { class: "sidebar-main",
                                 span { class: "sidebar-label-row",
                                     span { class: "sidebar-label", "{entry.label}" }
+                                    if entry.phase.left_a_failure() {
+                                        span {
+                                            class: "run-failed-mark",
+                                            title: "The last run on this repository failed \u{2014} open it to see where",
+                                            "\u{2715}"
+                                        }
+                                    }
                                     if let Some(err) = entry.prs_error.clone() {
                                         span {
                                             class: "pr-count-badge pr-count-error",
@@ -238,20 +270,51 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 }
                             }
-                            // A run in progress outranks anything the probe found:
-                            // it is more recent, and it is already yours.
-                            if entry.phase.is_live() {
-                                span { class: "sidebar-note status-{entry.phase.css()}", "{entry.phase.note()}" }
-                            } else {
-                                match entry.wants {
-                                    Some(wants) => rsx! {
-                                        if !entry.detail.is_empty() {
-                                            span { class: "sidebar-detail", "{entry.detail}" }
-                                        }
-                                        span { class: "sidebar-note status-{wants.css()}", "{wants.note()}" }
-                                    },
-                                    None => rsx! { span { class: "sidebar-clean", "…" } },
+                            // The status slot, and — on hover — the button that
+                            // re-reads this one repository instead of all of
+                            // them. Re-checking after doing something in a
+                            // terminal is the commonest reason to touch this
+                            // list at all, and the only way to do it used to be
+                            // a refresh of every repository in the folder.
+                            span { class: "row-status",
+                                // A run in progress outranks anything the probe found:
+                                // it is more recent, and it is already yours.
+                                if entry.phase.is_live() {
+                                    span { class: "sidebar-note status-{entry.phase.css()}",
+                                        span { class: "note-icon", "{entry.phase.icon()}" }
+                                        "{entry.phase.note()}"
+                                    }
+                                } else {
+                                    match entry.wants {
+                                        // Nothing to say is said with nothing. The dot
+                                        // still carries "clean" and "checks running".
+                                        Some(wants) if wants.is_worth_saying() => rsx! {
+                                            if !entry.detail.is_empty() {
+                                                span { class: "sidebar-detail", "{entry.detail}" }
+                                            }
+                                            span { class: "sidebar-note status-{wants.css()}",
+                                                span { class: "note-icon", "{wants.icon()}" }
+                                                "{wants.note()}"
+                                            }
+                                        },
+                                        Some(_) => rsx! {},
+                                        None => rsx! { span { class: "sidebar-clean", "\u{2026}" } },
+                                    }
                                 }
+                            }
+                            button {
+                                class: "row-reprobe",
+                                title: "Re-check this repository",
+                                onclick: {
+                                    let path = entry.path.clone();
+                                    move |evt: Event<MouseData>| {
+                                        // Otherwise this also selects the row,
+                                        // which is not what a refresh means.
+                                        evt.stop_propagation();
+                                        props.on_reprobe.call(path.clone());
+                                    }
+                                },
+                                "\u{27f3}"
                             }
                         }
                     }
@@ -339,12 +402,40 @@ mod tests {
     }
 
     #[test]
-    fn a_real_failure_still_reads_as_one() {
+    fn a_failure_is_marked_but_never_takes_the_status_slot() {
+        // It is still a failure, and still shown. What it must not do is sit
+        // in the one place that answers "what does this repository need now",
+        // where it stayed until something else was run — long after the tree
+        // had moved on and a release had come due.
         let mut s = started();
         s.set_status("preflight", NodeStatus::Failed);
         s.propagate_block(&commit_and_pr_flow());
         assert_eq!(phase_of(&s), Phase::Failed);
-        assert!(phase_of(&s).is_live());
+        assert!(phase_of(&s).left_a_failure());
+        assert!(
+            !phase_of(&s).is_live(),
+            "so the row still shows what is due"
+        );
+    }
+
+    #[test]
+    fn the_two_resting_states_are_said_with_nothing() {
+        // A column where every clean repository says CLEAN is one you have to
+        // read to find the one that does not.
+        use crate::services::probe::Wants;
+        assert!(!Wants::Nothing.is_worth_saying());
+        assert!(!Wants::Wait.is_worth_saying());
+        for wants in [
+            Wants::Resolve,
+            Wants::Merge,
+            Wants::Attention,
+            Wants::Commit,
+            Wants::OpenPr,
+            Wants::Release,
+        ] {
+            assert!(wants.is_worth_saying(), "{wants:?} is work someone must do");
+            assert!(!wants.icon().is_empty(), "{wants:?} needs a glyph");
+        }
     }
 
     #[test]

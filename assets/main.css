@@ -235,7 +235,36 @@ body {
     background: color-mix(in srgb, var(--red) 22%, transparent);
     color: var(--red);
 }
-.sidebar-note { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; }
+.sidebar-note {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px;
+    display: inline-flex; align-items: center; gap: 3px;
+}
+/* Slightly larger than the word beside it: the glyph is what the eye lands on,
+   the word is what confirms it. */
+.note-icon { font-size: 11px; line-height: 1; }
+.note-icon:empty { display: none; }
+
+/* The last run failed. A mark beside the name, never the status slot — what
+   the repository needs now belongs there. */
+.run-failed-mark {
+    flex-shrink: 0; font-size: 9px; font-weight: 700; line-height: 1;
+    padding: 1px 4px; border-radius: 999px;
+    background: color-mix(in srgb, var(--red) 20%, transparent);
+    color: var(--red);
+}
+
+/* Hovering a row swaps its status for a button that re-reads just this
+   repository. The two occupy the same slot, so nothing moves on hover. */
+.row-status { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.row-reprobe {
+    display: none;
+    background: none; border: 0; padding: 0 2px;
+    color: var(--text3); font-size: 12px; line-height: 1; cursor: pointer;
+    flex-shrink: 0;
+}
+.row-reprobe:hover { color: var(--text1); }
+.sidebar-row:hover .row-status { display: none; }
+.sidebar-row:hover .row-reprobe { display: inline-block; }
 .sidebar-detail {
     font-size: 10px; color: var(--text3);
     background: var(--bg3); border-radius: 9px; padding: 1px 6px;
