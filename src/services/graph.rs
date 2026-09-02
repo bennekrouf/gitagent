@@ -37,6 +37,7 @@ pub enum Step {
     Merge,
     Sync,
     // ── Generic ──
+    RunTests,
     RunScript,
     RunRemote,
 }
@@ -218,6 +219,9 @@ pub struct NodeRun {
     pub items: Vec<ProposalItem>,
     /// Fixes offered after a failure. Empty when nothing is known to help.
     pub remedies: Vec<Remedy>,
+    /// Why a trusted run declined to click this one through. Empty when no
+    /// trusted run was involved, or when it approved.
+    pub held: String,
 }
 
 impl NodeRun {
@@ -340,6 +344,7 @@ impl RunState {
             run.proposal.clear();
             run.preview_diff.clear();
             run.items.clear();
+            run.held.clear();
         }
         for node in &graph.nodes {
             if self.status(&node.id) == NodeStatus::Blocked {

@@ -373,9 +373,14 @@ impl FlowBook {
                             NodeDef::from_catalogue("draft_commit", "draft_commit"),
                             &["scan"],
                         ),
+                        // Off `scan` rather than off `draft_commit`, so the
+                        // suite runs while the model is still writing the
+                        // message instead of after it — and so a red test
+                        // stops the run before any history is touched.
+                        dep(NodeDef::from_catalogue("test", "run_tests"), &["scan"]),
                         dep(
                             NodeDef::from_catalogue("commit", "commit"),
-                            &["draft_commit"],
+                            &["draft_commit", "test"],
                         ),
                         dep(
                             NodeDef::from_catalogue("draft_pr", "draft_pr"),
@@ -428,6 +433,7 @@ impl FlowBook {
         match toml::from_str::<FlowBook>(&text) {
             Ok(mut book) if !book.flows.is_empty() => {
                 book.adopt_missing_declarations();
+                book.adopt_missing_test_step();
                 book
             }
             _ => Self::defaults(),
@@ -458,6 +464,31 @@ impl FlowBook {
                 if let Some(original) = shipped.get(&flow.id) {
                     flow.handles = original.handles.clone();
                 }
+            }
+        }
+    }
+
+    /// Adds the test step to a commit flow saved before that step existed.
+    ///
+    /// Only to one still shaped exactly as shipped. The check is the shipped
+    /// flow with the test node taken back out — `remove_node` strips the edge
+    /// into `commit` too, so what it compares against is precisely the graph
+    /// this used to be. Once you have rewired the flow it is yours, and
+    /// silently inserting a node into someone's graph is a worse surprise than
+    /// a step they have to add themselves.
+    pub fn adopt_missing_test_step(&mut self) {
+        let Some(shipped) = Self::defaults().get("commit_and_pr").cloned() else {
+            return;
+        };
+        let mut before = shipped.clone();
+        before.remove_node("test");
+        if before.nodes == shipped.nodes {
+            return; // The step is gone from the defaults; nothing to adopt.
+        }
+
+        for flow in &mut self.flows {
+            if flow.id == shipped.id && flow.nodes == before.nodes {
+                flow.nodes = shipped.nodes.clone();
             }
         }
     }
@@ -697,6 +728,54 @@ mod tests {
         assert!(problems[0].message().contains("ghost"));
 
         assert!(listed[1].1.is_empty(), "the healthy one has nothing to say");
+    }
+
+    #[test]
+    fn a_commit_flow_saved_before_the_test_step_picks_it_up() {
+        // Everyone with an existing flows.toml would otherwise never see the
+        // step, because defaults only apply when the file is absent.
+        let mut book = FlowBook::defaults();
+        book.get_mut("commit_and_pr").unwrap().remove_node("test");
+        assert!(!book
+            .get("commit_and_pr")
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|n| n.id == "test"));
+
+        book.adopt_missing_test_step();
+
+        let commit_flow = book.get("commit_and_pr").unwrap();
+        let test = commit_flow.nodes.iter().find(|n| n.id == "test").unwrap();
+        assert_eq!(test.step, "run_tests");
+        assert_eq!(test.deps, vec!["scan".to_string()]);
+        let commit = commit_flow.nodes.iter().find(|n| n.id == "commit").unwrap();
+        assert!(commit.deps.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn a_commit_flow_you_have_rewired_is_left_alone() {
+        let mut book = FlowBook::defaults();
+        {
+            let flow = book.get_mut("commit_and_pr").unwrap();
+            flow.remove_node("test");
+            flow.remove_node("draft_pr");
+        }
+        book.adopt_missing_test_step();
+        assert!(!book
+            .get("commit_and_pr")
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|n| n.id == "test"));
+    }
+
+    #[test]
+    fn adopting_twice_changes_nothing() {
+        let mut book = FlowBook::defaults();
+        let before = book.clone();
+        book.adopt_missing_test_step();
+        assert_eq!(book, before);
     }
 
     #[test]
