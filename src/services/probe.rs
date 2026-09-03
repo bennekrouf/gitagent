@@ -213,7 +213,8 @@ impl RepoStatus {
             return Wants::Resolve;
         }
 
-        let from_pr = self.pr.as_ref().and_then(|pr| match pr.checks {
+        let acting = self.pr_to_act_on();
+        let from_pr = acting.and_then(|pr| match pr.checks {
             Checks::Passing | Checks::Unknown => Some(Wants::Merge),
             Checks::Failing => Some(Wants::Attention),
             // Nothing to decide yet — but that is not the same as nothing to
@@ -228,7 +229,7 @@ impl RepoStatus {
             // proposed and the decision is the pull request's.
             (self.pr.is_none() && self.unmerged > 0).then_some(Wants::OpenPr),
             self.release.due().then_some(Wants::Release),
-            self.pr.is_some().then_some(Wants::Wait),
+            acting.is_some().then_some(Wants::Wait),
         ]
         .into_iter()
         .flatten()
@@ -236,24 +237,33 @@ impl RepoStatus {
         .unwrap_or(Wants::Nothing)
     }
 
-    /// The pull request to open a review on, when nothing else has said.
+    /// The pull request this repository most needs a decision on, if any.
     ///
-    /// `""` only when the answer is genuinely a question. One open pull
-    /// request is not a question, and neither is a branch with its own — those
-    /// are the two cases where making the person pick from a list of one, or
-    /// from a list where only one is theirs, is just a click that says nothing.
-    pub fn default_pr(&self) -> String {
+    /// The checked-out branch's own comes first — that is the one being worked
+    /// on. Falling back to the rest is not a nicety, it is the difference
+    /// between a working chain and a dead one: a commit flow that ends in
+    /// `sync` checks the base branch back out, so seconds after opening a pull
+    /// request `self.pr` is `None` and the repository it just worked on reads
+    /// as having nothing to do. `prs` is what the forge says is actually open,
+    /// regardless of where HEAD happens to be pointing.
+    pub fn pr_to_act_on(&self) -> Option<&PrBrief> {
         if let Some(pr) = &self.pr {
-            // The checked-out branch's own. Whatever else is open, this is
-            // the one being worked on.
-            return pr.number.clone();
+            return Some(pr);
         }
-        match self.prs.as_slice() {
-            [only] => only.number.clone(),
-            // Several, none of them this branch's: picking one for you would
-            // be a guess, and the wrong guess merges somebody else's work.
-            _ => String::new(),
-        }
+        // Most actionable first: one that can be decided now beats one that is
+        // red, which beats one nothing can be said about yet.
+        self.prs.iter().min_by_key(|pr| match pr.checks {
+            Checks::Passing | Checks::Unknown => 0,
+            Checks::Failing => 1,
+            Checks::Pending => 2,
+        })
+    }
+
+    /// The pull request to open a review on, when nothing else has said.
+    pub fn default_pr(&self) -> String {
+        self.pr_to_act_on()
+            .map(|pr| pr.number.clone())
+            .unwrap_or_default()
     }
 
     /// One line for the sidebar.
@@ -753,9 +763,35 @@ mod default_pr_tests {
     }
 
     #[test]
-    fn several_that_are_none_of_them_this_branchs_stays_a_question() {
-        // Guessing here picks a pull request to merge on someone's behalf.
-        assert_eq!(status(None, &["3", "9"]).default_pr(), "");
+    fn a_pull_request_the_checked_out_branch_does_not_own_is_still_work() {
+        // This is the one that killed every trusted run. The commit flow ends
+        // in `sync`, which is `git checkout <base>` — so seconds after opening
+        // a pull request, HEAD is on `develop`, `pr` is None, and a repository
+        // with two open pull requests reported `Nothing`. The chain asked what
+        // to do next, was told nothing, and stopped. Every time, on every
+        // repository, whatever else had been fixed.
+        let synced = status(None, &["3", "9"]);
+        assert_eq!(synced.wants(), Wants::Merge, "not Nothing");
+        assert_eq!(synced.default_pr(), "3");
+    }
+
+    #[test]
+    fn the_most_actionable_open_pull_request_is_the_one_chosen() {
+        let mut mixed = status(None, &["3", "9"]);
+        mixed.prs[0].checks = Checks::Pending;
+        mixed.prs[1].checks = Checks::Passing;
+        assert_eq!(mixed.default_pr(), "9", "decidable beats still-running");
+
+        mixed.prs[0].checks = Checks::Failing;
+        mixed.prs[1].checks = Checks::Pending;
+        assert_eq!(mixed.default_pr(), "3", "red beats nothing-known-yet");
+    }
+
+    #[test]
+    fn a_repository_with_no_open_pull_requests_is_unaffected() {
+        let clean = status(None, &[]);
+        assert_eq!(clean.wants(), Wants::Nothing);
+        assert_eq!(clean.default_pr(), "");
     }
 
     #[test]

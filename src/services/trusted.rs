@@ -340,6 +340,47 @@ mod tests {
     }
 
     #[test]
+    fn the_chain_survives_the_sync_that_ends_the_commit_flow() {
+        // End to end, in the order the app actually produces the states.
+        // `sync` is the last node of the shipped commit flow and it checks the
+        // base branch back out, so leg two starts from a repository whose HEAD
+        // owns no pull request at all. That is where every trusted run stopped.
+        let book = FlowBook::defaults();
+
+        let dirty = repo(3, 0, None, false);
+        assert_eq!(
+            next_flow(&book, &dirty),
+            Some(("commit_and_pr".into(), String::new())),
+            "leg 1: commit"
+        );
+
+        // The commit flow has run: committed, pushed, opened #7, then synced
+        // back to the base branch. `pr` is None because HEAD is on `develop`.
+        let mut after_sync = repo(0, 0, Some(Checks::Pending), false);
+        after_sync.pr = None;
+        assert_eq!(
+            next_flow(&book, &after_sync),
+            Some(("review_and_merge".into(), "7".into())),
+            "leg 2: review the pull request it just opened"
+        );
+        assert_eq!(why_stopped(&book, &after_sync), None, "nothing to explain");
+
+        // The review merged it. Now a release is due and no pull request is
+        // open, so the third leg needs a flow that declares it.
+        let mut book = book;
+        book.flows.push(release_flow());
+        let merged = repo(0, 0, None, true);
+        assert_eq!(
+            next_flow(&book, &merged),
+            Some(("release".into(), String::new())),
+            "leg 3: release"
+        );
+
+        // And then it is genuinely over.
+        assert_eq!(next_flow(&book, &repo(0, 0, None, false)), None);
+    }
+
+    #[test]
     fn a_repository_with_nothing_to_do_ends_the_chain() {
         let idle = repo(0, 0, None, false);
         assert_eq!(next_flow(&FlowBook::defaults(), &idle), None);
