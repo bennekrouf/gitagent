@@ -16,6 +16,9 @@ dirs = "5"
 rfd = "0.15"
 dark-light = "1"
 futures-util = "0.3"
+# Decodes assets/icon.png into the runtime window icon; png is the only
+# format needed.
+image = { version = "0.25", default-features = false, features = ["png"] }
 toml = "0.8"
 notify-rust = "4"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
