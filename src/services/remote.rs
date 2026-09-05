@@ -29,20 +29,36 @@ pub fn ssh_args(host: &str, port: &str, identity: &str, command: &str) -> Vec<St
         "ConnectTimeout=10".into(),
     ];
 
-    if !port.trim().is_empty() {
+    if !port.trim().is_empty() && safe_argument(port) {
         args.push("-p".into());
         args.push(port.trim().to_string());
     }
-    if !identity.trim().is_empty() {
+    if !identity.trim().is_empty() && safe_argument(identity) {
         args.push("-i".into());
         args.push(expand_home(identity.trim()));
     }
 
+    // `--` first, then the host. Without it a host that begins with a dash
+    // is read by ssh as an option rather than a destination, and
+    // `-oProxyCommand=…` in that position runs an arbitrary command on this
+    // machine. The same goes for a port or an identity path, which is why
+    // both are rejected outright above rather than quoted.
+    args.push("--".into());
     args.push(host.trim().to_string());
     if !command.trim().is_empty() {
         args.push(remote_command(command.trim()));
     }
     args
+}
+
+/// Whether a configured value can be handed to `ssh` as an argument.
+///
+/// A leading dash turns a destination or a path into an option. Nothing
+/// legitimate here starts with one, so this is a flat refusal rather than an
+/// escaping problem to be solved.
+fn safe_argument(value: &str) -> bool {
+    let value = value.trim();
+    !value.starts_with('-')
 }
 
 /// What actually reaches the remote shell for one command.
@@ -112,6 +128,15 @@ pub async fn run_streaming(
     stdin: &str,
     on_line: &mut dyn FnMut(&str),
 ) -> (bool, String) {
+    if !safe_argument(host) {
+        return (
+            false,
+            format!(
+                "refusing to connect to {host:?}: a host beginning with `-` is read by ssh \
+                 as an option, not a destination"
+            ),
+        );
+    }
     let args = ssh_args(host, port, identity, command);
     let (ok, output) = git::run_streaming("ssh", &args, None, stdin, on_line).await;
     (ok, strip_interactive_shell_noise(&output))
@@ -187,6 +212,32 @@ fn identities_in(ssh_dir: &std::path::Path) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn a_host_beginning_with_a_dash_is_refused_rather_than_passed_to_ssh() {
+        // `-oProxyCommand=...` in the destination slot is local command
+        // execution, so this is a refusal, not an escaping problem.
+        let (ok, why) = run("-oProxyCommand=touch /tmp/pwned", "", "", "true", "").await;
+        assert!(!ok);
+        assert!(why.contains("refusing to connect"), "got {why:?}");
+    }
+
+    #[test]
+    fn the_host_is_separated_from_the_options_by_a_double_dash() {
+        let args = ssh_args("example.com", "", "", "uptime");
+        let dashdash = args.iter().position(|a| a == "--").expect("no `--`");
+        let host = args.iter().position(|a| a == "example.com").unwrap();
+        assert!(dashdash < host, "got {args:?}");
+    }
+
+    #[test]
+    fn an_option_shaped_port_or_identity_is_dropped_not_forwarded() {
+        let args = ssh_args("example.com", "-oProxyCommand=x", "-oProxyCommand=y", "uptime");
+        assert!(
+            !args.iter().any(|a| a.contains("ProxyCommand")),
+            "got {args:?}"
+        );
+    }
     use super::*;
     use std::io::Write;
 

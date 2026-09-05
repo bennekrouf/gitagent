@@ -346,11 +346,18 @@ impl RunState {
             run.items.clear();
             run.held.clear();
         }
+        // Free every blocked node, then work out from scratch which of them
+        // are still blocked. The blanket un-block on its own is wrong: with
+        // two independent failures, retrying one would also free the nodes
+        // waiting behind the other, leaving them `Pending` with a `Failed`
+        // dependency — never runnable by `next_ready`, never terminal for
+        // `is_finished`, and shown on screen as merely waiting their turn.
         for node in &graph.nodes {
             if self.status(&node.id) == NodeStatus::Blocked {
                 self.set_status(&node.id, NodeStatus::Pending);
             }
         }
+        self.propagate_block(graph);
     }
 
     /// True once no node can make further progress.
@@ -488,6 +495,43 @@ mod tests {
         assert_eq!(s.status("d"), NodeStatus::Pending);
         assert_eq!(s.status("a"), NodeStatus::Done, "work already done is kept");
         assert_eq!(s.next_ready(&g).unwrap().id, "b");
+    }
+
+    #[test]
+    fn retrying_one_failure_leaves_the_other_failures_block_standing() {
+        // a -> b -> d and a -> c -> d. Both b and c fail, so d is blocked
+        // twice over. Retrying b must not free d: c is still failed, and a
+        // `Pending` d would never run and never let the run finish.
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        s.set_status("a", NodeStatus::Done);
+        s.set_status("b", NodeStatus::Failed);
+        s.set_status("c", NodeStatus::Failed);
+        s.propagate_block(&g);
+        assert_eq!(s.status("d"), NodeStatus::Blocked);
+
+        s.retry_from("b", &g);
+        assert_eq!(s.status("b"), NodeStatus::Pending, "the retried node runs");
+        assert_eq!(
+            s.status("d"),
+            NodeStatus::Blocked,
+            "d still joins on c, which is still failed"
+        );
+        assert_eq!(s.next_ready(&g).unwrap().id, "b");
+    }
+
+    #[test]
+    fn retrying_the_last_failure_frees_the_join_behind_both() {
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        s.set_status("a", NodeStatus::Done);
+        s.set_status("b", NodeStatus::Done);
+        s.set_status("c", NodeStatus::Failed);
+        s.propagate_block(&g);
+
+        s.retry_from("c", &g);
+        assert_eq!(s.status("c"), NodeStatus::Pending);
+        assert_eq!(s.status("d"), NodeStatus::Pending, "nothing blocks it now");
     }
 
     #[test]

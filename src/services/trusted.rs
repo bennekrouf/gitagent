@@ -125,9 +125,28 @@ pub fn may_continue(state: &RunState, graph: &Graph) -> bool {
 pub fn decide(node: &NodeSpec, state: &RunState) -> Verdict {
     match node.step {
         Step::Merge => merge(state),
-        // Committing, pushing, opening a pull request, running a script or a
-        // remote command: all reversible, or reviewable afterwards by the
-        // person who asked for the run. The merge is the one that is neither.
+        // A script or a remote command is whatever the person typed into
+        // Setup, and this module cannot reason about it at all: `rm -rf` and
+        // `cargo build` are the same shape here. The old rule waved both
+        // through as "reversible, or reviewable afterwards", which is not
+        // true of an arbitrary command and not something any list in this
+        // file could make true.
+        //
+        // The gate is the person's own statement about the step. `drive`
+        // never asks about an ungated node, so a step that reaches this
+        // function is one they said should stop for a human — and a trusted
+        // run overriding exactly that is the thing to refuse. Wanting it
+        // automatic is one tick in Setup, and the message says so.
+        Step::RunScript | Step::RunRemote => Verdict::Hold(format!(
+            "\u{201c}{}\u{201d} runs a command this app cannot vet, and it is marked as \
+             needing approval. A trusted run will not click that through — approve it \
+             here, or untick \u{201c}Needs approval\u{201d} on the step in Setup if it \
+             should always run unattended.",
+            node.title,
+        )),
+        // Committing, pushing and opening a pull request are this app's own
+        // work, in shapes it controls: all reversible, or reviewable
+        // afterwards by the person who asked for the run.
         _ => Verdict::Approve,
     }
 }
@@ -261,6 +280,30 @@ mod tests {
                 ReleaseState::default()
             },
             in_progress: None,
+        }
+    }
+
+    #[test]
+    fn a_trusted_run_will_not_click_through_a_gated_shell_step() {
+        // The command is whatever was typed into Setup; nothing here can
+        // tell `cargo build` from `rm -rf`.
+        for step in [Step::RunScript, Step::RunRemote] {
+            let verdict = decide(&node(step), &RunState::default());
+            assert!(
+                matches!(verdict, Verdict::Hold(_)),
+                "{step:?} was approved automatically"
+            );
+            assert!(
+                verdict.reason().unwrap().contains("Setup"),
+                "the hold must say how to change it"
+            );
+        }
+    }
+
+    #[test]
+    fn this_apps_own_steps_are_still_clicked_through() {
+        for step in [Step::Commit, Step::Push, Step::OpenPr, Step::ScanChanges] {
+            assert_eq!(decide(&node(step), &RunState::default()), Verdict::Approve);
         }
     }
 

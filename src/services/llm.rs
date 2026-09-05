@@ -165,6 +165,31 @@ impl LlmConfig {
         }
     }
 
+    /// Whether it is safe to put the API key on a request to this endpoint.
+    ///
+    /// The base URL is free text in Settings, and every remote call attaches
+    /// a bearer token to it. Over plain `http` that token crosses the network
+    /// in the clear, so a mistyped scheme leaks the key to anything on the
+    /// path. Loopback is exempt: a local vLLM or LM Studio on `http://
+    /// localhost` is a normal setup and never leaves the machine.
+    pub fn endpoint_carries_key_safely(&self) -> bool {
+        let url = self.remote_base_url();
+        if url.starts_with("https://") {
+            return true;
+        }
+        let Some(rest) = url.strip_prefix("http://") else {
+            return false;
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        // An IPv6 literal is bracketed and full of colons, so the port
+        // cannot simply be split off at the first one.
+        let host = match authority.strip_prefix('[') {
+            Some(v6) => v6.split(']').next().unwrap_or(""),
+            None => authority.split(':').next().unwrap_or(""),
+        };
+        matches!(host, "localhost" | "127.0.0.1" | "::1")
+    }
+
     pub fn remote_model_name(&self) -> &str {
         if self.remote_model.trim().is_empty() {
             self.preset().model
@@ -287,6 +312,15 @@ async fn call_openai_compatible(
     user: &str,
 ) -> Result<String, String> {
     let preset = cfg.preset();
+    if !cfg.endpoint_carries_key_safely() {
+        return Err(format!(
+            "refusing to send {} to {} — it is not https, and a bearer token over plain \
+             http crosses the network in the clear. Use https, or a loopback address for \
+             a local endpoint.",
+            preset.env,
+            cfg.remote_base_url()
+        ));
+    }
     let key = cfg
         .remote_key()
         .ok_or_else(|| format!("{} is not set — export it and restart the app", preset.env))?;
@@ -311,20 +345,20 @@ async fn call_openai_compatible(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("DeepSeek unreachable at {url}: {e}"))?;
+        .map_err(|e| format!("{} unreachable at {url}: {e}", preset.label))?;
 
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!("DeepSeek returned {status}: {text}"));
+        return Err(format!("{} returned {status}: {text}", preset.label));
     }
 
     let value: Value =
-        serde_json::from_str(&text).map_err(|e| format!("DeepSeek sent invalid JSON: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("{} sent invalid JSON: {e}", preset.label))?;
     value["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("DeepSeek reply had no choices[0].message.content: {text}"))
+        .ok_or_else(|| format!("{} reply had no choices[0].message.content: {text}", preset.label))
 }
 
 /// Cheap reachability check for the settings panel.
@@ -358,6 +392,13 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
         }
         ProviderKind::Remote => {
             let preset = cfg.preset();
+            if !cfg.endpoint_carries_key_safely() {
+                return Err(format!(
+                    "{} is not https — refusing to send {} over it in the clear",
+                    cfg.remote_base_url(),
+                    preset.env
+                ));
+            }
             let Some(key) = cfg.remote_key() else {
                 return Err(format!("{} is not set", preset.env));
             };
@@ -384,6 +425,48 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bearer_token_is_not_sent_over_plain_http() {
+        let mut cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            remote_url: "http://api.example.com/v1".into(),
+            ..Default::default()
+        };
+        assert!(!cfg.endpoint_carries_key_safely());
+
+        cfg.remote_url = "https://api.example.com/v1".into();
+        assert!(cfg.endpoint_carries_key_safely());
+    }
+
+    #[test]
+    fn a_local_endpoint_over_http_is_still_allowed() {
+        // vLLM or LM Studio on loopback never leaves the machine.
+        for url in [
+            "http://localhost:8000/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8000/v1",
+        ] {
+            let cfg = LlmConfig {
+                kind: ProviderKind::Remote,
+                remote_url: url.into(),
+                ..Default::default()
+            };
+            assert!(cfg.endpoint_carries_key_safely(), "{url}");
+        }
+    }
+
+    #[test]
+    fn every_shipped_preset_is_https() {
+        for preset in REMOTES {
+            let cfg = LlmConfig {
+                kind: ProviderKind::Remote,
+                remote: preset.key.into(),
+                ..Default::default()
+            };
+            assert!(cfg.endpoint_carries_key_safely(), "{}", preset.key);
+        }
+    }
 
     #[test]
     fn bare_json_parses() {

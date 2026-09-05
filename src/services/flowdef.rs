@@ -489,7 +489,7 @@ impl FlowBook {
         let dir = super::store::data_dir();
         let _ = std::fs::create_dir_all(&dir);
         if let Ok(text) = toml::to_string_pretty(self) {
-            let _ = std::fs::write(dir.join(FLOWS_FILE), text);
+            let _ = super::store::write_atomic(&dir.join(FLOWS_FILE), text.as_bytes());
         }
     }
 

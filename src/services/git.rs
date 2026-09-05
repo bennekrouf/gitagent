@@ -249,22 +249,47 @@ pub async fn default_remote_branch(repo: &str) -> (String, String) {
     ("master".to_string(), "fallback default".into())
 }
 
+/// Splits `git status --porcelain -z` output into changes.
+///
+/// `-z` rather than the default text form, and not as a style preference.
+/// The text form quotes and C-escapes any path holding a space or a
+/// non-ASCII byte — `has space.rs` comes back as `"has space.rs"`, quotes
+/// included, and `naïve.rs` as `"na\303\257ve.rs"`. That mangled string
+/// then fails `git add` outright, and, quietly worse, stops comparing equal
+/// to the real path in `needs_staging` and `staged_but_unapproved` — the
+/// check that keeps work nobody approved out of a commit. `-z` emits the
+/// path raw and the whole class of bug goes away.
+///
+/// Records are NUL-terminated `XY <path>`. A rename or a copy spends two of
+/// them: the new path, then the path it came from. The new path is the one
+/// we act on, so the origin record is read and dropped.
+///
+/// A path that is not valid UTF-8 is still lossily converted upstream in
+/// `run`, and will not match anything. That is a narrower problem than this
+/// one and is left alone.
+pub fn parse_status_z(out: &str) -> Vec<FileChange> {
+    let mut changes = vec![];
+    let mut records = out.split('\0').filter(|r| !r.is_empty());
+    while let Some(record) = records.next() {
+        // "XY " and at least one byte of path. The first three bytes are
+        // always ASCII, so slicing them cannot split a character.
+        if record.len() < 4 || !record.is_char_boundary(3) {
+            continue;
+        }
+        let code = record[..2].to_string();
+        let path = record[3..].to_string();
+        // Consume the origin path a rename or copy trails behind it.
+        if code.contains('R') || code.contains('C') {
+            records.next();
+        }
+        changes.push(FileChange { code, path });
+    }
+    changes
+}
+
 pub async fn status(repo: &str) -> Result<Vec<FileChange>, String> {
-    let out = run(repo, "git", &["status", "--porcelain"]).await?;
-    Ok(out
-        .lines()
-        .filter(|l| l.len() > 3)
-        .map(|l| FileChange {
-            code: l[..2].to_string(),
-            // Renames show as "old -> new"; the new path is what we act on.
-            path: l[3..]
-                .split(" -> ")
-                .last()
-                .unwrap_or(&l[3..])
-                .trim()
-                .to_string(),
-        })
-        .collect())
+    let out = run(repo, "git", &["status", "--porcelain", "-z"]).await?;
+    Ok(parse_status_z(&out))
 }
 
 /// Like `run`, but returns stdout even on a non-zero exit. `git diff` uses
@@ -323,8 +348,21 @@ pub async fn create_branch(repo: &str, name: &str) -> Result<String, String> {
     run(repo, "git", &["checkout", "-b", name]).await
 }
 
+/// Whether `name` already names a local branch.
+///
+/// A bare `rev-parse --verify <name>` resolves anything: a tag, a remote-
+/// tracking ref, even a raw object id. The commit step uses this to decide
+/// whether it has to disambiguate a new branch name, and a tag of the same
+/// name would have sent it renaming a branch that did not exist. A caller
+/// wanting a fully-qualified ref passes one — `refs/remotes/origin/main`
+/// already starts with `refs/` and is used as given.
 pub async fn branch_exists(repo: &str, name: &str) -> bool {
-    run(repo, "git", &["rev-parse", "--verify", name])
+    let git_ref = if name.starts_with("refs/") {
+        name.to_string()
+    } else {
+        format!("refs/heads/{name}")
+    };
+    run(repo, "git", &["rev-parse", "--verify", "--quiet", &git_ref])
         .await
         .is_ok()
 }
@@ -440,20 +478,33 @@ pub async fn run_streaming(
     });
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // A step's child must not outlive the run that started it. With this, a
+    // dropped future — the window closing, or the task being aborted — kills
+    // the process instead of leaving it running with nothing reading it.
+    cmd.kill_on_drop(true);
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => return (false, format!("could not run `{program}`: {e}")),
     };
 
+    // Written from its own task rather than inline. A child that does not
+    // drain stdin fills the pipe buffer at around 64 KB, and an inline
+    // `write_all` would then block here — before either reader below has
+    // started — with the child in turn blocked writing output nobody is
+    // reading. Neither side can move: a textbook pipe deadlock. Today's
+    // payload is one short line, so it never fires; the ordering is still
+    // the thing that would make it fire.
     if !stdin.is_empty() {
         if let Some(mut pipe) = child.stdin.take() {
             let mut answer = stdin.to_string();
             if !answer.ends_with('\n') {
                 answer.push('\n');
             }
-            let _ = pipe.write_all(answer.as_bytes()).await;
-            let _ = pipe.shutdown().await;
+            tokio::spawn(async move {
+                let _ = pipe.write_all(answer.as_bytes()).await;
+                let _ = pipe.shutdown().await;
+            });
         }
     }
 
@@ -482,18 +533,57 @@ pub async fn run_streaming(
         }
     });
 
-    let mut collected = String::new();
-    while let Some(line) = rx.recv().await {
-        on_line(&line);
-        if !collected.is_empty() {
-            collected.push('\n');
-        }
-        collected.push_str(&line);
-    }
-    let _ = out_task.await;
-    let _ = err_task.await;
+    // Reading the pipes and reaping the child are raced rather than
+    // sequenced. Draining until both pipes close is the natural way to write
+    // this and it hangs forever on a step that backgrounds a daemon: the
+    // grandchild inherits stdout, so the pipe stays open long after the
+    // command itself exited. Once the child is reaped, the tail of the output
+    // gets a grace period and then the loop gives up on whatever is still
+    // holding the pipe.
+    const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-    let ok = matches!(child.wait().await, Ok(status) if status.success());
+    let mut collected = String::new();
+    let mut exited: Option<std::process::ExitStatus> = None;
+    // Far enough out to be inert until the child actually exits and resets it.
+    let grace = tokio::time::sleep(std::time::Duration::from_secs(60 * 60 * 24));
+    tokio::pin!(grace);
+
+    loop {
+        tokio::select! {
+            // Output first: a line already in hand is never dropped in favour
+            // of noticing the exit that followed it.
+            biased;
+            line = rx.recv() => match line {
+                Some(line) => {
+                    on_line(&line);
+                    if !collected.is_empty() {
+                        collected.push('\n');
+                    }
+                    collected.push_str(&line);
+                }
+                // Both pipes closed: the ordinary end of a command.
+                None => break,
+            },
+            // `Child::wait` is cancel-safe, and the guard keeps it from being
+            // polled again once it has produced a status.
+            status = child.wait(), if exited.is_none() => {
+                exited = Some(status.unwrap_or_else(|_| Default::default()));
+                grace.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
+            }
+            _ = &mut grace => break,
+        }
+    }
+
+    out_task.abort();
+    err_task.abort();
+
+    // Not reaped above only if the drain ended first, which means the pipes
+    // closed before the child was waited on — so this returns immediately.
+    let status = match exited {
+        Some(status) => Ok(status),
+        None => child.wait().await,
+    };
+    let ok = matches!(status, Ok(status) if status.success());
     (ok, cap(collected.trim()))
 }
 
@@ -560,6 +650,174 @@ pub async fn gh_pr_create(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_child_that_never_reads_stdin_does_not_deadlock_the_writer() {
+        // Well past a 64 KB pipe buffer, handed to a command that reads none
+        // of it and writes output of its own. Writing stdin inline, before
+        // the readers start, wedges both sides here forever.
+        let payload = "x".repeat(256 * 1024);
+        let (ok, out) = run_streaming(
+            "sh",
+            &["-c".to_string(), "echo started; exit 0".to_string()],
+            None,
+            &payload,
+            &mut |_| {},
+        )
+        .await;
+        assert!(ok);
+        assert!(out.contains("started"), "got {out:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_backgrounded_grandchild_holding_the_pipe_does_not_hang_the_run() {
+        // The daemon inherits stdout, so the pipe stays open after the shell
+        // exits. Draining until the pipes close would never return.
+        let (ok, _) = run_streaming(
+            "sh",
+            &[
+                "-c".to_string(),
+                "sleep 120 & echo done; exit 0".to_string(),
+            ],
+            None,
+            "",
+            &mut |_| {},
+        )
+        .await;
+        assert!(ok, "the command itself succeeded");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdin_reaches_the_child_and_the_exit_code_is_reported() {
+        let (ok, out) = run_streaming(
+            "sh",
+            &["-c".to_string(), "read answer; echo got:$answer".to_string()],
+            None,
+            "yes",
+            &mut |_| {},
+        )
+        .await;
+        assert!(ok);
+        assert!(out.contains("got:yes"), "got {out:?}");
+
+        let (ok, _) = run_streaming(
+            "sh",
+            &["-c".to_string(), "exit 3".to_string()],
+            None,
+            "",
+            &mut |_| {},
+        )
+        .await;
+        assert!(!ok, "a non-zero exit is a failure");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn both_streams_reach_the_callback_in_arrival_order() {
+        let mut seen = vec![];
+        let (ok, _) = run_streaming(
+            "sh",
+            &[
+                "-c".to_string(),
+                "echo one; echo two >&2; echo three".to_string(),
+            ],
+            None,
+            "",
+            &mut |line| seen.push(line.to_string()),
+        )
+        .await;
+        assert!(ok);
+        assert_eq!(seen.len(), 3, "stderr is interleaved, not appended: {seen:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_real_repository_reports_awkward_filenames_git_add_can_use() {
+        // The blocker end to end, against real git rather than a fixture:
+        // text porcelain hands back `"has space.rs"` with the quotes, and
+        // `git add --` on that fails with "did not match any files".
+        let dir = std::env::temp_dir().join(format!("gitagent-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.to_str().unwrap();
+
+        assert!(run(repo, "git", &["init", "-q", "."]).await.is_ok());
+        for name in ["has space.rs", "na\u{ef}ve.rs", "plain.rs"] {
+            std::fs::write(dir.join(name), "fn main() {}\n").unwrap();
+        }
+
+        let changes = status(repo).await.unwrap();
+        let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+        assert!(paths.contains(&"has space.rs"), "got {paths:?}");
+        assert!(paths.contains(&"na\u{ef}ve.rs"), "got {paths:?}");
+        assert!(
+            !paths.iter().any(|p| p.contains('"')),
+            "a quoted path reached the caller: {paths:?}"
+        );
+
+        // The whole point: these paths go straight to `git add`.
+        let wanted: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+        assert_eq!(needs_staging(&changes, &wanted).len(), 3);
+        add(repo, &wanted).await.expect("git add rejected a path");
+        assert_eq!(staged_paths(&status(repo).await.unwrap()).len(), 3);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_path_with_a_space_survives_parsing_intact() {
+        // The text form quotes this as `"has space.rs"`, quotes included, and
+        // the quoted string then fails `git add` and stops matching the real
+        // path in `needs_staging`. Verified against real git output.
+        let out = "?? has space.rs\0 M src/lib.rs\0";
+        let changes = parse_status_z(out);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].path, "has space.rs");
+        assert_eq!(changes[0].code, "??");
+        assert_eq!(changes[1].path, "src/lib.rs");
+    }
+
+    #[test]
+    fn a_non_ascii_path_is_not_escaped() {
+        // Text porcelain renders this as `"na\303\257ve.rs"`.
+        let changes = parse_status_z(" M na\u{ef}ve.rs\0");
+        assert_eq!(changes[0].path, "na\u{ef}ve.rs");
+    }
+
+    #[test]
+    fn a_rename_reports_the_new_path_and_drops_the_old_one() {
+        // `-z` spends two records on a rename: new path, then origin path.
+        // Verified against real git output — the order is not the arrow's.
+        let changes = parse_status_z("R  new name.txt\0old name.txt\0?? after.rs\0");
+        assert_eq!(changes.len(), 2, "the origin record is not its own change");
+        assert_eq!(changes[0].path, "new name.txt");
+        assert_eq!(changes[0].note(), "renamed");
+        assert_eq!(changes[1].path, "after.rs");
+    }
+
+    #[test]
+    fn a_copy_drops_its_origin_record_the_same_way() {
+        let changes = parse_status_z("C  copy.rs\0source.rs\0");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "copy.rs");
+    }
+
+    #[test]
+    fn a_path_holding_the_rename_arrow_is_not_split_on_it() {
+        let changes = parse_status_z(" M weird -> name.rs\0");
+        assert_eq!(changes[0].path, "weird -> name.rs");
+    }
+
+    #[test]
+    fn empty_and_truncated_records_are_dropped_rather_than_panicking() {
+        assert!(parse_status_z("").is_empty());
+        assert!(parse_status_z("\0\0").is_empty());
+        assert!(parse_status_z("??\0").is_empty(), "no path");
+        assert!(parse_status_z("?? \0").is_empty(), "empty path");
+    }
 
     #[test]
     fn porcelain_codes_separate_untracked_from_modified() {
