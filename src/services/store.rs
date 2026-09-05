@@ -203,6 +203,15 @@ pub fn save_layout(layout: &Layout) {
     write(LAYOUT_FILE, layout);
 }
 
+/// Whether this install has ever been set up.
+///
+/// The settings file existing is the marker: `load_settings` falls back to a
+/// default that looks identical to a real choice, so nothing else can tell a
+/// fresh install from one that deliberately runs on the defaults.
+pub fn is_configured() -> bool {
+    data_dir().join(SETTINGS_FILE).exists()
+}
+
 pub fn load_settings() -> LlmConfig {
     let content = std::fs::read_to_string(data_dir().join(SETTINGS_FILE)).unwrap_or_default();
     serde_json::from_str(&content).unwrap_or_default()

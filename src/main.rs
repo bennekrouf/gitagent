@@ -12,7 +12,7 @@ mod update_check;
 use dioxus::desktop::LogicalSize;
 use dioxus::prelude::*;
 
-use screens::{welcome::Welcome, workspace::Workspace};
+use screens::{first_run::FirstRun, welcome::Welcome, workspace::Workspace};
 use services::llm::LlmConfig;
 use services::store;
 
@@ -165,6 +165,11 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
         }
     });
 
+    // Asked once, before anything else can be reached: every flow depends on
+    // the answer, and a run that discovers it mid-way is a run that has already
+    // wasted your time.
+    let mut configured = use_signal(store::is_configured);
+
     let open = workspace.read().clone();
 
     rsx! {
@@ -190,6 +195,12 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
             }
         }
 
+        if !*configured.read() {
+            FirstRun {
+                llm_config,
+                on_done: move |_| configured.set(true),
+            }
+        } else {
         match open {
             None => rsx! {
                 Welcome {
@@ -211,6 +222,7 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                     },
                 }
             },
+        }
         }
     }
 }

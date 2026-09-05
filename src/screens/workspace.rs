@@ -23,7 +23,7 @@ use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
-use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
+use crate::services::graph::{Graph, NodeKind, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
@@ -328,6 +328,27 @@ async fn drive(
             .entry(key.clone())
             .or_default()
             .set_status(&node.id, NodeStatus::Running);
+
+        // A model step on an install with no model never calls one: it writes
+        // what can be derived from the diff and is marked skipped. Done here,
+        // once, rather than in each of the three model steps — and before the
+        // approval, so what you approve is what will actually be used.
+        if node.kind == NodeKind::Model && !cfg.read().uses_model() {
+            let stand_in = flow::without_model(&node, &state);
+            let mut w = states.write();
+            let entry = w.entry(key.clone()).or_default();
+            for (k, v) in stand_in.artifacts {
+                entry
+                    .artifacts
+                    .insert(crate::services::graph::qualified(&node.id, &k), v.clone());
+                entry.artifacts.insert(k, v);
+            }
+            let run = entry.runs.entry(node.id.clone()).or_default();
+            run.status = NodeStatus::Bypassed;
+            run.summary = stand_in.summary;
+            run.log = stand_in.log;
+            continue;
+        }
 
         // As this node sees it: bound inputs already resolved to the
         // producer each one names, so the step reads its own literal keys.

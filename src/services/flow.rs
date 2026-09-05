@@ -97,6 +97,127 @@ pub fn commit_and_pr_flow() -> super::graph::Graph {
         .to_graph()
 }
 
+/// What a model step produces when there is no model.
+///
+/// Skipping these outright is not enough: `commit` reads `commit_subject`, and
+/// a run that skips `draft_commit` would commit an empty message. So a skipped
+/// model step still writes its outputs — from the diff, deterministically. The
+/// result is a plainer commit message than a model writes and one you see at
+/// the approval before it is used, which is the trade a person who has turned
+/// AI off has already accepted.
+pub fn without_model(node: &NodeSpec, state: &RunState) -> StepOutcome {
+    let artifacts = match node.step {
+        Step::DraftCommit => {
+            let subject = subject_from_stat(state.artifact("stat"));
+            vec![
+                ("branch_name".to_string(), branch_from(&subject)),
+                ("commit_subject".to_string(), subject),
+                (
+                    "commit_body".to_string(),
+                    state.artifact("stat").to_string(),
+                ),
+            ]
+        }
+        Step::DraftPr => {
+            // The commit subject is already a summary of the same change, and
+            // repeating it beats inventing a second worse one.
+            let title = match state.artifact("commit_subject") {
+                "" => subject_from_stat(state.artifact("stat")),
+                subject => subject.to_string(),
+            };
+            vec![
+                ("pr_title".to_string(), title),
+                ("pr_body".to_string(), state.artifact("stat").to_string()),
+            ]
+        }
+        // Nothing deterministic stands in for reading a diff for regressions.
+        // Leaving `verdict` empty is the honest answer, and it is the one the
+        // trusted-run rules already read as "nobody looked".
+        _ => vec![],
+    };
+
+    StepOutcome {
+        summary: "skipped — this install runs without AI".into(),
+        log: if artifacts.is_empty() {
+            "This step needs a model, and this install is set to run without one. \
+             Nothing was written."
+                .into()
+        } else {
+            format!(
+                "This step needs a model, and this install is set to run without one.\n\n\
+                 Written from the diff instead:\n\n{}",
+                artifacts
+                    .iter()
+                    .map(|(k, v)| format!("{k}:\n  {v}"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            )
+        },
+        artifacts,
+        nothing_to_do: false,
+        items: vec![],
+    }
+}
+
+/// A Conventional Commits subject from `git diff --stat`, naming the deepest
+/// directory every changed file shares.
+///
+/// `chore: update 4 files in src/services` says the true amount a machine can
+/// know about a change without reading it. Anything more confident would be a
+/// guess dressed up as a summary.
+fn subject_from_stat(stat: &str) -> String {
+    let paths: Vec<&str> = stat
+        .lines()
+        .filter_map(|line| line.split('|').next())
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && p.contains('/') || p.contains('.'))
+        .collect();
+
+    match paths.len() {
+        0 => "chore: update".to_string(),
+        1 => format!("chore: update {}", paths[0]),
+        n => match common_dir(&paths) {
+            Some(dir) => format!("chore: update {n} files in {dir}"),
+            None => format!("chore: update {n} files"),
+        },
+    }
+}
+
+/// The longest directory prefix every path shares, if there is one.
+fn common_dir(paths: &[&str]) -> Option<String> {
+    let first: Vec<&str> = paths[0].split('/').collect();
+    let mut shared = first.len().saturating_sub(1);
+    for path in &paths[1..] {
+        let parts: Vec<&str> = path.split('/').collect();
+        shared = shared.min(parts.len().saturating_sub(1));
+        while shared > 0 && first[..shared] != parts[..shared] {
+            shared -= 1;
+        }
+    }
+    (shared > 0).then(|| first[..shared].join("/"))
+}
+
+/// A branch name from a commit subject: lowercase, punctuation to dashes.
+fn branch_from(subject: &str) -> String {
+    let slug: String = subject
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("work/{slug}")
+}
+
 /// Whether the commit node must open a topic branch first.
 ///
 /// True when the working branch *is* the base, and also whenever the branch is
@@ -1618,5 +1739,89 @@ hint: Updates were rejected because the tip of your current branch is behind";
     #[test]
     fn a_long_branch_name_is_capped() {
         assert!(sanitise_branch(&"a".repeat(200)).len() <= 40);
+    }
+
+    #[test]
+    fn without_a_model_the_commit_still_gets_a_real_message() {
+        // The reason skipped model steps still write: `commit` reads
+        // `commit_subject`, and a blank one commits with no message at all.
+        let node = spec(Step::DraftCommit);
+        let mut state = RunState::default();
+        state.artifacts.insert(
+            "stat".into(),
+            " src/services/azure.rs  | 12 ++++\n src/services/store.rs  |  4 +-\n".into(),
+        );
+
+        let out = without_model(&node, &state);
+        let map: std::collections::BTreeMap<_, _> = out.artifacts.into_iter().collect();
+        assert_eq!(
+            map["commit_subject"],
+            "chore: update 2 files in src/services"
+        );
+        assert_eq!(map["branch_name"], "work/chore-update-2-files-in-src");
+        assert!(map["commit_body"].contains("azure.rs"));
+        assert!(out.summary.contains("without AI"));
+    }
+
+    #[test]
+    fn one_changed_file_is_named_rather_than_counted() {
+        let node = spec(Step::DraftCommit);
+        let mut state = RunState::default();
+        state
+            .artifacts
+            .insert("stat".into(), " README.md | 2 +-\n".into());
+        let map: std::collections::BTreeMap<_, _> =
+            without_model(&node, &state).artifacts.into_iter().collect();
+        assert_eq!(map["commit_subject"], "chore: update README.md");
+    }
+
+    #[test]
+    fn files_with_no_shared_directory_are_only_counted() {
+        // Claiming a directory they do not share would be worse than vague.
+        let node = spec(Step::DraftCommit);
+        let mut state = RunState::default();
+        state.artifacts.insert(
+            "stat".into(),
+            " src/main.rs | 1 +\n assets/main.css | 2 +-\n".into(),
+        );
+        let map: std::collections::BTreeMap<_, _> =
+            without_model(&node, &state).artifacts.into_iter().collect();
+        assert_eq!(map["commit_subject"], "chore: update 2 files");
+    }
+
+    #[test]
+    fn the_pr_reuses_the_commit_subject_rather_than_inventing_another() {
+        let node = spec(Step::DraftPr);
+        let mut state = RunState::default();
+        state
+            .artifacts
+            .insert("commit_subject".into(), "fix: the thing".into());
+        state
+            .artifacts
+            .insert("stat".into(), " a.rs | 1 +\n".into());
+        let map: std::collections::BTreeMap<_, _> =
+            without_model(&node, &state).artifacts.into_iter().collect();
+        assert_eq!(map["pr_title"], "fix: the thing");
+    }
+
+    #[test]
+    fn nothing_stands_in_for_reading_a_diff_for_regressions() {
+        // An empty verdict is the honest answer, and it is the one the
+        // trusted-run rules already read as "nobody looked".
+        let node = spec(Step::Analyse);
+        let out = without_model(&node, &RunState::default());
+        assert!(out.artifacts.is_empty());
+        assert!(!out.nothing_to_do, "not an error, and not a dead branch");
+    }
+
+    #[test]
+    fn an_empty_diffstat_still_produces_something_commitable() {
+        let node = spec(Step::DraftCommit);
+        let map: std::collections::BTreeMap<_, _> = without_model(&node, &RunState::default())
+            .artifacts
+            .into_iter()
+            .collect();
+        assert_eq!(map["commit_subject"], "chore: update");
+        assert!(!map["branch_name"].is_empty());
     }
 }

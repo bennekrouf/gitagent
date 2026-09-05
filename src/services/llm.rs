@@ -93,6 +93,13 @@ pub enum ProviderKind {
     /// kept as an alias so an existing settings.json still loads.
     #[serde(alias = "DeepSeek")]
     Remote,
+    /// No model at all. Every step that would have called one is skipped, and
+    /// the flows still run — see `flow::without_model` for what stands in.
+    ///
+    /// A first-class choice, not an error state: plenty of people want the
+    /// graph, the approvals and the git handling without a model anywhere near
+    /// their code.
+    Off,
 }
 
 impl ProviderKind {
@@ -100,6 +107,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Ollama => "ollama (local)",
             ProviderKind::Remote => "remote API",
+            ProviderKind::Off => "no AI",
         }
     }
 }
@@ -146,6 +154,7 @@ impl LlmConfig {
         match self.kind {
             ProviderKind::Ollama => &self.ollama_model,
             ProviderKind::Remote => self.remote_model_name(),
+            ProviderKind::Off => "no AI",
         }
     }
 }
@@ -199,6 +208,11 @@ impl LlmConfig {
     }
 
     /// The API key for the selected provider, from its environment variable.
+    /// Whether any step is allowed to call a model.
+    pub fn uses_model(&self) -> bool {
+        self.kind != ProviderKind::Off
+    }
+
     pub fn remote_key(&self) -> Option<String> {
         api_key(self.preset().env)
     }
@@ -253,6 +267,16 @@ pub async fn complete_json(
     let raw = match cfg.kind {
         ProviderKind::Ollama => call_ollama(cfg, &system, user, schema).await?,
         ProviderKind::Remote => call_openai_compatible(cfg, &system, user).await?,
+        // Reaching here means a model step ran with no model configured, which
+        // the executor is supposed to have headed off. Say which of the two is
+        // broken rather than pretending the provider is unreachable.
+        ProviderKind::Off => {
+            return Err(
+                "this step needs a model, but this install is set to run without one. \
+                 Pick a provider in Settings, or skip the step."
+                    .into(),
+            )
+        }
     };
 
     parse_object(&raw)
@@ -404,6 +428,7 @@ async fn call_openai_compatible(
 /// Cheap reachability check for the settings panel.
 pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
     match cfg.kind {
+        ProviderKind::Off => Ok("no AI — model steps are skipped".into()),
         ProviderKind::Ollama => {
             let url = format!("{}/api/tags", cfg.ollama_url.trim_end_matches('/'));
             let resp = client(PROBE_TIMEOUT)?
