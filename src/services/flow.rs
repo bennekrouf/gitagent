@@ -241,7 +241,7 @@ pub async fn execute(
         Step::Preflight => preflight(repo, cfg).await,
         Step::ScanChanges => scan(repo, state).await,
         Step::DraftCommit => draft_commit(cfg, state).await,
-        Step::Commit => commit(repo, state).await,
+        Step::Commit => commit(&node.id, repo, state).await,
         Step::DraftPr => draft_pr(cfg, state).await,
         Step::Push => push(repo, state).await,
         Step::OpenPr => open_pr(repo, state).await,
@@ -836,10 +836,19 @@ pub fn sanitise_branch(raw: &str) -> String {
             _ => {}
         }
     }
+    // Truncate first, then trim. The other order lets truncation put a
+    // separator back on the end — git refuses a refname ending in a dot, so
+    // a 40-character cut landing on one turned a sanitised name back into an
+    // invalid one.
+    let out: String = out.chars().take(40).collect();
+    let out = out.trim_matches(|c| c == '-' || c == '/' || c == '.');
+    // `..` and a `.lock` suffix are refnames git rejects outright, and both
+    // survive a character filter that judges one character at a time.
+    let out = out.replace("..", ".").replace("//", "/");
+    let out = out.strip_suffix(".lock").unwrap_or(&out).to_string();
     let out = out
         .trim_matches(|c| c == '-' || c == '/' || c == '.')
         .to_string();
-    let out: String = out.chars().take(40).collect();
     if out.is_empty() {
         "gitagent/change".to_string()
     } else {
@@ -847,51 +856,115 @@ pub fn sanitise_branch(raw: &str) -> String {
     }
 }
 
-async fn commit(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
-    let mut log = String::new();
+/// Whether this commit node put a list of files in front of the human at all.
+///
+/// The distinction the staging decision turns on. A node that offered items
+/// got an answer, however empty; a node that offered none never asked.
+fn offered_a_choice(node_id: &str, state: &RunState) -> bool {
+    state
+        .runs
+        .get(node_id)
+        .is_some_and(|r| !r.items.is_empty())
+}
 
+/// The paths this commit node should stage.
+///
+/// Whether the node offered a choice is the thing to branch on, not whether
+/// anything is still checked. Once items were offered, what stayed checked is
+/// the whole of the answer — widening back to the full scan because the list
+/// came back empty would stage exactly the files that were unchecked, which
+/// is the one outcome the approval exists to prevent. Only a node that never
+/// offered a list falls back to the scan, and that case is `scan` finding the
+/// tree already clean with the branch ahead of `base`.
+fn paths_to_stage(node_id: &str, state: &RunState) -> Vec<String> {
+    if offered_a_choice(node_id, state) {
+        return state
+            .runs
+            .get(node_id)
+            .map(|r| r.included_keys())
+            .unwrap_or_default();
+    }
+    state
+        .artifact("commit_paths")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// `node_id` is the id of the commit node actually running, not the literal
+/// `"commit"`. A flow built in Setup may name it anything, and a flow with two
+/// commit steps names the second one `commit_2` — reading a fixed id there
+/// would hand the second node the first one's checkboxes, and reading an id
+/// that matches nothing would fall through to staging every path the scan
+/// found. Both defeat the approval.
+async fn commit(node_id: &str, repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
+    let mut log = String::new();
+    let (work_branch, branched) = switch_to_work_branch(repo, state, &mut log).await?;
+
+    commit_on(node_id, repo, state, work_branch, log)
+        .await
+        .map_err(|mut failure| {
+            // Everything past the checkout runs with the person somewhere
+            // they did not ask to be. Leaving that out of the error is how
+            // someone ends up wondering why their branch changed. The branch
+            // itself is kept: their staged work is on it, and deleting it
+            // would be this app discarding local work.
+            if let Some(name) = branched {
+                failure.message = format!(
+                    "{}\n\nThe checkout moved to {name} before this failed, and has been \
+                     left there — your changes are on that branch, not on the one you \
+                     started from.",
+                    failure.message
+                );
+            }
+            failure
+        })
+}
+
+/// Opens the topic branch a commit needs, if it needs one.
+///
+/// Returns the branch to commit on, and — separately — the name only when
+/// this call is what moved the checkout, which is what the caller needs in
+/// order to explain a later failure.
+async fn switch_to_work_branch(
+    repo: &str,
+    state: &RunState,
+    log: &mut String,
+) -> Result<(String, Option<String>), StepFailure> {
     // Only branch when sitting on the base branch; if the user is already on a
     // topic branch, commit there rather than stacking another one.
-    let work_branch = if must_branch(state) {
-        let mut name = state.artifact("branch_name").to_string();
-        if git::branch_exists(repo, &name).await {
-            name = format!("{name}-{}", chrono::Local::now().format("%H%M%S"));
-        }
-        log.push_str(&git::create_branch(repo, &name).await?);
-        log.push_str(&format!("created and switched to {name}\n"));
-        name
-    } else {
+    if !must_branch(state) {
         let name = state.artifact("branch").to_string();
         log.push_str(&format!("already on {name}, committing there\n"));
-        name
-    };
+        return Ok((name, None));
+    }
 
-    // What the human left checked at the approval step, falling back to the
-    // full scan if the node offered no items.
-    let selected = state
-        .runs
-        .get("commit")
-        .map(|r| r.included_keys())
-        .unwrap_or_default();
-    let paths: Vec<String> = if selected.is_empty() {
-        state
-            .artifact("commit_paths")
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.to_string())
-            .collect()
-    } else {
-        selected
-    };
+    let mut name = state.artifact("branch_name").to_string();
+    if git::branch_exists(repo, &name).await {
+        name = format!("{name}-{}", chrono::Local::now().format("%H%M%S"));
+    }
+    log.push_str(&git::create_branch(repo, &name).await?);
+    log.push_str(&format!("created and switched to {name}\n"));
+    Ok((name.clone(), Some(name)))
+}
+
+/// Stages the approved paths and commits them, on a branch already checked
+/// out by the caller.
+async fn commit_on(
+    node_id: &str,
+    repo: &str,
+    state: &RunState,
+    work_branch: String,
+    mut log: String,
+) -> Result<StepOutcome, StepFailure> {
+    let items_offered = offered_a_choice(node_id, state);
+    let paths = paths_to_stage(node_id, state);
     if paths.is_empty() {
         // Nothing was ever proposed to stage (`items` empty) means `scan`
         // found the tree already clean but the branch ahead of `base` — the
         // commit already exists, made outside GitAgent. Unchecking every
         // proposed file, by contrast, is a real "stop" the human meant.
-        let items_offered = state
-            .runs
-            .get("commit")
-            .is_some_and(|r| !r.items.is_empty());
         if items_offered {
             return Err("no files selected to stage".into());
         }
@@ -1077,6 +1150,36 @@ async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
 mod tests {
     use super::*;
     use crate::services::graph::NodeStatus;
+
+    #[test]
+    fn a_truncated_branch_name_does_not_end_on_a_separator() {
+        // git refuses a refname ending in a dot, and trimming before the
+        // 40-character cut let the cut put one back.
+        let name = sanitise_branch(&format!("feat/{}.tail", "a".repeat(60)));
+        assert!(name.chars().count() <= 40);
+        assert!(
+            !name.ends_with('.') && !name.ends_with('-') && !name.ends_with('/'),
+            "got {name:?}"
+        );
+    }
+
+    #[test]
+    fn refnames_git_rejects_outright_are_not_produced() {
+        for raw in [
+            "fix/../../etc/passwd",
+            "feat//double",
+            "chore/thing.lock",
+            "---",
+            "",
+        ] {
+            let name = sanitise_branch(raw);
+            assert!(!name.is_empty(), "{raw:?}");
+            assert!(!name.contains(".."), "{raw:?} -> {name:?}");
+            assert!(!name.contains("//"), "{raw:?} -> {name:?}");
+            assert!(!name.ends_with(".lock"), "{raw:?} -> {name:?}");
+            assert!(!name.starts_with('-'), "{raw:?} -> {name:?}");
+        }
+    }
 
     #[tokio::test]
     async fn diff_preview_is_none_for_anything_but_scan_changes_and_pr_diff() {
@@ -1399,6 +1502,51 @@ hint: Updates were rejected because the tip of your current branch is behind";
         let kept = items.iter().find(|i| i.key == "keep.rs").unwrap();
         assert!(!dropped.included, "the approval must not re-check it");
         assert!(kept.included);
+    }
+
+    fn commit_run(node_id: &str, items: &[(&str, bool)]) -> RunState {
+        let mut s = RunState::default();
+        s.artifacts
+            .insert("commit_paths".into(), "keep.rs\ndrop.rs".into());
+        s.runs.entry(node_id.into()).or_default().items = items
+            .iter()
+            .map(|(key, included)| ProposalItem {
+                key: (*key).into(),
+                label: (*key).into(),
+                note: "modified".into(),
+                included: *included,
+            })
+            .collect();
+        s
+    }
+
+    #[test]
+    fn a_commit_node_reads_its_own_checkboxes_whatever_it_is_called() {
+        // A flow built in Setup names a second commit step `commit_2`.
+        // Reading a hardcoded `"commit"` handed it the first node's answer.
+        let s = commit_run("commit_2", &[("keep.rs", true), ("drop.rs", false)]);
+        assert_eq!(paths_to_stage("commit_2", &s), vec!["keep.rs".to_string()]);
+    }
+
+    #[test]
+    fn unchecking_everything_stages_nothing_rather_than_everything() {
+        // The fail-open case: an empty selection must not widen back to the
+        // full scan, or the approval would stage exactly what was unchecked.
+        let s = commit_run("commit", &[("keep.rs", false), ("drop.rs", false)]);
+        assert!(paths_to_stage("commit", &s).is_empty());
+        assert!(offered_a_choice("commit", &s), "so the caller fails loudly");
+    }
+
+    #[test]
+    fn a_node_that_never_offered_a_list_falls_back_to_the_scan() {
+        // `scan` found the tree clean with the branch ahead of base: there was
+        // no list to check, and this must stay a fallback rather than an error.
+        let s = commit_run("commit", &[]);
+        assert!(!offered_a_choice("commit", &s));
+        assert_eq!(
+            paths_to_stage("commit", &s),
+            vec!["keep.rs".to_string(), "drop.rs".to_string()]
+        );
     }
 
     #[test]

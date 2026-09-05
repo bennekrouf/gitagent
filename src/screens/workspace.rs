@@ -140,6 +140,21 @@ fn default_selection(
         .unwrap_or_default()
 }
 
+/// Woken whenever an approval decision is recorded, or a run's trusted flag
+/// changes — the two things a node parked in `AwaitingApproval` is waiting to
+/// hear about.
+///
+/// Before this, the wait was a 120 ms poll: a run left on an approval
+/// overnight woke eight times a second, taking a borrow of every run's state
+/// each time, and never went idle. One notifier for the whole process rather
+/// than one per run, because a wake only costs a re-read of state the loop
+/// looks at anyway — routing them precisely would be more bookkeeping than
+/// the spurious wakes are worth.
+fn approvals() -> &'static tokio::sync::Notify {
+    static APPROVALS: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    APPROVALS.get_or_init(tokio::sync::Notify::new)
+}
+
 /// How many flows one trusted run will chain through before stopping.
 ///
 /// Commit, review, release is three; the cap is not a limit anyone should
@@ -211,6 +226,15 @@ async fn drive(
             // actually happened.
             let mut auto: Option<trusted::Verdict> = None;
             let approved = loop {
+                // Registered before the state is read, not after. `enable`
+                // puts this future in the waiter list now rather than on
+                // first poll, so a decision written in the window between
+                // the read below and the park at the bottom still wakes it
+                // — the lost-wakeup race every condition-variable wait has.
+                let waiter = approvals().notified();
+                tokio::pin!(waiter);
+                waiter.as_mut().enable();
+
                 let decision = states
                     .read()
                     .get(&key)
@@ -259,7 +283,11 @@ async fn drive(
                     continue;
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                // Nothing left but to wait for a person. The timeout is a
+                // safety net rather than the mechanism: if a wake is ever
+                // missed the run resumes late instead of never.
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(30), waiter).await;
             };
 
             if !approved {
@@ -287,18 +315,54 @@ async fn drive(
         // at all. `result`'s own `outcome.log`/`failure.message` still wins
         // once the step settles, so formatting (a placeholder for empty
         // output, the failing command echoed back) stays exactly as before.
+        // The live log is a preview, and only a preview: whatever the step
+        // finally returns replaces `run.log` wholesale below, on both the
+        // success and the failure path. That is what makes coalescing the
+        // writes and capping the growth here free at the end and worth a lot
+        // in the middle — one signal write per line meant one full Dioxus
+        // render per line, each cloning the entire run map and re-running
+        // syntect over the diff. `cargo test` on a real project emits
+        // thousands of lines, so the cost was quadratic in output length.
+        const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+        /// Enough to watch a command work. The whole output still arrives
+        /// when the step settles.
+        const LIVE_LOG_CAP: usize = 200_000;
+
+        let mut pending = String::new();
+        let mut last_flush = std::time::Instant::now();
         let mut push_line = {
             let mut states = states;
             let key = key.clone();
             let node_id = node.id.clone();
             move |line: &str| {
+                if !pending.is_empty() {
+                    pending.push('\n');
+                }
+                pending.push_str(line);
+                if last_flush.elapsed() < FLUSH_EVERY {
+                    return;
+                }
+                last_flush = std::time::Instant::now();
+
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();
                 let run = entry.runs.entry(node_id.clone()).or_default();
                 if !run.log.is_empty() {
                     run.log.push('\n');
                 }
-                run.log.push_str(line);
+                run.log.push_str(&pending);
+                pending.clear();
+
+                // Keep the tail: the end of a log is the part worth watching,
+                // and an unbounded one is a step away from a looping script
+                // eating the heap.
+                if run.log.len() > LIVE_LOG_CAP {
+                    let mut cut = run.log.len() - LIVE_LOG_CAP;
+                    while cut < run.log.len() && !run.log.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    run.log.drain(..cut);
+                }
             }
         };
         let result = flow::execute(&node, &repo, &cfg_snapshot, &state, &mut push_line).await;
@@ -423,7 +487,7 @@ fn reprobe(path: String, mut statuses: Signal<BTreeMap<String, RepoStatus>>) {
 #[allow(clippy::too_many_arguments)]
 fn refresh_all(
     repos: Signal<Vec<store::Repo>>,
-    mut statuses: Signal<BTreeMap<String, RepoStatus>>,
+    statuses: Signal<BTreeMap<String, RepoStatus>>,
     mut probing: Signal<usize>,
     mut picked: Signal<bool>,
     mut selected_repo: Signal<Option<String>>,
@@ -434,44 +498,67 @@ fn refresh_all(
         return;
     }
     let list = repos.read().clone();
+    if list.is_empty() {
+        return;
+    }
     probing.set(list.len());
 
-    for repo in list.clone() {
-        let all = list.clone();
-        spawn(async move {
-            let status = probe::probe(&repo.path).await;
-            statuses.write().insert(repo.path.clone(), status);
-            let left = probing.read().saturating_sub(1);
-            probing.set(left);
+    // One task for the whole sweep rather than one per repository, with the
+    // concurrency bounded.
+    //
+    // Two things were wrong with a task each. `probe` runs several
+    // subprocesses, two of them network calls to the forge, so a workspace of
+    // forty repositories opened forty concurrent `gh` calls — enough to trip
+    // GitHub's secondary rate limiter — alongside a few hundred process
+    // spawns at once. And the "are we done" counter was decremented inside
+    // each task, so a single task that never got there left `probing` above
+    // zero and wedged every later refresh for the life of the window. There
+    // is one completion point now, and it does not depend on arithmetic.
+    const AT_ONCE: usize = 6;
 
-            if left == 0 && !*picked.read() {
-                picked.set(true);
-                let map = statuses.read().clone();
-                // Most urgent first; ties broken by the order on disk.
-                let best = all
-                    .iter()
-                    .filter_map(|r| map.get(&r.path).map(|s| (r.path.clone(), s.wants())))
-                    .filter(|(_, wants)| wants.needs_a_person())
-                    .min_by_key(|(_, wants)| *wants);
+    spawn(async move {
+        use futures_util::stream::StreamExt;
 
-                if let Some((path, wants)) = best {
-                    // Open on whichever flow says it answers this, whatever
-                    // its name.
-                    let answering = wants.need().and_then(|need| {
-                        book.read()
-                            .runnable()
-                            .iter()
-                            .find(|f| f.answers(need))
-                            .map(|f| f.id.clone())
-                    });
-                    if let Some(id) = answering {
-                        selected_flow.set(id);
-                    }
-                    selected_repo.set(Some(path));
+        // Each result lands as it arrives, so the sidebar fills in rather
+        // than appearing all at once at the end.
+        futures_util::stream::iter(list.clone())
+            .for_each_concurrent(AT_ONCE, |repo| {
+                let mut statuses = statuses;
+                async move {
+                    let status = probe::probe(&repo.path).await;
+                    statuses.write().insert(repo.path.clone(), status);
                 }
+            })
+            .await;
+        probing.set(0);
+
+        if *picked.read() {
+            return;
+        }
+        picked.set(true);
+        let map = statuses.read().clone();
+        // Most urgent first; ties broken by the order on disk.
+        let best = list
+            .iter()
+            .filter_map(|r| map.get(&r.path).map(|s| (r.path.clone(), s.wants())))
+            .filter(|(_, wants)| wants.needs_a_person())
+            .min_by_key(|(_, wants)| *wants);
+
+        if let Some((path, wants)) = best {
+            // Open on whichever flow says it answers this, whatever its name.
+            let answering = wants.need().and_then(|need| {
+                book.read()
+                    .runnable()
+                    .iter()
+                    .find(|f| f.answers(need))
+                    .map(|f| f.id.clone())
+            });
+            if let Some(id) = answering {
+                selected_flow.set(id);
             }
-        });
-    }
+            selected_repo.set(Some(path));
+        }
+    });
 }
 
 #[component]
@@ -1062,6 +1149,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                     // one on screen — the chain may already have
                                                     // moved on to another flow's key.
                                                     trusted.write().retain(|(r, _, _)| r != &repo);
+                                                    approvals().notify_waiters();
                                                 }
                                             },
                                             span { class: "flow-tab-dot" }
@@ -1087,6 +1175,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                 let mut trusted = trusted;
                                                 move |_| {
                                                     trusted.write().insert(key.clone());
+                                                    approvals().notify_waiters();
                                                 }
                                             },
                                             "Stop asking me"
@@ -1410,6 +1499,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         move |id: String| {
                                             states.write().entry(key.clone()).or_default()
                                                 .decisions.insert(id, true);
+                                            approvals().notify_waiters();
                                         }
                                     },
                                     on_reject: {
@@ -1417,6 +1507,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         move |id: String| {
                                             states.write().entry(key.clone()).or_default()
                                                 .decisions.insert(id, false);
+                                            approvals().notify_waiters();
                                         }
                                     },
                                     on_toggle: {

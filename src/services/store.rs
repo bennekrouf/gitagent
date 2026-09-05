@@ -111,8 +111,47 @@ fn write<T: Serialize>(file: &str, value: &T) {
     let dir = data_dir();
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(json) = serde_json::to_string_pretty(value) {
-        let _ = std::fs::write(dir.join(file), json);
+        let _ = write_atomic(&dir.join(file), json.as_bytes());
     }
+}
+
+/// Writes through a temporary file in the same directory, then renames it
+/// into place.
+///
+/// A plain `fs::write` truncates the file before it writes, so losing power
+/// — or being killed — inside that window leaves a zero-length file behind.
+/// `read` above turns any unparseable file into `Default::default()` without
+/// a word, so the next launch would come up with an empty repository list and
+/// the shipped flows, and nothing on screen to say the real ones had been
+/// lost. A rename within one filesystem is atomic: a reader sees the old
+/// file or the new one, never a half-written one.
+///
+/// The temporary name carries the process id because two GitAgent windows
+/// are two `Signal` copies of the same state writing the same files, and
+/// they must not collide on the scratch file even when they race on the
+/// real one.
+pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "tmp".into());
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+
+    let result = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        // Durable before the rename, or a crash can leave the rename visible
+        // while the contents behind it are not.
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 pub fn load_registry() -> Registry {
@@ -263,6 +302,30 @@ pub fn save_repo_bases(bases: &RepoBases) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_atomic_write_replaces_the_file_without_a_truncated_window() {
+        let dir = std::env::temp_dir().join(format!("gitagent-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        write_atomic(&path, b"{\"first\":true}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"first\":true}");
+
+        // Overwriting leaves the file whole, and leaves no scratch file
+        // behind for `discover_repos` or a later read to trip over.
+        write_atomic(&path, b"{\"second\":true}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"second\":true}");
+        let strays: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "left behind {strays:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
     use super::*;
 
     #[test]

@@ -472,23 +472,36 @@ pub async fn stored_base_branch(repo: &str) -> (String, String) {
     base_branch(repo, override_base).await
 }
 
+/// Everything the sidebar needs to know about one repository.
+///
+/// Run in two waves rather than as ten sequential awaits. Each of these
+/// shells out to `git` or `gh`, so awaiting them one after another spent the
+/// whole latency of every subprocess in series — and it was what made the
+/// caller fan out across repositories hard enough to trip the forge's rate
+/// limiter. Only two things are genuine dependencies: the forge has to be
+/// known before the pull requests can be listed, and the base branch before
+/// the release and unmerged-commit counts. Everything else goes at once.
 pub async fn probe(repo: &str) -> RepoStatus {
-    let branch = git::current_branch(repo).await.unwrap_or_default();
-    let changes = git::status(repo).await.map(|c| c.len()).unwrap_or(0);
-    let forge = git::remote_url(repo)
-        .await
-        .map(|url| forge::detect(&url))
-        .unwrap_or(Forge::None);
-    let pr = open_pr(repo, &forge).await;
-    let (prs, prs_error) = match list_open_prs(repo, &forge).await {
+    let (branch, changes, url, (ahead, behind), (base, _), in_progress) = tokio::join!(
+        async { git::current_branch(repo).await.unwrap_or_default() },
+        async { git::status(repo).await.map(|c| c.len()).unwrap_or(0) },
+        git::remote_url(repo),
+        ahead_behind(repo),
+        stored_base_branch(repo),
+        git::in_progress(repo),
+    );
+    let forge = url.map(|url| forge::detect(&url)).unwrap_or(Forge::None);
+
+    let (pr, listed, release, unmerged) = tokio::join!(
+        open_pr(repo, &forge),
+        list_open_prs(repo, &forge),
+        release::status(repo, &base),
+        unmerged_commits(repo, &base),
+    );
+    let (prs, prs_error) = match listed {
         Ok(list) => (list, None),
         Err(e) => (vec![], Some(e)),
     };
-    let (ahead, behind) = ahead_behind(repo).await;
-    let (base, _) = stored_base_branch(repo).await;
-    let release = release::status(repo, &base).await;
-    let unmerged = unmerged_commits(repo, &base).await;
-    let in_progress = git::in_progress(repo).await;
 
     RepoStatus {
         branch,
