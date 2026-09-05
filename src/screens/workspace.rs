@@ -199,6 +199,10 @@ async fn drive(
         }
 
         if node.requires_approval {
+            // The approval describes what will run, so it has to read the same
+            // resolved state the step will — otherwise the proposal quotes one
+            // node's `commit_subject` and the commit uses another's.
+            let state = state.resolved_for(&node);
             let proposal = flow::proposal(&node, &state);
             let items = flow::proposal_items(&node, &state);
             let preview_diff = flow::diff_preview(&node, &repo, &state)
@@ -235,12 +239,25 @@ async fn drive(
                 tokio::pin!(waiter);
                 waiter.as_mut().enable();
 
-                let decision = states
-                    .read()
-                    .get(&key)
-                    .and_then(|s| s.decisions.get(&node.id).copied());
+                // `None` breaks out as "bypassed": somebody pressed Skip
+                // while this sat here, so there is no decision coming and
+                // nothing to run. Reading the status rather than inventing a
+                // third decision value is what makes Skip behave identically
+                // whether the run is still waiting here or has already
+                // finished and failed.
+                let (bypassed, decision) = {
+                    let snapshot = states.read();
+                    let entry = snapshot.get(&key);
+                    (
+                        entry.map(|s| s.status(&node.id)) == Some(NodeStatus::Bypassed),
+                        entry.and_then(|s| s.decisions.get(&node.id).copied()),
+                    )
+                };
+                if bypassed {
+                    break None;
+                }
                 if let Some(decision) = decision {
-                    break decision;
+                    break Some(decision);
                 }
 
                 if auto.is_none() && trusted.read().contains(&key) {
@@ -286,10 +303,15 @@ async fn drive(
                 // Nothing left but to wait for a person. The timeout is a
                 // safety net rather than the mechanism: if a wake is ever
                 // missed the run resumes late instead of never.
-                let _ =
-                    tokio::time::timeout(std::time::Duration::from_secs(30), waiter).await;
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(30), waiter).await;
             };
 
+            let Some(approved) = approved else {
+                // `bypass` already set the status and freed whatever was
+                // blocked behind it, so there is nothing to do here but move
+                // on to the next ready node.
+                continue;
+            };
             if !approved {
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();
@@ -307,7 +329,9 @@ async fn drive(
             .or_default()
             .set_status(&node.id, NodeStatus::Running);
 
-        let state = snapshot(&states, &key);
+        // As this node sees it: bound inputs already resolved to the
+        // producer each one names, so the step reads its own literal keys.
+        let state = snapshot(&states, &key).resolved_for(&node);
         let cfg_snapshot = cfg.read().clone();
 
         // Fills in the node's log as its command's output arrives, rather
@@ -365,7 +389,40 @@ async fn drive(
                 }
             }
         };
-        let result = flow::execute(&node, &repo, &cfg_snapshot, &state, &mut push_line).await;
+        // Racing the step against a skip, rather than only awaiting it, is what
+        // makes Skip work on a step that is *already running* — which is the
+        // case that matters, because a model call that will take fifteen
+        // minutes is exactly the one you want to abandon. Dropping the future
+        // cancels it: an in-flight request is dropped, and `git` children are
+        // spawned `kill_on_drop`.
+        let result = {
+            let step = flow::execute(&node, &repo, &cfg_snapshot, &state, &mut push_line);
+            tokio::pin!(step);
+            loop {
+                tokio::select! {
+                    // Biased so a step that has finished is never discarded in
+                    // favour of a skip that arrived in the same breath.
+                    biased;
+                    settled = &mut step => break Some(settled),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                        let bypassed = states
+                            .read()
+                            .get(&key)
+                            .map(|s| s.status(&node.id))
+                            == Some(NodeStatus::Bypassed);
+                        if bypassed {
+                            break None;
+                        }
+                    }
+                }
+            }
+        };
+        let Some(result) = result else {
+            // Skipped mid-flight. `bypass` has already set the status and freed
+            // whatever was blocked behind it, and the log it wrote so far is
+            // kept as the account of how far it got.
+            continue;
+        };
 
         let mut w = states.write();
         let entry = w.entry(key.clone()).or_default();
@@ -449,6 +506,62 @@ fn retry_node(
         .entry(key.clone())
         .or_default()
         .retry_from(node, &graph);
+
+    if running.read().contains(&key) {
+        return;
+    }
+    running.write().insert(key.clone());
+    spawn(async move {
+        drive(
+            graph,
+            key.clone(),
+            cfg,
+            states,
+            selected_node,
+            selected_repo,
+            selected_flow,
+            selected_pr,
+            trusted,
+        )
+        .await;
+        running.write().remove(&key);
+        reprobe(key.0.clone(), statuses);
+    });
+}
+
+/// Marks a node bypassed and lets the run carry on without it.
+///
+/// Shares its shape with `retry_node` because it answers the same shape of
+/// question — a settled node and what to do about it — and differs in one
+/// place: the node ends `Bypassed` rather than back in the queue.
+///
+/// Both entry points land here. A node still sitting at its approval has a
+/// driver waiting on it, which sees the new status and moves on, so the
+/// `running` guard below is what stops a second one being started. A node that
+/// failed has no driver left, so this starts one.
+#[allow(clippy::too_many_arguments)]
+fn skip_node(
+    mut states: Signal<States>,
+    mut running: Signal<BTreeSet<Key>>,
+    selected_node: Signal<String>,
+    selected_repo: Signal<Option<String>>,
+    selected_flow: Signal<String>,
+    selected_pr: Signal<String>,
+    cfg: Signal<LlmConfig>,
+    statuses: Signal<BTreeMap<String, RepoStatus>>,
+    graph: Graph,
+    key: Key,
+    node: &str,
+    trusted: Signal<BTreeSet<Key>>,
+) {
+    states
+        .write()
+        .entry(key.clone())
+        .or_default()
+        .bypass(node, &graph);
+    // Wake the waiting driver the same way an approval does, so a skip takes
+    // effect immediately rather than on the next timeout tick.
+    approvals().notify_waiters();
 
     if running.read().contains(&key) {
         return;
@@ -1494,6 +1607,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         }
                                     }),
                                     is_light: *is_light.read(),
+                                    run_started: state.started,
                                     on_approve: {
                                         let key = key.clone();
                                         move |id: String| {
@@ -1580,6 +1694,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                 states, running, selected_node,
                                                 selected_repo, selected_flow, selected_pr,
                                                 llm_config, statuses, retry_graph.clone(),
+                                                key.clone(), &node, trusted,
+                                            );
+                                        }
+                                    },
+                                    on_skip: {
+                                        let key = key.clone();
+                                        let skip_graph = graph.clone();
+                                        move |node: String| {
+                                            skip_node(
+                                                states, running, selected_node,
+                                                selected_repo, selected_flow, selected_pr,
+                                                llm_config, statuses, skip_graph.clone(),
                                                 key.clone(), &node, trusted,
                                             );
                                         }

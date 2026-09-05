@@ -15,6 +15,10 @@ pub struct DetailPaneProps {
     #[props(default)]
     pub diff: Option<String>,
     pub is_light: bool,
+    /// Whether this node's run has actually begun. A node in a flow nobody has
+    /// started is `Pending` too, and offering to skip it there would write to
+    /// state that `Start` throws away.
+    pub run_started: bool,
     pub on_approve: EventHandler<String>,
     pub on_reject: EventHandler<String>,
     /// `(node id, item key)` — flips one item in and out of the approval.
@@ -23,6 +27,10 @@ pub struct DetailPaneProps {
     pub on_remedy: EventHandler<(String, usize)>,
     /// Re-queues a settled node and everything blocked behind it.
     pub on_retry: EventHandler<String>,
+    /// Marks a node bypassed and lets the run carry on without it. Offered at
+    /// an approval and after a failure, because both are places a step can
+    /// stand between you and work that does not actually depend on it.
+    pub on_skip: EventHandler<String>,
     /// Abandons the whole run for this repo+flow — for a failure retrying
     /// can never fix (the branch this was about already merged, the PR
     /// already exists under a different run). Puts the flow back to never
@@ -45,8 +53,25 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     let toggle_id = spec.id.clone();
     let remedy_id = spec.id.clone();
     let retry_id = spec.id.clone();
+    let skip_id = spec.id.clone();
+    let skip_failed_id = spec.id.clone();
+    let early_skip_id = spec.id.clone();
     let diff_id = spec.id.clone();
+    // What this node would have written, named at the button, because those
+    // are exactly the artifacts every later step will read as empty.
+    let skip_cost = if spec.writes.is_empty() {
+        "Nothing downstream reads anything from this step.".to_string()
+    } else {
+        format!("Later steps will read {} as empty.", spec.writes.join(", "))
+    };
     let failed = matches!(run.status, NodeStatus::Failed | NodeStatus::Rejected);
+    // Skip is not only for a step that has stopped to ask or has fallen over.
+    // An ungated step that simply takes too long — a model call against a diff
+    // it cannot chew through — never reaches either of those states, so
+    // without this the one step most worth skipping is the one you cannot.
+    let skippable_early =
+        props.run_started && matches!(run.status, NodeStatus::Pending | NodeStatus::Running);
+    let running_now = run.status == NodeStatus::Running;
     let nothing_selected = run.has_nothing_selected();
     let chosen = run.items.iter().filter(|i| i.included).count();
     // Collapsed by default — the count already says "all N selected" at a
@@ -85,6 +110,22 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                         for key in spec.writes.iter() {
                             div { key: "{key}", class: "chip chip-out", "{key}" }
                         }
+                    }
+                }
+            }
+
+            if skippable_early {
+                div { class: "step-actions",
+                    button {
+                        class: "btn",
+                        title: if running_now {
+                            "Stop waiting for this step and carry on without it. Whatever it \
+                             has already started is not undone. {skip_cost}"
+                        } else {
+                            "Don't run this step when the run reaches it. {skip_cost}"
+                        },
+                        onclick: move |_| props.on_skip.call(early_skip_id.clone()),
+                        if running_now { "Skip this step" } else { "Skip when reached" }
                     }
                 }
             }
@@ -156,6 +197,13 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                             onclick: move |_| props.on_reject.call(reject_id.clone()),
                             "Reject"
                         }
+                        button {
+                            class: "btn btn-ghost",
+                            title: "Don't run this step, and carry on anyway. Unlike Reject, \
+                                    which stops everything behind it. {skip_cost}",
+                            onclick: move |_| props.on_skip.call(skip_id.clone()),
+                            "Skip"
+                        }
                     }
                 }
             }
@@ -208,6 +256,13 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                             class: "btn",
                             onclick: move |_| props.on_retry.call(retry_id.clone()),
                             "Retry this step"
+                        }
+                        button {
+                            class: "btn",
+                            title: "Carry on without this step — for one that is failing on \
+                                    something the rest of the run does not need. {skip_cost}",
+                            onclick: move |_| props.on_skip.call(skip_failed_id.clone()),
+                            "Skip this step"
                         }
                         button {
                             class: "btn btn-ghost",

@@ -72,12 +72,27 @@ pub struct NodeSpec {
     /// Per-node settings for steps that take them — the command a script step
     /// runs, and so on. Empty for steps that are fully specified by their code.
     pub config: std::collections::BTreeMap<String, String>,
+    /// Which producer each input comes from, when it matters. See
+    /// `FlowDef::bind` for why, and `RunState::resolved_for` for how.
+    pub bind: std::collections::BTreeMap<String, String>,
 }
 
 impl NodeSpec {
     pub fn setting(&self, key: &str) -> &str {
         self.config.get(key).map(|s| s.as_str()).unwrap_or("")
     }
+}
+
+/// The artifact key a node's output is also filed under, so it can be named
+/// specifically rather than only by its bare key.
+///
+/// Every output is stored twice: bare, which is what every step already reads
+/// and what keeps unbound flows behaving exactly as before, and qualified,
+/// which is what a binding points at. The cost is a second copy of each
+/// artifact; the alternative is that `pr_url` written by two nodes has no way
+/// to say which one you meant.
+pub fn qualified(node: &str, key: &str) -> String {
+    format!("{node}.{key}")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -93,6 +108,16 @@ pub enum NodeStatus {
     /// downstream can proceed, because the artifacts it would have produced do
     /// not exist.
     Skipped,
+    /// Not run, by explicit choice, and the run carries on regardless.
+    ///
+    /// The difference from `Skipped` is who decided and what happens next: a
+    /// step that skipped itself found no work and stops the branch behind it,
+    /// whereas a step you bypassed may well have had work to do — you have
+    /// said to proceed without it. Whatever it would have written does not
+    /// exist, so everything downstream reads those artifacts as empty. That is
+    /// the cost, and it is the reason this is a deliberate button and never
+    /// something a trusted run does on your behalf.
+    Bypassed,
     Failed,
     /// The human declined this node.
     Rejected,
@@ -106,6 +131,7 @@ impl NodeStatus {
             self,
             NodeStatus::Done
                 | NodeStatus::Skipped
+                | NodeStatus::Bypassed
                 | NodeStatus::Failed
                 | NodeStatus::Rejected
                 | NodeStatus::Blocked
@@ -120,6 +146,7 @@ impl NodeStatus {
             NodeStatus::AwaitingApproval => "awaiting",
             NodeStatus::Done => "done",
             NodeStatus::Skipped => "skipped",
+            NodeStatus::Bypassed => "skipped",
             NodeStatus::Failed => "failed",
             NodeStatus::Rejected => "rejected",
             NodeStatus::Blocked => "blocked",
@@ -133,6 +160,7 @@ impl NodeStatus {
             NodeStatus::AwaitingApproval => "needs approval",
             NodeStatus::Done => "done",
             NodeStatus::Skipped => "skipped",
+            NodeStatus::Bypassed => "skipped by you",
             NodeStatus::Failed => "failed",
             NodeStatus::Rejected => "rejected",
             NodeStatus::Blocked => "blocked",
@@ -284,6 +312,32 @@ impl RunState {
         self.runs.entry(id.to_string()).or_default().status = status;
     }
 
+    /// This state as `node` sees it: every bound input replaced by the value
+    /// its named producer wrote.
+    ///
+    /// Resolving into a copy, rather than threading a scoped accessor through
+    /// every step, is what keeps the 58 `state.artifact("literal")` reads in
+    /// the step implementations exactly as they are. A step still asks for
+    /// `commit_subject`; which `commit_subject` it gets is the flow's business,
+    /// not the step's.
+    ///
+    /// A binding whose source produced nothing is left alone rather than
+    /// blanked — `validate` refuses that flow before it can run, and if one
+    /// ever gets here, falling back to the bare key is the behaviour that was
+    /// there before bindings existed.
+    pub fn resolved_for(&self, node: &NodeSpec) -> Self {
+        if node.bind.is_empty() {
+            return self.clone();
+        }
+        let mut resolved = self.clone();
+        for (input, source) in &node.bind {
+            if let Some(value) = self.artifacts.get(source) {
+                resolved.artifacts.insert(input.clone(), value.clone());
+            }
+        }
+        resolved
+    }
+
     pub fn artifact(&self, key: &str) -> &str {
         self.artifacts.get(key).map(|s| s.as_str()).unwrap_or("")
     }
@@ -297,7 +351,9 @@ impl RunState {
             .iter()
             .find(|n| {
                 self.status(&n.id) == NodeStatus::Pending
-                    && n.deps.iter().all(|d| self.status(d) == NodeStatus::Done)
+                    && n.deps
+                        .iter()
+                        .all(|d| matches!(self.status(d), NodeStatus::Done | NodeStatus::Bypassed))
             })
             .cloned()
     }
@@ -360,6 +416,30 @@ impl RunState {
         self.propagate_block(graph);
     }
 
+    /// Marks a node bypassed and frees whatever was blocked behind it.
+    ///
+    /// The log is kept: when the bypass follows a failure, what it failed with
+    /// is the reason there is a bypass at all, and deleting it would leave the
+    /// run with no account of why the step did not run.
+    pub fn bypass(&mut self, id: &str, graph: &Graph) {
+        self.decisions.remove(id);
+        {
+            let run = self.runs.entry(id.to_string()).or_default();
+            run.status = NodeStatus::Bypassed;
+            run.summary = "skipped — the run was told to carry on without it".into();
+            run.proposal.clear();
+            run.preview_diff.clear();
+            run.items.clear();
+            run.remedies.clear();
+            run.held.clear();
+        }
+        for node in &graph.nodes {
+            if self.status(&node.id) == NodeStatus::Blocked {
+                self.set_status(&node.id, NodeStatus::Pending);
+            }
+        }
+    }
+
     /// True once no node can make further progress.
     pub fn is_finished(&self, graph: &Graph) -> bool {
         graph.nodes.iter().all(|n| self.status(&n.id).is_terminal())
@@ -382,6 +462,7 @@ mod tests {
             writes: vec![],
             requires_approval: false,
             config: Default::default(),
+            bind: Default::default(),
         }
     }
 
@@ -553,5 +634,143 @@ mod tests {
             s.set_status(id, NodeStatus::Done);
         }
         assert!(s.is_finished(&g));
+    }
+
+    #[test]
+    fn a_bypassed_node_lets_the_run_carry_on_past_it() {
+        // What Skip is for: `analyse` will not answer, and `merge` does not
+        // actually need it to — the person reads the diff themselves.
+        let graph = Graph {
+            nodes: vec![node("a", &[]), node("b", &["a"]), node("c", &["b"])],
+        };
+        let mut s = RunState::fresh(&graph);
+        s.set_status("a", NodeStatus::Done);
+        s.set_status("b", NodeStatus::Failed);
+        s.propagate_block(&graph);
+        assert_eq!(s.status("c"), NodeStatus::Blocked);
+
+        s.bypass("b", &graph);
+        assert_eq!(s.status("b"), NodeStatus::Bypassed);
+        assert_eq!(
+            s.status("c"),
+            NodeStatus::Pending,
+            "freed, not left blocked"
+        );
+        assert_eq!(
+            s.next_ready(&graph).map(|n| n.id),
+            Some("c".into()),
+            "a bypassed dependency counts as satisfied"
+        );
+    }
+
+    #[test]
+    fn a_bypassed_node_is_terminal_but_a_skipped_one_still_blocks() {
+        // The two must not be confused: `Skipped` is a step reporting no work,
+        // and everything behind it genuinely cannot run.
+        assert!(NodeStatus::Bypassed.is_terminal());
+        let graph = Graph {
+            nodes: vec![node("a", &[]), node("b", &["a"])],
+        };
+        let mut s = RunState::fresh(&graph);
+        s.set_status("a", NodeStatus::Skipped);
+        s.propagate_block(&graph);
+        assert_eq!(s.status("b"), NodeStatus::Blocked);
+    }
+
+    #[test]
+    fn bypassing_keeps_the_failure_it_replaced() {
+        // The log is the only account of why the step did not run.
+        let graph = Graph {
+            nodes: vec![node("a", &[])],
+        };
+        let mut s = RunState::fresh(&graph);
+        s.set_status("a", NodeStatus::Failed);
+        s.runs.entry("a".into()).or_default().log = "ollama timed out".into();
+        s.bypass("a", &graph);
+        assert_eq!(s.runs["a"].log, "ollama timed out");
+        assert!(s.runs["a"].summary.contains("carry on without it"));
+    }
+
+    #[test]
+    fn a_bound_input_reads_the_producer_it_names() {
+        // `pr_url` written by two nodes: without a binding the map holds
+        // whichever ran last, and with one the reader gets the one it asked
+        // for — while still asking by its own literal key.
+        let mut node = node("merge", &["open_pr", "find_pr"]);
+        node.bind
+            .insert("pr_url".into(), qualified("open_pr", "pr_url"));
+
+        let mut s = RunState::default();
+        s.artifacts
+            .insert(qualified("open_pr", "pr_url"), "from-open".into());
+        s.artifacts
+            .insert(qualified("find_pr", "pr_url"), "from-find".into());
+        s.artifacts.insert("pr_url".into(), "from-find".into());
+
+        assert_eq!(s.artifact("pr_url"), "from-find", "bare key is last-write");
+        assert_eq!(
+            s.resolved_for(&node).artifact("pr_url"),
+            "from-open",
+            "the binding decides"
+        );
+    }
+
+    #[test]
+    fn a_node_that_binds_nothing_sees_the_state_unchanged() {
+        // The compatibility guarantee, at the one place it is enforced.
+        let node = node("a", &[]);
+        let mut s = RunState::default();
+        s.artifacts.insert("diff".into(), "d".into());
+        assert_eq!(s.resolved_for(&node), s);
+    }
+
+    #[test]
+    fn a_binding_whose_source_produced_nothing_falls_back() {
+        // `validate` refuses this flow, so it should not arrive — and if it
+        // does, the behaviour is the one that existed before bindings did,
+        // not a silently blanked input.
+        let mut node = node("b", &["a"]);
+        node.bind.insert("diff".into(), qualified("a", "diff"));
+        let mut s = RunState::default();
+        s.artifacts.insert("diff".into(), "bare".into());
+        assert_eq!(s.resolved_for(&node).artifact("diff"), "bare");
+    }
+
+    #[test]
+    fn a_pending_node_can_be_skipped_before_the_run_reaches_it() {
+        // The case Skip could not reach: an ungated step that neither stops to
+        // ask nor fails, so it has no other control on it.
+        let graph = Graph {
+            nodes: vec![node("a", &[]), node("b", &["a"]), node("c", &["b"])],
+        };
+        let mut s = RunState::fresh(&graph);
+        s.set_status("a", NodeStatus::Done);
+        assert_eq!(s.status("b"), NodeStatus::Pending);
+
+        s.bypass("b", &graph);
+
+        assert_eq!(s.status("b"), NodeStatus::Bypassed);
+        assert_eq!(
+            s.next_ready(&graph).map(|n| n.id),
+            Some("c".into()),
+            "the run goes straight to what was behind it"
+        );
+    }
+
+    #[test]
+    fn skipping_a_running_node_leaves_the_log_it_had_written() {
+        // The partial output is how you see how far it got before you gave up
+        // on it.
+        let graph = Graph {
+            nodes: vec![node("a", &[])],
+        };
+        let mut s = RunState::fresh(&graph);
+        s.set_status("a", NodeStatus::Running);
+        s.runs.entry("a".into()).or_default().log = "$ cargo test\nrunning 40 tests".into();
+
+        s.bypass("a", &graph);
+
+        assert_eq!(s.status("a"), NodeStatus::Bypassed);
+        assert!(s.runs["a"].log.contains("running 40 tests"));
     }
 }
