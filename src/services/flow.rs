@@ -861,10 +861,7 @@ pub fn sanitise_branch(raw: &str) -> String {
 /// The distinction the staging decision turns on. A node that offered items
 /// got an answer, however empty; a node that offered none never asked.
 fn offered_a_choice(node_id: &str, state: &RunState) -> bool {
-    state
-        .runs
-        .get(node_id)
-        .is_some_and(|r| !r.items.is_empty())
+    state.runs.get(node_id).is_some_and(|r| !r.items.is_empty())
 }
 
 /// The paths this commit node should stage.
@@ -1195,6 +1192,7 @@ mod tests {
             writes: vec![],
             requires_approval: true,
             config: Default::default(),
+            bind: Default::default(),
         };
         let state = RunState::fresh(&commit_and_pr_flow());
         assert_eq!(diff_preview(&node, "/does/not/matter", &state).await, None);
@@ -1236,6 +1234,7 @@ mod tests {
             writes: vec![],
             requires_approval: true,
             config: Default::default(),
+            bind: Default::default(),
         };
         let state = RunState::fresh(&commit_and_pr_flow());
         assert_eq!(diff_preview(&node, "/does/not/matter", &state).await, None);
@@ -1452,6 +1451,7 @@ mod tests {
             writes: vec![],
             requires_approval: false,
             config: Default::default(),
+            bind: Default::default(),
         }
     }
 

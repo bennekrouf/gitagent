@@ -163,6 +163,16 @@ fn merge(state: &RunState) -> Verdict {
     let findings: usize = state.artifact("finding_count").parse().unwrap_or(0);
     let checks = state.artifact("checks_state");
 
+    // Skipping the analysis is a legitimate thing to do by hand — the button
+    // exists — but it must not quietly buy a trusted merge. An absent verdict
+    // is the same evidence as an absent CI result: none.
+    if verdict.is_empty() {
+        return Verdict::Hold(
+            "Nothing analysed this change — the analysis step did not run, or was skipped. \
+             A trusted run will not merge on no evidence."
+                .into(),
+        );
+    }
     if verdict == "risky" {
         return Verdict::Hold(
             "The analysis called this change risky. A trusted run will not merge that on \
@@ -217,6 +227,7 @@ mod tests {
             writes: vec![],
             requires_approval: true,
             config: Default::default(),
+            bind: Default::default(),
         }
     }
 
@@ -513,6 +524,33 @@ mod tests {
         let mut rejected = done.clone();
         rejected.set_status("commit", NodeStatus::Rejected);
         assert!(!may_continue(&rejected, &graph));
+    }
+
+    #[test]
+    fn skipping_the_analysis_does_not_buy_a_trusted_merge() {
+        // Skip is a deliberate button, and pressing it says "I will judge this
+        // myself" — not "merge it for me with nothing having looked".
+        let mut skipped = state("looks_safe", "0", "passing");
+        skipped.artifacts.remove("verdict");
+        skipped.artifacts.remove("finding_count");
+        let held = decide(&node(Step::Merge), &skipped);
+        assert!(held.reason().unwrap().contains("Nothing analysed"));
+    }
+
+    #[test]
+    fn a_bypassed_step_does_not_stop_the_chain() {
+        // Unlike a failure: the person chose to carry on without it, so the
+        // trusted run carrying on is doing what they said.
+        let graph = FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph();
+        let mut state = RunState::fresh(&graph);
+        for node in &graph.nodes {
+            state.set_status(&node.id, NodeStatus::Done);
+        }
+        state.set_status("test", NodeStatus::Bypassed);
+        assert!(may_continue(&state, &graph));
     }
 
     #[test]

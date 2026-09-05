@@ -36,6 +36,18 @@ pub struct NodeDef {
     /// Per-node settings, for steps that take them. See `StepInfo::config`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, String>,
+    /// Which producer each input comes from: input key → `node_id.output_key`.
+    ///
+    /// Only for the inputs where it matters. Left out — which is every node in
+    /// every flow that exists today — an input is satisfied by whichever
+    /// ancestor declares it, exactly as before. That default is fine until two
+    /// nodes write the same key: `pr_url` comes from both `open_pr` and
+    /// `find_pr`, and with nothing to name which, the answer is whichever ran
+    /// last. A binding is how you say which you meant, and it is what lets the
+    /// same step appear twice in one flow without the second silently
+    /// overwriting the first.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bind: BTreeMap<String, String>,
 }
 
 impl NodeDef {
@@ -48,7 +60,20 @@ impl NodeDef {
             deps: vec![],
             gated: None,
             config: BTreeMap::new(),
+            bind: BTreeMap::new(),
         }
+    }
+
+    /// The node and output a given input is bound to, if it is bound at all.
+    pub fn binding<'a>(&'a self, input: &'a str) -> Option<(&'a str, &'a str)> {
+        let source = self.bind.get(input)?;
+        // `draft_commit.commit_subject` names an output; a bare `draft_commit`
+        // means "the one with this input's own name", which is what you want
+        // nine times out of ten and is far less to type.
+        Some(match source.split_once('.') {
+            Some((node, key)) => (node, key),
+            None => (source.as_str(), input),
+        })
     }
 
     pub fn setting(&self, key: &str) -> &str {
@@ -109,6 +134,15 @@ impl FlowDef {
                         writes: catalogue::expand(info.writes, &def.id),
                         requires_approval: def.is_gated(),
                         config: def.config.clone(),
+                        // Stored resolved, so the executor never has to know
+                        // the shorthand form.
+                        bind: catalogue::expand(info.reads, &def.id)
+                            .iter()
+                            .filter_map(|input| {
+                                let (node, key) = def.binding(input)?;
+                                Some((input.clone(), crate::services::graph::qualified(node, key)))
+                            })
+                            .collect(),
                     })
                 })
                 .collect(),
@@ -185,12 +219,44 @@ pub enum Problem {
     Empty,
     NoRoot,
     DuplicateId(String),
-    UnknownStep { node: String, key: String },
-    UnknownDep { node: String, dep: String },
+    UnknownStep {
+        node: String,
+        key: String,
+    },
+    UnknownDep {
+        node: String,
+        dep: String,
+    },
     SelfDep(String),
     Cycle(Vec<String>),
-    MissingInput { node: String, key: String },
-    MissingSetting { node: String, label: String },
+    MissingInput {
+        node: String,
+        key: String,
+    },
+    MissingSetting {
+        node: String,
+        label: String,
+    },
+    /// A binding names a node that is not upstream of the one reading it, so
+    /// there is no promise it has run — or has run *yet* — when the read
+    /// happens.
+    BindingNotUpstream {
+        node: String,
+        input: String,
+        source: String,
+    },
+    /// A binding names an upstream node that does not write that output.
+    BindingNotProduced {
+        node: String,
+        input: String,
+        source: String,
+        key: String,
+    },
+    /// A binding for an input the step does not have.
+    BindingUnknownInput {
+        node: String,
+        input: String,
+    },
 }
 
 impl Problem {
@@ -219,6 +285,23 @@ impl Problem {
             }
             Problem::MissingSetting { node, label } => {
                 format!("`{node}` needs its {label} filled in before it can run.")
+            }
+            Problem::BindingNotUpstream {
+                node,
+                input,
+                source,
+            } => format!(
+                "`{node}` takes `{input}` from `{source}`, which it does not depend on — \
+                 add the dependency, or nothing guarantees `{source}` has run first."
+            ),
+            Problem::BindingNotProduced {
+                node,
+                input,
+                source,
+                key,
+            } => format!("`{node}` takes `{input}` from `{source}`, which does not write `{key}`."),
+            Problem::BindingUnknownInput { node, input } => {
+                format!("`{node}` binds `{input}`, which is not one of its inputs.")
             }
         }
     }
@@ -294,18 +377,52 @@ pub fn validate(flow: &FlowDef) -> Vec<Problem> {
         }
 
         let upstream = ancestors(flow, &node.id);
-        for key in catalogue::expand(info.reads, &node.id) {
-            let produced = upstream.iter().any(|id| {
-                by_id
-                    .get(id.as_str())
-                    .and_then(|d| catalogue::by_key(&d.step))
-                    .map(|i| catalogue::expand(i.writes, id).contains(&key))
-                    .unwrap_or(false)
-            });
-            if !produced {
+        let writes_of = |id: &str| -> Vec<String> {
+            by_id
+                .get(id)
+                .and_then(|d| catalogue::by_key(&d.step))
+                .map(|i| catalogue::expand(i.writes, id))
+                .unwrap_or_default()
+        };
+
+        let inputs = catalogue::expand(info.reads, &node.id);
+        // A binding for something the step never reads is dead configuration
+        // that will look like it is doing something. Say so.
+        for input in node.bind.keys() {
+            if !inputs.contains(input) {
+                problems.push(Problem::BindingUnknownInput {
+                    node: node.id.clone(),
+                    input: input.clone(),
+                });
+            }
+        }
+
+        for input in &inputs {
+            // A bound input answers to its named producer and to nothing else:
+            // it does not matter whether some other ancestor also writes the
+            // key, which is the entire point of having said which one.
+            if let Some((source, key)) = node.binding(input) {
+                if !upstream.contains(source) {
+                    problems.push(Problem::BindingNotUpstream {
+                        node: node.id.clone(),
+                        input: input.clone(),
+                        source: source.to_string(),
+                    });
+                } else if !writes_of(source).iter().any(|w| w == key) {
+                    problems.push(Problem::BindingNotProduced {
+                        node: node.id.clone(),
+                        input: input.clone(),
+                        source: source.to_string(),
+                        key: key.to_string(),
+                    });
+                }
+                continue;
+            }
+
+            if !upstream.iter().any(|id| writes_of(id).contains(input)) {
                 problems.push(Problem::MissingInput {
                     node: node.id.clone(),
-                    key,
+                    key: input.clone(),
                 });
             }
         }
@@ -605,6 +722,7 @@ mod tests {
             deps: deps.iter().map(|d| d.to_string()).collect(),
             gated: None,
             config: BTreeMap::new(),
+            bind: BTreeMap::new(),
         }
     }
 
@@ -967,6 +1085,176 @@ deps = ["find_pr"]
             .contains(&"test".to_string()));
         // And the result is a flow that still runs.
         assert!(validate(flow).is_empty(), "{:?}", validate(flow));
+    }
+
+    /// `open_pr` and `find_pr` both write `pr_url`, and a real commit flow
+    /// contains both — so "whichever ancestor writes it" has two answers and
+    /// picks by luck. These are the tests for saying which you meant.
+    fn two_producers_flow() -> FlowDef {
+        FlowDef {
+            id: "two".into(),
+            label: "Two".into(),
+            handles: vec![],
+            nodes: vec![
+                NodeDef::from_catalogue("preflight", "preflight"),
+                dep(
+                    NodeDef::from_catalogue("scan", "scan_changes"),
+                    &["preflight"],
+                ),
+                dep(
+                    NodeDef::from_catalogue("draft_commit", "draft_commit"),
+                    &["scan"],
+                ),
+                dep(
+                    NodeDef::from_catalogue("draft_pr", "draft_pr"),
+                    &["draft_commit"],
+                ),
+                dep(
+                    NodeDef::from_catalogue("find_pr", "find_pr"),
+                    &["preflight"],
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_flow_with_no_bindings_validates_exactly_as_before() {
+        // The whole compatibility claim in one assertion: every shipped flow
+        // binds nothing, and nothing about them changes.
+        for flow in &FlowBook::defaults().flows {
+            assert!(
+                validate(flow).is_empty(),
+                "{}: {:?}",
+                flow.id,
+                validate(flow)
+            );
+            assert!(flow.nodes.iter().all(|n| n.bind.is_empty()));
+        }
+    }
+
+    #[test]
+    fn a_binding_names_which_producer_an_input_comes_from() {
+        let mut flow = two_producers_flow();
+        let merge = flow.nodes.iter_mut().find(|n| n.id == "find_pr").unwrap();
+        merge.bind.insert("forge".into(), "preflight.forge".into());
+        assert_eq!(
+            flow.nodes
+                .iter()
+                .find(|n| n.id == "find_pr")
+                .unwrap()
+                .binding("forge"),
+            Some(("preflight", "forge"))
+        );
+        assert!(validate(&flow).is_empty(), "{:?}", validate(&flow));
+    }
+
+    #[test]
+    fn a_bare_node_name_binds_the_input_of_the_same_name() {
+        // `forge = "preflight"` is the common case and much less to type than
+        // `forge = "preflight.forge"`.
+        let mut node = NodeDef::from_catalogue("find_pr", "find_pr");
+        node.bind.insert("forge".into(), "preflight".into());
+        assert_eq!(node.binding("forge"), Some(("preflight", "forge")));
+    }
+
+    #[test]
+    fn binding_to_something_not_upstream_is_refused() {
+        // `find_pr` does not depend on `draft_pr`, so nothing says it has run.
+        let mut flow = two_producers_flow();
+        flow.nodes
+            .iter_mut()
+            .find(|n| n.id == "find_pr")
+            .unwrap()
+            .bind
+            .insert("forge".into(), "draft_pr.forge".into());
+        let problems = validate(&flow);
+        assert!(
+            problems
+                .iter()
+                .any(|p| matches!(p, Problem::BindingNotUpstream { .. })),
+            "{problems:?}"
+        );
+        let message = problems
+            .iter()
+            .find(|p| matches!(p, Problem::BindingNotUpstream { .. }))
+            .unwrap()
+            .message();
+        assert!(message.contains("does not depend on"), "{message}");
+    }
+
+    #[test]
+    fn binding_to_a_node_that_does_not_write_it_is_refused() {
+        let mut flow = two_producers_flow();
+        flow.nodes
+            .iter_mut()
+            .find(|n| n.id == "find_pr")
+            .unwrap()
+            .bind
+            .insert("forge".into(), "preflight.pr_title".into());
+        let problems = validate(&flow);
+        assert!(
+            problems
+                .iter()
+                .any(|p| matches!(p, Problem::BindingNotProduced { .. })),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn binding_an_input_the_step_does_not_have_is_refused() {
+        // Dead configuration that looks like it is doing something.
+        let mut flow = two_producers_flow();
+        flow.nodes
+            .iter_mut()
+            .find(|n| n.id == "find_pr")
+            .unwrap()
+            .bind
+            .insert("nonsense".into(), "preflight.forge".into());
+        let problems = validate(&flow);
+        assert!(
+            problems
+                .iter()
+                .any(|p| matches!(p, Problem::BindingUnknownInput { .. })),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_binding_reaches_the_graph_fully_qualified() {
+        // The executor never sees the shorthand.
+        let mut flow = two_producers_flow();
+        flow.nodes
+            .iter_mut()
+            .find(|n| n.id == "find_pr")
+            .unwrap()
+            .bind
+            .insert("forge".into(), "preflight".into());
+        let graph = flow.to_graph();
+        let node = graph.get("find_pr").unwrap();
+        assert_eq!(
+            node.bind.get("forge").map(String::as_str),
+            Some("preflight.forge")
+        );
+    }
+
+    #[test]
+    fn bindings_survive_a_round_trip_through_the_file() {
+        let mut flow = two_producers_flow();
+        flow.nodes
+            .iter_mut()
+            .find(|n| n.id == "find_pr")
+            .unwrap()
+            .bind
+            .insert("forge".into(), "preflight.forge".into());
+        let book = FlowBook {
+            adopted: vec![],
+            flows: vec![flow],
+        };
+        let text = toml::to_string_pretty(&book).unwrap();
+        assert_eq!(toml::from_str::<FlowBook>(&text).unwrap(), book);
+        // And a node that binds nothing writes no `bind` table at all, so
+        // existing files keep their shape.
+        assert_eq!(text.matches("[flow.node.bind]").count(), 1);
     }
 
     #[test]

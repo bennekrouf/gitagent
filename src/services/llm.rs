@@ -208,9 +208,25 @@ pub fn api_key(env: &str) -> Option<String> {
     std::env::var(env).ok().filter(|k| !k.is_empty())
 }
 
-fn client() -> Result<reqwest::Client, String> {
+/// How long a local model is given to answer.
+///
+/// Generous on purpose. A 14B model on a laptop spends real minutes on a large
+/// prompt — measured here: ~80s for 8k tokens, past five minutes for 14k — and
+/// the old 300s cut those off mid-generation. A wait you can see the end of
+/// beats a failure you have to diagnose.
+const OLLAMA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// A hosted endpoint that has not answered in this long is not going to.
+const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// "Can I reach it at all", which is a question with a fast answer. The
+/// settings panel blocks on this, so it must never inherit a generation-sized
+/// wait.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(timeout)
         .build()
         .map_err(|e| format!("http client: {e}"))
 }
@@ -285,9 +301,28 @@ async fn call_ollama(
         ],
     });
 
-    let resp =
-        client()?.post(&url).json(&body).send().await.map_err(|e| {
-            format!("ollama unreachable at {url} — is `ollama serve` running? ({e})")
+    let resp = client(OLLAMA_TIMEOUT)?
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            // A timeout is not a missing server, and saying so sent people to
+            // check `ollama serve` — which was running the whole time — while
+            // the actual problem was a prompt this model cannot answer inside
+            // the wait. Name which of the two happened, and what to do.
+            if e.is_timeout() {
+                format!(
+                    "{} did not answer within {}s. That is the model being too slow for this \
+                     prompt, not ollama being down. Skip this step, send it less (the diff is \
+                     capped at {} characters), or use a smaller model.",
+                    cfg.ollama_model,
+                    OLLAMA_TIMEOUT.as_secs(),
+                    super::git::DIFF_CAP,
+                )
+            } else {
+                format!("ollama unreachable at {url} — is `ollama serve` running? ({e})")
+            }
         })?;
 
     let status = resp.status();
@@ -339,7 +374,7 @@ async fn call_openai_compatible(
         ],
     });
 
-    let resp = client()?
+    let resp = client(REMOTE_TIMEOUT)?
         .post(&url)
         .bearer_auth(key)
         .json(&body)
@@ -353,12 +388,17 @@ async fn call_openai_compatible(
         return Err(format!("{} returned {status}: {text}", preset.label));
     }
 
-    let value: Value =
-        serde_json::from_str(&text).map_err(|e| format!("{} sent invalid JSON: {e}", preset.label))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{} sent invalid JSON: {e}", preset.label))?;
     value["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("{} reply had no choices[0].message.content: {text}", preset.label))
+        .ok_or_else(|| {
+            format!(
+                "{} reply had no choices[0].message.content: {text}",
+                preset.label
+            )
+        })
 }
 
 /// Cheap reachability check for the settings panel.
@@ -366,7 +406,7 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
     match cfg.kind {
         ProviderKind::Ollama => {
             let url = format!("{}/api/tags", cfg.ollama_url.trim_end_matches('/'));
-            let resp = client()?
+            let resp = client(PROBE_TIMEOUT)?
                 .get(&url)
                 .send()
                 .await
@@ -403,7 +443,7 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
                 return Err(format!("{} is not set", preset.env));
             };
             let url = format!("{}/models", cfg.remote_base_url().trim_end_matches('/'));
-            let resp = client()?
+            let resp = client(PROBE_TIMEOUT)?
                 .get(&url)
                 .bearer_auth(key)
                 .send()
