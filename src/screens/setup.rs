@@ -1,10 +1,12 @@
 //! Setup — the meta view: the flows themselves, as editable data.
 //!
-//! Everything here writes `flows.toml` immediately. There is no save button
-//! because there is no draft state: what you see is what the run view will use
-//! the next time it loads. A flow with problems is kept and shown rather than
-//! rejected — you should be able to leave one half-rewired and come back — but
-//! it is not offered to run until the problems are gone.
+//! Edits are a draft. Nothing reaches `flows.toml` until Save, and Cancel
+//! throws the draft away — so a flow can be taken apart, looked at, and put
+//! back without the half-rewired state ever being what the run view loads.
+//! A flow with problems is still kept and shown rather than rejected, and
+//! still saveable: you should be able to leave one half-rewired, save, and
+//! come back to it. It is simply not offered to run until the problems are
+//! gone.
 
 use dioxus::prelude::*;
 
@@ -24,6 +26,10 @@ pub struct SetupProps {
 #[component]
 pub fn Setup(props: SetupProps) -> Element {
     let mut book = use_signal(FlowBook::load);
+    // What is on disk, as of when Setup opened. Kept so Cancel knows whether
+    // there is anything to throw away, and so Save can tell an untouched
+    // visit from an edited one.
+    let on_disk = use_signal(FlowBook::load);
     let first = book
         .read()
         .flows
@@ -34,6 +40,7 @@ pub fn Setup(props: SetupProps) -> Element {
     let mut node_id = use_signal(String::new);
     let mut adding = use_signal(|| false);
     let mut confirm_restore = use_signal(|| false);
+    let mut confirm_discard = use_signal(|| false);
     let mut testing = use_signal(|| false);
     let mut test_result = use_signal(|| Option::<Result<String, String>>::None);
     // Private keys found in ~/.ssh, offered as one-click picks for the
@@ -50,21 +57,22 @@ pub fn Setup(props: SetupProps) -> Element {
     let mut drag_from = use_signal(|| (0.0f64, 0.0f64));
 
     let snapshot = book.read().clone();
+    // Whether the draft has moved away from what is on disk. Drives the Save
+    // button's state and whether Cancel has to ask before throwing anything
+    // away.
+    let dirty = snapshot != *on_disk.read();
     let current_id = flow_id.read().clone();
     let current = snapshot.get(&current_id).cloned();
     let selected_node = node_id.read().clone();
 
-    // Every mutation goes through here, so nothing can change without landing
-    // on disk.
+    // Every mutation goes through here. It changes the draft only — Save is
+    // the one place in this screen that writes to disk.
     let mut edit_flow = move |mutate: &dyn Fn(&mut crate::services::flowdef::FlowDef)| {
         let id = flow_id.read().clone();
-        {
-            let mut w = book.write();
-            if let Some(flow) = w.get_mut(&id) {
-                mutate(flow);
-            }
+        let mut w = book.write();
+        if let Some(flow) = w.get_mut(&id) {
+            mutate(flow);
         }
-        book.read().save();
     };
 
     rsx! {
@@ -81,9 +89,31 @@ pub fn Setup(props: SetupProps) -> Element {
                         "Restore defaults"
                     }
                     button {
+                        class: "btn",
+                        onclick: move |_| {
+                            // Nothing has been written, so an untouched visit
+                            // just closes. Only a real draft is worth a prompt.
+                            if dirty {
+                                confirm_discard.set(true);
+                            } else {
+                                props.on_close.call(());
+                            }
+                        },
+                        "Cancel"
+                    }
+                    button {
                         class: "btn btn-primary",
-                        onclick: move |_| props.on_close.call(()),
-                        "Done"
+                        disabled: !dirty,
+                        title: if dirty {
+                            "Write these flows to flows.toml"
+                        } else {
+                            "No changes to save"
+                        },
+                        onclick: move |_| {
+                            book.read().save();
+                            props.on_close.call(());
+                        },
+                        "Save"
                     }
                 }
             }
@@ -163,8 +193,7 @@ pub fn Setup(props: SetupProps) -> Element {
                                     handles: vec![],
                                     nodes: vec![],
                                 });
-                                w.save();
-                                drop(w);
+                                                                drop(w);
                                 flow_id.set(id);
                                 node_id.set(String::new());
                             },
@@ -209,8 +238,7 @@ pub fn Setup(props: SetupProps) -> Element {
                                             let copy = {
                                                 let mut w = book.write();
                                                 let made = w.duplicate(&id);
-                                                w.save();
-                                                made
+                                                                                                made
                                             };
                                             if let Some(new_id) = copy {
                                                 flow_id.set(new_id);
@@ -225,7 +253,6 @@ pub fn Setup(props: SetupProps) -> Element {
                                             let id = flow_id.read().clone();
                                             let mut w = book.write();
                                             w.flows.retain(|f| f.id != id);
-                                            w.save();
                                             let next = w.flows.first().map(|f| f.id.clone()).unwrap_or_default();
                                             drop(w);
                                             flow_id.set(next);
@@ -349,8 +376,7 @@ pub fn Setup(props: SetupProps) -> Element {
                                                                 node.deps = default_deps(f, &selected);
                                                                 f.nodes.push(node);
                                                             }
-                                                            w.save();
-                                                        }
+                                                                                                                    }
                                                         node_id.set(new_id);
                                                         adding.set(false);
                                                     },
@@ -702,6 +728,44 @@ pub fn Setup(props: SetupProps) -> Element {
             }
         }
 
+        if *confirm_discard.read() {
+            div { class: "modal-backdrop", onclick: move |_| confirm_discard.set(false),
+                div {
+                    class: "modal",
+                    onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                    div { class: "modal-head",
+                        span { "Discard these changes?" }
+                        button {
+                            class: "modal-close",
+                            onclick: move |_| confirm_discard.set(false),
+                            "×"
+                        }
+                    }
+                    div { class: "modal-body",
+                        div { class: "probe probe-bad",
+                            "Your edits have not been written to flows.toml. Closing now "
+                            "leaves the flows exactly as they were when you opened Setup."
+                        }
+                        div { class: "approval-actions",
+                            button {
+                                class: "btn btn-danger",
+                                onclick: move |_| {
+                                    confirm_discard.set(false);
+                                    props.on_close.call(());
+                                },
+                                "Discard changes"
+                            }
+                            button {
+                                class: "btn",
+                                onclick: move |_| confirm_discard.set(false),
+                                "Keep editing"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if *confirm_restore.read() {
             {
                 let shipped = FlowBook::defaults();
@@ -739,7 +803,8 @@ pub fn Setup(props: SetupProps) -> Element {
                                 } else {
                                     div { class: "probe probe-bad",
                                         "This replaces every flow with the two shipped ones. "
-                                        "{losing.len()} flow(s) will be lost, and there is no undo."
+                                        "{losing.len()} flow(s) would be lost. Nothing is written "
+                                        "until you press Save, so Cancel still puts them back."
                                     }
                                     div { class: "items",
                                         for label in losing.iter() {
@@ -755,7 +820,6 @@ pub fn Setup(props: SetupProps) -> Element {
                                         class: "btn btn-danger",
                                         onclick: move |_| {
                                             let restored = FlowBook::defaults();
-                                            restored.save();
                                             flow_id.set(restored.flows[0].id.clone());
                                             node_id.set(String::new());
                                             book.set(restored);
