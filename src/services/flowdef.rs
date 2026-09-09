@@ -675,10 +675,26 @@ impl FlowBook {
 
     /// Flows that are safe to run — anything invalid is offered in Setup for
     /// repair, never handed to the executor.
+    ///
+    /// Repository-blind: every caller acting *for a repository* wants
+    /// `runnable_for` instead, because a flow hidden on that repository is
+    /// not something to run there however valid it is.
     pub fn runnable(&self) -> Vec<&FlowDef> {
+        self.runnable_for(&[])
+    }
+
+    /// `runnable`, minus the flows hidden on this particular repository.
+    ///
+    /// Hiding is per-repository and lives in `repo_flows.json`, so the book
+    /// alone cannot know about it — the ids have to be passed in. Anything
+    /// choosing a flow on someone's behalf has to go through here: a hidden
+    /// flow is a flow they said does not apply to this repository, and
+    /// picking it for them anyway is the app overruling that.
+    pub fn runnable_for(&self, hidden: &[String]) -> Vec<&FlowDef> {
         self.flows
             .iter()
             .filter(|f| validate(f).is_empty())
+            .filter(|f| !hidden.iter().any(|id| id == &f.id))
             .collect()
     }
 
@@ -873,6 +889,35 @@ mod tests {
         book.flows[0].nodes[1].deps = vec!["ghost".into()];
         assert_eq!(book.flows.len(), 2);
         assert_eq!(book.runnable().len(), 1);
+    }
+
+    #[test]
+    fn a_flow_hidden_on_a_repository_is_not_runnable_there() {
+        let book = FlowBook::defaults();
+        let all = book.runnable().len();
+        assert!(all >= 2, "the shipped book has something to hide");
+
+        let first = book.runnable()[0].id.clone();
+        let left = book.runnable_for(std::slice::from_ref(&first));
+        assert_eq!(left.len(), all - 1);
+        assert!(!left.iter().any(|f| f.id == first));
+    }
+
+    #[test]
+    fn hiding_is_per_repository_so_an_empty_list_changes_nothing() {
+        let book = FlowBook::defaults();
+        assert_eq!(book.runnable_for(&[]).len(), book.runnable().len());
+    }
+
+    #[test]
+    fn hiding_an_id_no_flow_uses_is_harmless() {
+        // A flow can be deleted in Setup while a repository still lists its id
+        // as hidden — that stale entry must not remove anything else.
+        let book = FlowBook::defaults();
+        assert_eq!(
+            book.runnable_for(&["deleted_long_ago".to_string()]).len(),
+            book.runnable().len()
+        );
     }
 
     #[test]

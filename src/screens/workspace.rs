@@ -87,8 +87,10 @@ fn default_selection(
     repo: &str,
     wants: Option<Wants>,
     open_prs: &[probe::PrBrief],
+    hidden: &[String],
 ) -> (String, String, String) {
-    let runnable = book.runnable();
+    // Landing on a flow hidden here would open a tab the strip does not show.
+    let runnable = book.runnable_for(hidden);
 
     // A person being waited on outranks everything else, same precedence as
     // the sidebar's dot — check every flow for one before falling back.
@@ -680,9 +682,10 @@ fn refresh_all(
 
         if let Some((path, wants)) = best {
             // Open on whichever flow says it answers this, whatever its name.
+            let hidden_here = store::load_repo_flows().hidden_for(&path).to_vec();
             let answering = wants.need().and_then(|need| {
                 book.read()
-                    .runnable()
+                    .runnable_for(&hidden_here)
                     .iter()
                     .find(|f| f.answers(need))
                     .map(|f| f.id.clone())
@@ -712,6 +715,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // working one exists. But if every flow is broken, select the first anyway:
     // an empty column explains nothing, whereas the selected tab's banner says
     // exactly what to fix.
+    //
+    // Repo-blind on purpose, unlike every other flow choice in this file: no
+    // repository is selected yet, so there is nothing for "hidden here" to be
+    // relative to. Picking one replaces this via `default_selection`.
     let first_flow = {
         let book = book.read();
         book.runnable()
@@ -881,7 +888,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             statuses
                 .read()
                 .get(&repo)
-                .and_then(|status| trusted::next_flow(&book.read(), status))
+                .and_then(|status| {
+                    trusted::next_flow(&book.read(), status, repo_flows.read().hidden_for(&repo))
+                })
                 .or_else(|| Some((selected_flow.read().clone(), selected_pr.read().clone())))
         } else {
             Some((selected_flow.read().clone(), selected_pr.read().clone()))
@@ -891,7 +900,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             // this button feel broken, so say why.
             if trust {
                 if let Some(status) = statuses.read().get(&repo) {
-                    chain_note.set(trusted::why_stopped(&book.read(), status).unwrap_or_default());
+                    chain_note.set(
+                        trusted::why_stopped(
+                            &book.read(),
+                            status,
+                            repo_flows.read().hidden_for(&repo),
+                        )
+                        .unwrap_or_default(),
+                    );
                 }
             }
             return;
@@ -972,11 +988,15 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 if !trusting || !trusted::may_continue(&finished, &graph) {
                     break;
                 }
-                let Some(next) = trusted::next_flow(&book.read(), &status) else {
+                let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
+                let Some(next) = trusted::next_flow(&book.read(), &status, &hidden_here) else {
                     // The commonest end of a chain, and until now the most
                     // silent: a release is due and the release flow never
                     // declared that it handles releases.
-                    chain_note.set(trusted::why_stopped(&book.read(), &status).unwrap_or_default());
+                    chain_note.set(
+                        trusted::why_stopped(&book.read(), &status, &hidden_here)
+                            .unwrap_or_default(),
+                    );
                     break;
                 };
                 // The same flow again means the last one did not move the
@@ -1092,6 +1112,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     .map(|s| s.prs.clone())
                                     .unwrap_or_default()
                                     .as_slice(),
+                                repo_flows.read().hidden_for(&path),
                             );
                         selected_repo.set(Some(path));
                         if !flow_id.is_empty() {
@@ -1139,12 +1160,17 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         // flows, so the button has to look at the repository
                         // rather than at this tab's key alone.
                         let is_trusted = trusted.read().iter().any(|(r, _, _)| r == &repo);
+                        // Flows this repository has hidden. Needed both for the
+                        // tab strip below and for the trusted-run hint just
+                        // under here, which must not offer a flow the strip
+                        // does not even show.
+                        let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
                         // What a trusted run would take on, which is not
                         // necessarily the flow on screen: a clean tree with a
                         // release due offers one from the Commit → PR tab.
                         let trusted_next = status_map
                             .get(&repo)
-                            .and_then(|status| trusted::next_flow(&flows, status));
+                            .and_then(|status| trusted::next_flow(&flows, status, &hidden_here));
                         // A repo reviewing PR #7 shouldn't also be able to start
                         // reviewing #5 — two runs racing each other's git state
                         // (checkout, fetch) in the same working tree.
@@ -1178,7 +1204,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let pr_url = state.artifact("pr_url").to_string();
                         let finished = state.started && state.is_finished(&graph);
 
-                        let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
                         let visible_tabs: Vec<(String, String, Vec<String>)> = listed
                             .iter()
                             .filter(|(id, _, _)| !hidden_here.contains(id))
@@ -2001,7 +2026,7 @@ mod tests {
         let prs = [brief("7"), brief("9")];
 
         let (flow_id, _, pr_id) =
-            default_selection(&book, &states, "/repo", Some(Wants::Merge), &prs);
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &prs, &[]);
         assert_eq!(flow_id, "review_and_merge");
         assert_eq!(pr_id, "7", "the first one, matching the order shown");
     }
@@ -2010,8 +2035,14 @@ mod tests {
     fn a_commit_flow_selects_no_pull_request() {
         let book = FlowBook::defaults();
         let states = States::new();
-        let (_, _, pr_id) =
-            default_selection(&book, &states, "/repo", Some(Wants::Commit), &[brief("7")]);
+        let (_, _, pr_id) = default_selection(
+            &book,
+            &states,
+            "/repo",
+            Some(Wants::Commit),
+            &[brief("7")],
+            &[],
+        );
         assert!(pr_id.is_empty(), "nothing to scope a commit run to");
     }
 
@@ -2019,7 +2050,8 @@ mod tests {
     fn a_review_with_no_pull_requests_listed_selects_none() {
         let book = FlowBook::defaults();
         let states = States::new();
-        let (_, _, pr_id) = default_selection(&book, &states, "/repo", Some(Wants::Merge), &[]);
+        let (_, _, pr_id) =
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &[], &[]);
         assert!(pr_id.is_empty());
     }
 
@@ -2031,11 +2063,12 @@ mod tests {
         let states = States::new();
 
         let (flow_id, node_id, _) =
-            default_selection(&book, &states, "/repo", Some(Wants::Merge), &[]);
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &[], &[]);
         assert_eq!(flow_id, "review_and_merge");
         assert_eq!(node_id, book.get("review_and_merge").unwrap().first_node());
 
-        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Commit), &[]);
+        let (flow_id, _, _) =
+            default_selection(&book, &states, "/repo", Some(Wants::Commit), &[], &[]);
         assert_eq!(flow_id, "commit_and_pr");
     }
 
@@ -2044,7 +2077,8 @@ mod tests {
         // Wants::Release points at a flow id nobody has built yet.
         let book = FlowBook::defaults();
         let states = States::new();
-        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Release), &[]);
+        let (flow_id, _, _) =
+            default_selection(&book, &states, "/repo", Some(Wants::Release), &[], &[]);
         assert_eq!(flow_id, book.runnable().first().unwrap().id);
     }
 
@@ -2060,7 +2094,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None, &[]);
+        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None, &[], &[]);
         assert_eq!(flow_id, flow.id);
         assert_eq!(node_id, "scan");
         assert_eq!(pr_id, "");
@@ -2077,7 +2111,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/other-repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", None, &[]);
+        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", None, &[], &[]);
         // Nothing running here — falls back to the first runnable flow's
         // first node, same as an untouched repository.
         assert_eq!(flow_id, book.runnable().first().unwrap().id);
@@ -2097,7 +2131,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (_, node_id, _) = default_selection(&book, &states, "/repo", None, &[]);
+        let (_, node_id, _) = default_selection(&book, &states, "/repo", None, &[], &[]);
         assert_eq!(node_id, "commit");
     }
 }
