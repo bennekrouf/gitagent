@@ -229,17 +229,32 @@ pub fn Setup(props: SetupProps) -> Element {
                                             let value = e.value();
                                             edit_flow(&move |f| f.label = value.clone());
                                         },
+                                        onblur: move |_| {
+                                            // Typing the name empty is a real
+                                            // way to end up here — nothing
+                                            // stops it mid-edit, unlike the id
+                                            // fields, which are auto-derived
+                                            // rather than typed. Left blank,
+                                            // the sidebar row would carry no
+                                            // name at all with no way back
+                                            // except retyping, so losing focus
+                                            // is where this is caught rather
+                                            // than every keystroke.
+                                            let empty = book
+                                                .read()
+                                                .get(&flow_id.read())
+                                                .is_some_and(|f| f.label.trim().is_empty());
+                                            if empty {
+                                                edit_flow(&|f| f.label = "Untitled flow".into());
+                                            }
+                                        },
                                     }
                                     button {
                                         class: "btn",
                                         title: "Copy this flow, steps and all",
                                         onclick: move |_| {
                                             let id = flow_id.read().clone();
-                                            let copy = {
-                                                let mut w = book.write();
-                                                let made = w.duplicate(&id);
-                                                                                                made
-                                            };
+                                            let copy = book.write().duplicate(&id);
                                             if let Some(new_id) = copy {
                                                 flow_id.set(new_id);
                                                 node_id.set(String::new());
