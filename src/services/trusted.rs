@@ -51,9 +51,21 @@ impl Verdict {
 /// there: it reads the diff, which is worth doing while CI runs, and the merge
 /// rules in this same module already refuse to merge on pending checks. So the
 /// chain moves on and stops at the merge, where a person can see why.
-pub fn next_flow(book: &FlowBook, status: &RepoStatus) -> Option<(String, String)> {
+/// `hidden` is the flow ids hidden on this repository. A trusted run must not
+/// pick one: hiding a flow here is the person saying it does not apply to this
+/// repository, and a chain that starts it anyway overrules them — which is
+/// exactly what happened to a repository whose release flow had been hidden
+/// and replaced.
+pub fn next_flow(
+    book: &FlowBook,
+    status: &RepoStatus,
+    hidden: &[String],
+) -> Option<(String, String)> {
     let need = status.wants().need()?;
-    let flow = book.runnable().into_iter().find(|f| f.answers(need))?;
+    let flow = book
+        .runnable_for(hidden)
+        .into_iter()
+        .find(|f| f.answers(need))?;
 
     // A review has to know which pull request it is about; leaving the slot
     // empty falls back to "whatever the checked-out branch has open", which is
@@ -76,7 +88,7 @@ pub fn next_flow(book: &FlowBook, status: &RepoStatus) -> Option<(String, String
 /// declared that it handles releases looked identical: press Trusted run,
 /// watch one flow, and get no explanation of why it stopped there. The second
 /// is a one-tick fix in Setup, and it is unfindable without being told.
-pub fn why_stopped(book: &FlowBook, status: &RepoStatus) -> Option<String> {
+pub fn why_stopped(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<String> {
     let wants = status.wants();
     let Some(need) = wants.need() else {
         return match wants {
@@ -91,8 +103,28 @@ pub fn why_stopped(book: &FlowBook, status: &RepoStatus) -> Option<String> {
         };
     };
 
-    if book.runnable().iter().any(|f| f.answers(need)) {
+    if book.runnable_for(hidden).iter().any(|f| f.answers(need)) {
         return None;
+    }
+
+    // A flow that answers this but is hidden *here* is a different situation
+    // from none existing at all, and the fix is somewhere else entirely — the
+    // repository's own flow list, not Setup. Saying "no flow handles that"
+    // about a flow sitting right there, hidden, is how someone concludes the
+    // chain is ignoring them.
+    let hidden_answer = book
+        .runnable()
+        .into_iter()
+        .find(|f| f.answers(need) && hidden.iter().any(|id| id == &f.id));
+    if let Some(flow) = hidden_answer {
+        return Some(format!(
+            "This repository wants {}, and \u{201c}{}\u{201d} handles that — but it is hidden \
+             on this repository, so a trusted run will not start it. Show it again from the \
+             flow tabs, or tick \u{201c}{}\u{201d} on whichever flow replaced it.",
+            wants.note(),
+            flow.label,
+            need.label(),
+        ));
     }
 
     // The flow may well exist and simply not say so. Naming the tick box is
@@ -326,13 +358,13 @@ mod tests {
 
         let dirty = repo(3, 0, None, false);
         assert_eq!(
-            next_flow(&book, &dirty),
+            next_flow(&book, &dirty, &[]),
             Some(("commit_and_pr".into(), String::new()))
         );
 
         let has_pr = repo(0, 0, Some(Checks::Passing), false);
         assert_eq!(
-            next_flow(&book, &has_pr),
+            next_flow(&book, &has_pr, &[]),
             Some(("review_and_merge".into(), "7".into())),
             "and it names the pull request to review"
         );
@@ -353,7 +385,7 @@ mod tests {
             "the state the old gate rejected"
         );
         assert_eq!(
-            next_flow(&FlowBook::defaults(), &just_pushed),
+            next_flow(&FlowBook::defaults(), &just_pushed, &[]),
             Some(("review_and_merge".into(), "7".into()))
         );
 
@@ -373,9 +405,83 @@ mod tests {
         other.number = "3".into();
         many.prs.insert(0, other);
         assert_eq!(
-            next_flow(&FlowBook::defaults(), &many),
+            next_flow(&FlowBook::defaults(), &many, &[]),
             Some(("review_and_merge".into(), "7".into()))
         );
+    }
+
+    #[test]
+    fn a_flow_hidden_on_this_repository_is_never_what_the_chain_takes_on_next() {
+        // The reported bug. A repository whose release flow has been hidden
+        // and replaced by others still had the chain start the hidden one:
+        // the lookup went through `runnable()`, which knows about validity
+        // and nothing about the repository it is choosing for.
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        let waiting = repo(0, 0, None, true);
+        assert_eq!(waiting.wants(), crate::services::probe::Wants::Release);
+
+        assert_eq!(
+            next_flow(&book, &waiting, &[]),
+            Some(("release".into(), String::new())),
+            "with nothing hidden it is still the right answer"
+        );
+        assert_eq!(
+            next_flow(&book, &waiting, &["release".to_string()]),
+            None,
+            "hidden here, so a trusted run must not start it"
+        );
+    }
+
+    #[test]
+    fn hiding_one_flow_leaves_another_answering_the_same_need_available() {
+        // Hiding is how a repository swaps one flow for another, so the
+        // replacement has to be picked up rather than the chain simply dying.
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        let mut replacement = release_flow();
+        replacement.id = "deploy_vps".into();
+        replacement.label = "Deploy VPS".into();
+        book.flows.push(replacement);
+
+        let waiting = repo(0, 0, None, true);
+        assert_eq!(
+            next_flow(&book, &waiting, &["release".to_string()]),
+            Some(("deploy_vps".into(), String::new())),
+            "the flow that replaced it answers the same need"
+        );
+    }
+
+    #[test]
+    fn a_hidden_answer_is_explained_as_hidden_rather_than_as_missing() {
+        // "No flow says it handles that" about a flow sitting right there,
+        // hidden, is how someone concludes the chain is ignoring them.
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        let waiting = repo(0, 0, None, true);
+
+        let why = why_stopped(&book, &waiting, &["release".to_string()])
+            .expect("a chain that stopped for this reason has to say so");
+        assert!(why.contains("hidden"), "got {why:?}");
+        assert!(why.contains("Release"), "it should name the flow: {why:?}");
+
+        assert_eq!(
+            why_stopped(&book, &waiting, &[]),
+            None,
+            "nothing to explain when it is not hidden"
+        );
+    }
+
+    #[test]
+    fn a_need_no_flow_answers_still_reads_as_missing_not_hidden() {
+        // The pre-existing message must survive: hiding something unrelated
+        // does not turn "nothing handles this" into "it is hidden".
+        let book = FlowBook::defaults();
+        let waiting = repo(0, 0, None, true);
+        let why = why_stopped(&book, &waiting, &["commit_and_pr".to_string()])
+            .expect("still worth saying");
+        assert!(!why.contains("hidden"), "got {why:?}");
+        assert!(why.contains("Setup"), "got {why:?}");
     }
 
     #[test]
@@ -388,7 +494,7 @@ mod tests {
         let waiting = repo(0, 0, None, true);
         assert_eq!(waiting.wants(), crate::services::probe::Wants::Release);
         assert_eq!(
-            next_flow(&book, &waiting),
+            next_flow(&book, &waiting, &[]),
             Some(("release".into(), String::new()))
         );
     }
@@ -403,7 +509,7 @@ mod tests {
 
         let dirty = repo(3, 0, None, false);
         assert_eq!(
-            next_flow(&book, &dirty),
+            next_flow(&book, &dirty, &[]),
             Some(("commit_and_pr".into(), String::new())),
             "leg 1: commit"
         );
@@ -413,11 +519,15 @@ mod tests {
         let mut after_sync = repo(0, 0, Some(Checks::Pending), false);
         after_sync.pr = None;
         assert_eq!(
-            next_flow(&book, &after_sync),
+            next_flow(&book, &after_sync, &[]),
             Some(("review_and_merge".into(), "7".into())),
             "leg 2: review the pull request it just opened"
         );
-        assert_eq!(why_stopped(&book, &after_sync), None, "nothing to explain");
+        assert_eq!(
+            why_stopped(&book, &after_sync, &[]),
+            None,
+            "nothing to explain"
+        );
 
         // The review merged it. Now a release is due and no pull request is
         // open, so the third leg needs a flow that declares it.
@@ -425,19 +535,19 @@ mod tests {
         book.flows.push(release_flow());
         let merged = repo(0, 0, None, true);
         assert_eq!(
-            next_flow(&book, &merged),
+            next_flow(&book, &merged, &[]),
             Some(("release".into(), String::new())),
             "leg 3: release"
         );
 
         // And then it is genuinely over.
-        assert_eq!(next_flow(&book, &repo(0, 0, None, false)), None);
+        assert_eq!(next_flow(&book, &repo(0, 0, None, false), &[]), None);
     }
 
     #[test]
     fn a_repository_with_nothing_to_do_ends_the_chain() {
         let idle = repo(0, 0, None, false);
-        assert_eq!(next_flow(&FlowBook::defaults(), &idle), None);
+        assert_eq!(next_flow(&FlowBook::defaults(), &idle, &[]), None);
     }
 
     #[test]
@@ -449,9 +559,9 @@ mod tests {
         // the app being broken.
         let waiting = repo(0, 0, None, true);
         let book = FlowBook::defaults();
-        assert_eq!(next_flow(&book, &waiting), None, "nothing answers it");
+        assert_eq!(next_flow(&book, &waiting, &[]), None, "nothing answers it");
 
-        let why = why_stopped(&book, &waiting).expect("and it must say so");
+        let why = why_stopped(&book, &waiting, &[]).expect("and it must say so");
         assert!(why.contains("release due"), "{why}");
         assert!(why.contains(Need::Release.label()), "{why}");
         assert!(why.contains("Setup"), "names where the fix is: {why}");
@@ -460,15 +570,15 @@ mod tests {
     #[test]
     fn a_repository_with_nothing_left_is_not_nagged() {
         let idle = repo(0, 0, None, false);
-        assert_eq!(why_stopped(&FlowBook::defaults(), &idle), None);
+        assert_eq!(why_stopped(&FlowBook::defaults(), &idle, &[]), None);
     }
 
     #[test]
     fn a_need_a_flow_does_answer_produces_no_complaint() {
         let mut book = FlowBook::defaults();
         book.flows.push(release_flow());
-        assert_eq!(why_stopped(&book, &repo(0, 0, None, true)), None);
-        assert_eq!(why_stopped(&book, &repo(3, 0, None, false)), None);
+        assert_eq!(why_stopped(&book, &repo(0, 0, None, true), &[]), None);
+        assert_eq!(why_stopped(&book, &repo(3, 0, None, false), &[]), None);
     }
 
     #[test]
@@ -478,7 +588,7 @@ mod tests {
         // exist.
         let mut stuck = repo(3, 0, None, false);
         stuck.in_progress = Some(crate::services::git::InProgress::Rebase);
-        let why = why_stopped(&FlowBook::defaults(), &stuck).expect("still worth saying");
+        let why = why_stopped(&FlowBook::defaults(), &stuck, &[]).expect("still worth saying");
         assert!(why.contains("Preflight"), "{why}");
         assert!(
             !why.contains("Setup"),
@@ -491,7 +601,7 @@ mod tests {
         // A release is due but no flow says it handles one: there is nothing
         // for a trusted run to start, and inventing one would be worse.
         let waiting = repo(0, 0, None, true);
-        assert_eq!(next_flow(&FlowBook::defaults(), &waiting), None);
+        assert_eq!(next_flow(&FlowBook::defaults(), &waiting, &[]), None);
     }
 
     #[test]
@@ -501,7 +611,7 @@ mod tests {
         let mut stuck = repo(3, 0, None, false);
         stuck.in_progress = Some(crate::services::git::InProgress::Rebase);
         assert!(stuck.wants().needs_a_person());
-        assert_eq!(next_flow(&FlowBook::defaults(), &stuck), None);
+        assert_eq!(next_flow(&FlowBook::defaults(), &stuck, &[]), None);
     }
 
     #[test]
