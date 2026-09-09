@@ -232,7 +232,12 @@ mod tests {
 
     #[test]
     fn an_option_shaped_port_or_identity_is_dropped_not_forwarded() {
-        let args = ssh_args("example.com", "-oProxyCommand=x", "-oProxyCommand=y", "uptime");
+        let args = ssh_args(
+            "example.com",
+            "-oProxyCommand=x",
+            "-oProxyCommand=y",
+            "uptime",
+        );
         assert!(
             !args.iter().any(|a| a.contains("ProxyCommand")),
             "got {args:?}"

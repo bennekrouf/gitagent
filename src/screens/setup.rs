@@ -193,7 +193,7 @@ pub fn Setup(props: SetupProps) -> Element {
                                     handles: vec![],
                                     nodes: vec![],
                                 });
-                                                                drop(w);
+                                drop(w);
                                 flow_id.set(id);
                                 node_id.set(String::new());
                             },
@@ -224,6 +224,10 @@ pub fn Setup(props: SetupProps) -> Element {
                                 div { class: "col-head",
                                     input {
                                         class: "flow-name",
+                                        autocapitalize: "off",
+                                        autocomplete: "off",
+                                        spellcheck: "false",
+                                        "autocorrect": "off",
                                         value: "{flow.label}",
                                         oninput: move |e| {
                                             let value = e.value();
@@ -391,7 +395,7 @@ pub fn Setup(props: SetupProps) -> Element {
                                                                 node.deps = default_deps(f, &selected);
                                                                 f.nodes.push(node);
                                                             }
-                                                                                                                    }
+                                                        }
                                                         node_id.set(new_id);
                                                         adding.set(false);
                                                     },
@@ -464,6 +468,10 @@ pub fn Setup(props: SetupProps) -> Element {
                                                 label { class: "field",
                                                     span { "Title" }
                                                     input {
+                                                        autocapitalize: "off",
+                                                        autocomplete: "off",
+                                                        spellcheck: "false",
+                                                        "autocorrect": "off",
                                                         value: "{def.title}",
                                                         placeholder: info.map(|i| i.title).unwrap_or(""),
                                                         oninput: {
@@ -483,6 +491,10 @@ pub fn Setup(props: SetupProps) -> Element {
                                                 label { class: "field",
                                                     span { "Subtitle" }
                                                     input {
+                                                        autocapitalize: "off",
+                                                        autocomplete: "off",
+                                                        spellcheck: "false",
+                                                        "autocorrect": "off",
                                                         value: "{def.subtitle}",
                                                         placeholder: info.map(|i| i.subtitle).unwrap_or(""),
                                                         oninput: {
@@ -508,6 +520,10 @@ pub fn Setup(props: SetupProps) -> Element {
                                                         if field.multiline {
                                                             textarea {
                                                                 rows: "2",
+                                                                autocapitalize: "off",
+                                                                autocomplete: "off",
+                                                                spellcheck: "false",
+                                                                "autocorrect": "off",
                                                                 value: "{def.setting(field.key)}",
                                                                 placeholder: "{field.placeholder}",
                                                                 oninput: {
@@ -526,6 +542,10 @@ pub fn Setup(props: SetupProps) -> Element {
                                                             div { class: "field-row",
                                                                 input {
                                                                     class: "field-grow",
+                                                                    autocapitalize: "off",
+                                                                    autocomplete: "off",
+                                                                    spellcheck: "false",
+                                                                    "autocorrect": "off",
                                                                     value: "{def.setting(field.key)}",
                                                                     placeholder: "{field.placeholder}",
                                                                     oninput: {

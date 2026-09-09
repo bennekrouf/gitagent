@@ -694,7 +694,10 @@ mod tests {
     async fn stdin_reaches_the_child_and_the_exit_code_is_reported() {
         let (ok, out) = run_streaming(
             "sh",
-            &["-c".to_string(), "read answer; echo got:$answer".to_string()],
+            &[
+                "-c".to_string(),
+                "read answer; echo got:$answer".to_string(),
+            ],
             None,
             "yes",
             &mut |_| {},
@@ -730,7 +733,11 @@ mod tests {
         )
         .await;
         assert!(ok);
-        assert_eq!(seen.len(), 3, "stderr is interleaved, not appended: {seen:?}");
+        assert_eq!(
+            seen.len(),
+            3,
+            "stderr is interleaved, not appended: {seen:?}"
+        );
     }
 
     #[cfg(unix)]

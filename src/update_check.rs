@@ -124,12 +124,7 @@ fn is_newer(a: &str, b: &str) -> bool {
         let mut parts = s.trim_start_matches('v').split('.');
         let major = parts.next()?.parse().ok()?;
         let minor = parts.next()?.parse().ok()?;
-        let patch = parts
-            .next()?
-            .split(['-', '+'])
-            .next()?
-            .parse()
-            .ok()?;
+        let patch = parts.next()?.split(['-', '+']).next()?.parse().ok()?;
         Some((major, minor, patch))
     };
     match (parse(a), parse(b)) {
