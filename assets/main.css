@@ -170,7 +170,10 @@ body {
 }
 .sidebar-head {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 11px 12px 4px;
+    /* Less top padding than the 11px this had: the action buttons below now
+       carry their own height, so the head keeps roughly its old proportions
+       instead of growing by the whole difference. */
+    padding: 6px 8px 4px;
 }
 .sidebar-title {
     font-size: 10px; color: var(--text3);
@@ -186,12 +189,21 @@ body {
 .tally-remaining { color: var(--text2); font-weight: 600; }
 .tally-clear { color: var(--green); font-size: 11px; }
 
-.sidebar-actions { display: flex; gap: 2px; }
+.sidebar-actions { display: flex; gap: 4px; }
+/* A real target rather than the glyph's own ink. These were 13x13 with 2px of
+   padding, so three of them sat in 45px with their hit areas touching — small
+   enough to miss, and close enough that missing meant hitting the next one
+   along. 26px square is the smallest that reads as a button on a desktop
+   pointer, and the hover surface is what makes them look clickable at all. */
 .sidebar-switch {
-    background: none; border: none; color: var(--text3);
-    font-size: 13px; cursor: pointer; padding: 0 2px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; padding: 0;
+    background: none; border: none; border-radius: 6px;
+    color: var(--text3); font-size: 15px; line-height: 1; cursor: pointer;
 }
-.sidebar-switch:hover { color: var(--green); }
+.sidebar-switch:hover { color: var(--green); background: var(--bg2); }
+.sidebar-switch:disabled { cursor: default; }
+.sidebar-switch:disabled:hover { background: none; color: var(--text3); }
 .sidebar-path {
     padding: 0 12px 10px;
     font-size: 10px; color: var(--text3);
