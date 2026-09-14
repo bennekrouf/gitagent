@@ -759,10 +759,32 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut branches_busy = use_signal(|| Option::<String>::None);
     let mut base_editor_open = use_signal(|| Option::<String>::None);
     let mut base_editor_value = use_signal(String::new);
-    // Which repository's hidden-flow list is open, rather than a single flag
-    // for all of them: opening it on one repository used to leave it open on
-    // the next one you selected, which reads as a panel that will not close.
-    let mut hidden_open = use_signal(|| Option::<String>::None);
+    // Which repository's flow picker is open, rather than a single flag for
+    // all of them: opening it on one repository used to leave it open on the
+    // next one you selected, which reads as a panel that will not close.
+    let mut picker_open = use_signal(|| Option::<String>::None);
+
+    // Hiding a flow is one operation whether it comes from a tab's × or from
+    // the picker's checkbox, including the part that is easy to forget: the
+    // graph column must not keep showing a tab the strip no longer does.
+    let mut hide_flow = move |repo: &str, id: &str| {
+        repo_flows.write().hide(repo, id);
+        store::save_repo_flows(&repo_flows.read());
+        if selected_repo.read().as_deref() == Some(repo) && *selected_flow.read() == id {
+            let next = {
+                let still_hidden = repo_flows.read();
+                book.read()
+                    .runnable()
+                    .iter()
+                    .find(|f| !still_hidden.is_hidden(repo, &f.id))
+                    .map(|f| f.id.clone())
+                    .unwrap_or_default()
+            };
+            let first_node = book.read().get(&next).map(|f| f.first_node()).unwrap_or_default();
+            selected_flow.set(next);
+            selected_node.set(first_node);
+        }
+    };
 
     // Pane widths, dragged by the dividers and remembered on disk.
     let saved = use_signal(store::load_layout);
@@ -1209,21 +1231,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             .filter(|(id, _, _)| !hidden_here.contains(id))
                             .cloned()
                             .collect();
-                        let showing_hidden = !hidden_here.is_empty()
-                            && hidden_open.read().as_deref() == Some(repo.as_str());
-                        // A label for a hidden flow can vanish from `listed`
-                        // entirely — deleted in Setup — so fall back to the id
-                        // rather than letting the restore list lose a row.
-                        let hidden_tabs: Vec<(String, String)> = hidden_here
+                        let showing_picker = picker_open.read().as_deref() == Some(repo.as_str());
+                        // Counted against the book rather than the stored
+                        // list: an id left behind by a flow deleted in Setup
+                        // must not advertise "1 hidden" with nothing to show.
+                        let hidden_count = listed
                             .iter()
-                            .map(|id| {
-                                let label = flows
-                                    .get(id)
-                                    .map(|f| f.label.clone())
-                                    .unwrap_or_else(|| id.clone());
-                                (id.clone(), label)
-                            })
-                            .collect();
+                            .filter(|(id, _, _)| hidden_here.contains(id))
+                            .count();
 
                         rsx! {
                             div { class: "graph-col", style: "width: {middle_w}px;",
@@ -1466,47 +1481,80 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             }
                                         }
                                     }
-                                    if !hidden_tabs.is_empty() {
-                                        button {
-                                            class: if showing_hidden {
-                                                "flow-tab-hidden-count flow-tab-hidden-count-on"
-                                            } else {
-                                                "flow-tab-hidden-count"
-                                            },
-                                            title: if showing_hidden {
-                                                "Hide this list again"
-                                            } else {
-                                                "Flows hidden for this repository"
-                                            },
-                                            onclick: {
-                                                let repo = repo.clone();
-                                                move |_| {
-                                                    let open = hidden_open.read().as_deref() == Some(repo.as_str());
-                                                    hidden_open.set(if open { None } else { Some(repo.clone()) });
-                                                }
-                                            },
-                                            "{hidden_tabs.len()} hidden"
+                                    // Always there, even with nothing hidden:
+                                    // the × only appears on hover, so this is
+                                    // how someone learns the strip is theirs
+                                    // to edit at all.
+                                    button {
+                                        class: if showing_picker {
+                                            "flow-tab-picker flow-tab-picker-on"
+                                        } else {
+                                            "flow-tab-picker"
+                                        },
+                                        title: "Choose which flows {label} shows",
+                                        onclick: {
+                                            let repo = repo.clone();
+                                            move |_| {
+                                                let open = picker_open.read().as_deref() == Some(repo.as_str());
+                                                picker_open.set(if open { None } else { Some(repo.clone()) });
+                                            }
+                                        },
+                                        if hidden_count > 0 {
+                                            "{hidden_count} hidden"
+                                        } else {
+                                            "\u{22ef}"
                                         }
                                     }
-                                }
-
-                                if showing_hidden {
-                                    div { class: "hidden-flows",
-                                        for (id, label) in hidden_tabs.iter().cloned() {
-                                            div { key: "{id}", class: "hidden-flow",
-                                                span { class: "hidden-flow-label", "{label}" }
-                                                button {
-                                                    class: "btn",
-                                                    onclick: {
-                                                        let repo = repo.clone();
-                                                        let id = id.clone();
-                                                        move |_| {
-                                                            repo_flows.write().show(&repo, &id);
-                                                            store::save_repo_flows(&repo_flows.read());
+                                    if showing_picker {
+                                        // Clicking anywhere else closes it; a
+                                        // transparent backdrop is what makes
+                                        // "anywhere else" mean the whole window.
+                                        div {
+                                            class: "flow-picker-backdrop",
+                                            onclick: move |_| picker_open.set(None),
+                                        }
+                                        div {
+                                            class: "flow-picker",
+                                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                                            div { class: "flow-picker-head", "Flows shown for {label}" }
+                                            // Every flow in the book, checked or
+                                            // not, so the choice is made against
+                                            // the full list rather than by
+                                            // remembering what was taken away.
+                                            for (id, flow_label, problems) in listed.iter().cloned() {
+                                                {
+                                                    let shown = !hidden_here.contains(&id);
+                                                    rsx! {
+                                                        label {
+                                                            key: "{id}",
+                                                            class: if shown { "flow-picker-row" } else { "flow-picker-row flow-picker-row-off" },
+                                                            title: if problems.is_empty() { String::new() } else { problems.join("\n") },
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                checked: shown,
+                                                                onchange: {
+                                                                    let repo = repo.clone();
+                                                                    let id = id.clone();
+                                                                    move |_| {
+                                                                        if repo_flows.read().is_hidden(&repo, &id) {
+                                                                            repo_flows.write().show(&repo, &id);
+                                                                            store::save_repo_flows(&repo_flows.read());
+                                                                        } else {
+                                                                            hide_flow(&repo, &id);
+                                                                        }
+                                                                    }
+                                                                },
+                                                            }
+                                                            if !problems.is_empty() {
+                                                                span { class: "flow-tab-warn", "\u{26a0}" }
+                                                            }
+                                                            span { class: "flow-picker-label", "{flow_label}" }
                                                         }
-                                                    },
-                                                    "Show"
+                                                    }
                                                 }
+                                            }
+                                            div { class: "flow-picker-note",
+                                                "Only this repository is affected. Flows themselves are edited in Setup."
                                             }
                                         }
                                     }
@@ -1947,8 +1995,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 p { class: "field-note",
                                     "\"{label}\" will no longer show as a tab for {repo_label}. \
                                      It still exists — every other repository keeps seeing it, \
-                                     and you can bring it back from the \"hidden\" list next to \
-                                     the tabs."
+                                     and you can bring it back from the picker at the end of \
+                                     the tab strip."
                                 }
                                 div { class: "approval-actions",
                                     button {
@@ -1957,25 +2005,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             let repo = repo.clone();
                                             let id = id.clone();
                                             move |_| {
-                                                repo_flows.write().hide(&repo, &id);
-                                                store::save_repo_flows(&repo_flows.read());
-                                                // Hiding the flow on screen must not leave the
-                                                // graph column showing a tab that no longer exists.
-                                                if selected_repo.read().as_deref() == Some(repo.as_str())
-                                                    && *selected_flow.read() == id
-                                                {
-                                                    let still_hidden = repo_flows.read();
-                                                    let next = book.read().runnable().iter()
-                                                        .find(|f| !still_hidden.is_hidden(&repo, &f.id))
-                                                        .map(|f| f.id.clone())
-                                                        .unwrap_or_default();
-                                                    drop(still_hidden);
-                                                    let first_node = book.read().get(&next)
-                                                        .map(|f| f.first_node())
-                                                        .unwrap_or_default();
-                                                    selected_flow.set(next);
-                                                    selected_node.set(first_node);
-                                                }
+                                                hide_flow(&repo, &id);
                                                 confirm_hide.set(None);
                                             }
                                         },
