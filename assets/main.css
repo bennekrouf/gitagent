@@ -335,6 +335,8 @@ body {
     padding: 8px 10px;
     border-bottom: 1px solid var(--border2);
     flex-shrink: 0;
+    /* The picker hangs off the strip's bottom-right corner. */
+    position: relative;
 }
 .flow-tab {
     flex: 1; border-radius: 6px; cursor: pointer;
@@ -364,15 +366,45 @@ body {
 }
 .flow-tab:hover .flow-tab-hide { opacity: 1; }
 .flow-tab-hide:hover { color: var(--red); }
-.flow-tab-hidden-count {
+.flow-tab-picker {
     flex-shrink: 0; font-family: var(--mono); font-size: 10px;
     padding: 6px 9px; border-radius: 6px; cursor: pointer;
     background: transparent; color: var(--text3); border: 1px dashed var(--border2);
 }
-.flow-tab-hidden-count:hover { color: var(--text1); border-color: var(--border); }
-.flow-tab-hidden-count-on {
+.flow-tab-picker:hover { color: var(--text1); border-color: var(--border); }
+.flow-tab-picker-on {
     color: var(--text1); border-style: solid; border-color: var(--border);
     background: var(--bg2);
+}
+
+/* Which flows this repository shows: a checklist anchored under the picker
+   button, closed by clicking anywhere else. Sits below the modal layer so a
+   confirm dialog opened from it still lands on top. */
+.flow-picker-backdrop { position: fixed; inset: 0; z-index: 60; }
+.flow-picker {
+    position: absolute; top: calc(100% - 2px); right: 10px; z-index: 61;
+    min-width: 240px; max-width: 320px;
+    background: var(--bg1); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    padding: 6px 0;
+}
+.flow-picker-head {
+    padding: 6px 12px 8px; font-size: 10px; color: var(--text3);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.flow-picker-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; color: var(--text1);
+}
+.flow-picker-row:hover { background: var(--bg2); }
+.flow-picker-row input { accent-color: var(--green); cursor: pointer; margin: 0; flex-shrink: 0; }
+.flow-picker-row-off .flow-picker-label { color: var(--text3); }
+.flow-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-picker-note {
+    margin: 6px 12px 4px; padding-top: 8px; border-top: 1px solid var(--border2);
+    font-size: 10.5px; color: var(--text3); line-height: 1.4;
 }
 
 /* A flow that no longer validates: still listed, plainly marked, and refused
@@ -395,16 +427,6 @@ body {
 .flow-broken-mark { font-size: 11px; line-height: 1; }
 .flow-broken-list { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
 .flow-broken-list li { font-family: var(--mono); line-height: 1.45; }
-
-.hidden-flows {
-    padding: 6px 10px; display: flex; flex-direction: column; gap: 4px;
-    border-bottom: 1px solid var(--border2); background: var(--bg1);
-}
-.hidden-flow {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    font-size: 11px; color: var(--text2);
-}
-.hidden-flow-label { font-family: var(--mono); }
 
 /* Start the run and click through its approvals. Distinct from the primary
    Start, because it is a different promise, not a shortcut to the same one. */
