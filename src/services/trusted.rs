@@ -12,7 +12,8 @@
 
 use super::flowdef::FlowBook;
 use super::graph::{Graph, NodeSpec, NodeStatus, RunState, Step};
-use super::probe::{Need, RepoStatus};
+use super::probe::{Need, RepoStatus, Wants};
+
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Verdict {
@@ -42,26 +43,99 @@ impl Verdict {
 ///
 /// `None` means there is nothing more to do, or nothing a flow can do: an
 /// unfinished rebase needs a person and no flow claims it.
-pub fn next_flow(book: &FlowBook, status: &RepoStatus) -> Option<(String, String)> {
-    let wants = status.wants();
-    if !wants.needs_a_person() {
-        return None;
-    }
-    let need = wants.need()?;
-    let flow = book.runnable().into_iter().find(|f| f.answers(need))?;
+///
+/// Deliberately keyed on `need()` rather than `needs_a_person()`. A pull
+/// request whose checks are still running is `Wants::Wait`, which no person is
+/// expected to act on — and gating on that is what stopped every trusted run
+/// dead after the commit flow, because a pull request opened seconds ago
+/// *always* has pending checks. The review flow is still the right answer
+/// there: it reads the diff, which is worth doing while CI runs, and the merge
+/// rules in this same module already refuse to merge on pending checks. So the
+/// chain moves on and stops at the merge, where a person can see why.
+/// `hidden` is the flow ids hidden on this repository. A trusted run must not
+/// pick one: hiding a flow here is the person saying it does not apply to this
+/// repository, and a chain that starts it anyway overrules them — which is
+/// exactly what happened to a repository whose release flow had been hidden
+/// and replaced.
+pub fn next_flow(
+    book: &FlowBook,
+    status: &RepoStatus,
+    hidden: &[String],
+) -> Option<(String, String)> {
+    let need = status.wants().need()?;
+    let flow = book
+        .runnable_for(hidden)
+        .into_iter()
+        .find(|f| f.answers(need))?;
 
     // A review has to know which pull request it is about; leaving the slot
     // empty falls back to "whatever the checked-out branch has open", which is
-    // not the same question.
+    // not the same question. The checked-out branch's own pull request comes
+    // first: it is the one the commit flow just opened, and `prs` is every open
+    // pull request on the repository in whatever order the forge listed them.
     let pr = match need {
-        Need::OpenPullRequest => status
-            .prs
-            .first()
-            .map(|pr| pr.number.clone())
-            .unwrap_or_default(),
+        Need::OpenPullRequest => status.default_pr(),
         _ => String::new(),
     };
     Some((flow.id.clone(), pr))
+}
+
+/// Why the chain has no next flow to take on, in a sentence for the person who
+/// pressed the button. `None` when there is genuinely nothing left to do.
+///
+/// This exists because "no next flow" had exactly one presentation — the run
+/// quietly ending — and the two reasons behind it are nothing alike. A
+/// repository that is finished and a repository whose release flow never
+/// declared that it handles releases looked identical: press Trusted run,
+/// watch one flow, and get no explanation of why it stopped there. The second
+/// is a one-tick fix in Setup, and it is unfindable without being told.
+pub fn why_stopped(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<String> {
+    let wants = status.wants();
+    let Some(need) = wants.need() else {
+        return match wants {
+            // Answered by no flow on purpose: preflight settles it, where the
+            // continue and abort buttons already are.
+            Wants::Resolve => Some(
+                "This repository has a git operation that stopped part-way. Finish or abandon \
+                 it — Preflight offers both — before anything else can run."
+                    .into(),
+            ),
+            _ => None,
+        };
+    };
+
+    if book.runnable_for(hidden).iter().any(|f| f.answers(need)) {
+        return None;
+    }
+
+    // A flow that answers this but is hidden *here* is a different situation
+    // from none existing at all, and the fix is somewhere else entirely — the
+    // repository's own flow list, not Setup. Saying "no flow handles that"
+    // about a flow sitting right there, hidden, is how someone concludes the
+    // chain is ignoring them.
+    let hidden_answer = book
+        .runnable()
+        .into_iter()
+        .find(|f| f.answers(need) && hidden.iter().any(|id| id == &f.id));
+    if let Some(flow) = hidden_answer {
+        return Some(format!(
+            "This repository wants {}, and \u{201c}{}\u{201d} handles that — but it is hidden \
+             on this repository, so a trusted run will not start it. Show it again from the \
+             flow tabs, or tick \u{201c}{}\u{201d} on whichever flow replaced it.",
+            wants.note(),
+            flow.label,
+            need.label(),
+        ));
+    }
+
+    // The flow may well exist and simply not say so. Naming the tick box is
+    // the whole point of the message.
+    Some(format!(
+        "This repository wants {}, but no flow says it handles that. Open Setup and tick \
+         \u{201c}{}\u{201d} on the flow that should.",
+        wants.note(),
+        need.label(),
+    ))
 }
 
 /// Whether a finished run is one a trusted run may move on from.
@@ -84,9 +158,28 @@ pub fn may_continue(state: &RunState, graph: &Graph) -> bool {
 pub fn decide(node: &NodeSpec, state: &RunState) -> Verdict {
     match node.step {
         Step::Merge => merge(state),
-        // Committing, pushing, opening a pull request, running a script or a
-        // remote command: all reversible, or reviewable afterwards by the
-        // person who asked for the run. The merge is the one that is neither.
+        // A script or a remote command is whatever the person typed into
+        // Setup, and this module cannot reason about it at all: `rm -rf` and
+        // `cargo build` are the same shape here. The old rule waved both
+        // through as "reversible, or reviewable afterwards", which is not
+        // true of an arbitrary command and not something any list in this
+        // file could make true.
+        //
+        // The gate is the person's own statement about the step. `drive`
+        // never asks about an ungated node, so a step that reaches this
+        // function is one they said should stop for a human — and a trusted
+        // run overriding exactly that is the thing to refuse. Wanting it
+        // automatic is one tick in Setup, and the message says so.
+        Step::RunScript | Step::RunRemote => Verdict::Hold(format!(
+            "\u{201c}{}\u{201d} runs a command this app cannot vet, and it is marked as \
+             needing approval. A trusted run will not click that through — approve it \
+             here, or untick \u{201c}Needs approval\u{201d} on the step in Setup if it \
+             should always run unattended.",
+            node.title,
+        )),
+        // Committing, pushing and opening a pull request are this app's own
+        // work, in shapes it controls: all reversible, or reviewable
+        // afterwards by the person who asked for the run.
         _ => Verdict::Approve,
     }
 }
@@ -103,6 +196,16 @@ fn merge(state: &RunState) -> Verdict {
     let findings: usize = state.artifact("finding_count").parse().unwrap_or(0);
     let checks = state.artifact("checks_state");
 
+    // Skipping the analysis is a legitimate thing to do by hand — the button
+    // exists — but it must not quietly buy a trusted merge. An absent verdict
+    // is the same evidence as an absent CI result: none.
+    if verdict.is_empty() {
+        return Verdict::Hold(
+            "Nothing analysed this change — the analysis step did not run, or was skipped. \
+             A trusted run will not merge on no evidence."
+                .into(),
+        );
+    }
     if verdict == "risky" {
         return Verdict::Hold(
             "The analysis called this change risky. A trusted run will not merge that on \
@@ -157,6 +260,7 @@ mod tests {
             writes: vec![],
             requires_approval: true,
             config: Default::default(),
+            bind: Default::default(),
         }
     }
 
@@ -224,6 +328,30 @@ mod tests {
     }
 
     #[test]
+    fn a_trusted_run_will_not_click_through_a_gated_shell_step() {
+        // The command is whatever was typed into Setup; nothing here can
+        // tell `cargo build` from `rm -rf`.
+        for step in [Step::RunScript, Step::RunRemote] {
+            let verdict = decide(&node(step), &RunState::default());
+            assert!(
+                matches!(verdict, Verdict::Hold(_)),
+                "{step:?} was approved automatically"
+            );
+            assert!(
+                verdict.reason().unwrap().contains("Setup"),
+                "the hold must say how to change it"
+            );
+        }
+    }
+
+    #[test]
+    fn this_apps_own_steps_are_still_clicked_through() {
+        for step in [Step::Commit, Step::Push, Step::OpenPr, Step::ScanChanges] {
+            assert_eq!(decide(&node(step), &RunState::default()), Verdict::Approve);
+        }
+    }
+
+    #[test]
     fn the_chain_walks_commit_then_review_then_release() {
         // The whole point of chaining: each flow's output is the next one's
         // input, and stopping after the first leaves the obvious work undone.
@@ -231,16 +359,130 @@ mod tests {
 
         let dirty = repo(3, 0, None, false);
         assert_eq!(
-            next_flow(&book, &dirty),
+            next_flow(&book, &dirty, &[]),
             Some(("commit_and_pr".into(), String::new()))
         );
 
         let has_pr = repo(0, 0, Some(Checks::Passing), false);
         assert_eq!(
-            next_flow(&book, &has_pr),
+            next_flow(&book, &has_pr, &[]),
             Some(("review_and_merge".into(), "7".into())),
             "and it names the pull request to review"
         );
+    }
+
+    #[test]
+    fn a_pull_request_whose_checks_are_still_running_does_not_end_the_chain() {
+        // The reported bug: a trusted run never got past the commit flow. A
+        // pull request opened seconds ago always has pending checks, which is
+        // `Wants::Wait` — nothing a *person* is expected to do, so the old
+        // `needs_a_person` gate returned `None` and the chain stopped every
+        // single time, on every repository. Reviewing is still the right next
+        // flow; the merge rules below are what refuse to merge on pending CI.
+        let just_pushed = repo(0, 0, Some(Checks::Pending), false);
+        assert_eq!(just_pushed.wants(), crate::services::probe::Wants::Wait);
+        assert!(
+            !just_pushed.wants().needs_a_person(),
+            "the state the old gate rejected"
+        );
+        assert_eq!(
+            next_flow(&FlowBook::defaults(), &just_pushed, &[]),
+            Some(("review_and_merge".into(), "7".into()))
+        );
+
+        // And it stops at the merge rather than merging on pending checks, so
+        // moving the chain on has not weakened anything.
+        let pending = state("looks_safe", "0", "pending");
+        assert!(decide(&node(Step::Merge), &pending).reason().is_some());
+    }
+
+    #[test]
+    fn the_review_is_scoped_to_the_checked_out_branchs_own_pull_request() {
+        // `prs` is every open pull request on the repository, in whatever
+        // order the forge listed them — reviewing its first entry would review
+        // somebody else's branch instead of the one just pushed.
+        let mut many = repo(0, 0, Some(Checks::Passing), false);
+        let mut other = many.prs[0].clone();
+        other.number = "3".into();
+        many.prs.insert(0, other);
+        assert_eq!(
+            next_flow(&FlowBook::defaults(), &many, &[]),
+            Some(("review_and_merge".into(), "7".into()))
+        );
+    }
+
+    #[test]
+    fn a_flow_hidden_on_this_repository_is_never_what_the_chain_takes_on_next() {
+        // The reported bug. A repository whose release flow has been hidden
+        // and replaced by others still had the chain start the hidden one:
+        // the lookup went through `runnable()`, which knows about validity
+        // and nothing about the repository it is choosing for.
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        let waiting = repo(0, 0, None, true);
+        assert_eq!(waiting.wants(), crate::services::probe::Wants::Release);
+
+        assert_eq!(
+            next_flow(&book, &waiting, &[]),
+            Some(("release".into(), String::new())),
+            "with nothing hidden it is still the right answer"
+        );
+        assert_eq!(
+            next_flow(&book, &waiting, &["release".to_string()]),
+            None,
+            "hidden here, so a trusted run must not start it"
+        );
+    }
+
+    #[test]
+    fn hiding_one_flow_leaves_another_answering_the_same_need_available() {
+        // Hiding is how a repository swaps one flow for another, so the
+        // replacement has to be picked up rather than the chain simply dying.
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        let mut replacement = release_flow();
+        replacement.id = "deploy_vps".into();
+        replacement.label = "Deploy VPS".into();
+        book.flows.push(replacement);
+
+        let waiting = repo(0, 0, None, true);
+        assert_eq!(
+            next_flow(&book, &waiting, &["release".to_string()]),
+            Some(("deploy_vps".into(), String::new())),
+            "the flow that replaced it answers the same need"
+        );
+    }
+
+    #[test]
+    fn a_hidden_answer_is_explained_as_hidden_rather_than_as_missing() {
+        // "No flow says it handles that" about a flow sitting right there,
+        // hidden, is how someone concludes the chain is ignoring them.
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        let waiting = repo(0, 0, None, true);
+
+        let why = why_stopped(&book, &waiting, &["release".to_string()])
+            .expect("a chain that stopped for this reason has to say so");
+        assert!(why.contains("hidden"), "got {why:?}");
+        assert!(why.contains("Release"), "it should name the flow: {why:?}");
+
+        assert_eq!(
+            why_stopped(&book, &waiting, &[]),
+            None,
+            "nothing to explain when it is not hidden"
+        );
+    }
+
+    #[test]
+    fn a_need_no_flow_answers_still_reads_as_missing_not_hidden() {
+        // The pre-existing message must survive: hiding something unrelated
+        // does not turn "nothing handles this" into "it is hidden".
+        let book = FlowBook::defaults();
+        let waiting = repo(0, 0, None, true);
+        let why = why_stopped(&book, &waiting, &["commit_and_pr".to_string()])
+            .expect("still worth saying");
+        assert!(!why.contains("hidden"), "got {why:?}");
+        assert!(why.contains("Setup"), "got {why:?}");
     }
 
     #[test]
@@ -253,15 +495,106 @@ mod tests {
         let waiting = repo(0, 0, None, true);
         assert_eq!(waiting.wants(), crate::services::probe::Wants::Release);
         assert_eq!(
-            next_flow(&book, &waiting),
+            next_flow(&book, &waiting, &[]),
             Some(("release".into(), String::new()))
         );
     }
 
     #[test]
+    fn the_chain_survives_the_sync_that_ends_the_commit_flow() {
+        // End to end, in the order the app actually produces the states.
+        // `sync` is the last node of the shipped commit flow and it checks the
+        // base branch back out, so leg two starts from a repository whose HEAD
+        // owns no pull request at all. That is where every trusted run stopped.
+        let book = FlowBook::defaults();
+
+        let dirty = repo(3, 0, None, false);
+        assert_eq!(
+            next_flow(&book, &dirty, &[]),
+            Some(("commit_and_pr".into(), String::new())),
+            "leg 1: commit"
+        );
+
+        // The commit flow has run: committed, pushed, opened #7, then synced
+        // back to the base branch. `pr` is None because HEAD is on `develop`.
+        let mut after_sync = repo(0, 0, Some(Checks::Pending), false);
+        after_sync.pr = None;
+        assert_eq!(
+            next_flow(&book, &after_sync, &[]),
+            Some(("review_and_merge".into(), "7".into())),
+            "leg 2: review the pull request it just opened"
+        );
+        assert_eq!(
+            why_stopped(&book, &after_sync, &[]),
+            None,
+            "nothing to explain"
+        );
+
+        // The review merged it. Now a release is due and no pull request is
+        // open, so the third leg needs a flow that declares it.
+        let mut book = book;
+        book.flows.push(release_flow());
+        let merged = repo(0, 0, None, true);
+        assert_eq!(
+            next_flow(&book, &merged, &[]),
+            Some(("release".into(), String::new())),
+            "leg 3: release"
+        );
+
+        // And then it is genuinely over.
+        assert_eq!(next_flow(&book, &repo(0, 0, None, false), &[]), None);
+    }
+
+    #[test]
     fn a_repository_with_nothing_to_do_ends_the_chain() {
         let idle = repo(0, 0, None, false);
-        assert_eq!(next_flow(&FlowBook::defaults(), &idle), None);
+        assert_eq!(next_flow(&FlowBook::defaults(), &idle, &[]), None);
+    }
+
+    #[test]
+    fn a_release_no_flow_declares_says_which_box_to_tick() {
+        // The reported case, read straight off the user's own flows.toml: a
+        // flow called "Release" exists, runs a script, and has `handles = []`
+        // because duplicating a flow copies its nodes and not its purpose. The
+        // chain ended there in total silence, which is indistinguishable from
+        // the app being broken.
+        let waiting = repo(0, 0, None, true);
+        let book = FlowBook::defaults();
+        assert_eq!(next_flow(&book, &waiting, &[]), None, "nothing answers it");
+
+        let why = why_stopped(&book, &waiting, &[]).expect("and it must say so");
+        assert!(why.contains("release due"), "{why}");
+        assert!(why.contains(Need::Release.label()), "{why}");
+        assert!(why.contains("Setup"), "names where the fix is: {why}");
+    }
+
+    #[test]
+    fn a_repository_with_nothing_left_is_not_nagged() {
+        let idle = repo(0, 0, None, false);
+        assert_eq!(why_stopped(&FlowBook::defaults(), &idle, &[]), None);
+    }
+
+    #[test]
+    fn a_need_a_flow_does_answer_produces_no_complaint() {
+        let mut book = FlowBook::defaults();
+        book.flows.push(release_flow());
+        assert_eq!(why_stopped(&book, &repo(0, 0, None, true), &[]), None);
+        assert_eq!(why_stopped(&book, &repo(3, 0, None, false), &[]), None);
+    }
+
+    #[test]
+    fn an_unfinished_rebase_is_explained_rather_than_blamed_on_the_flows() {
+        // No flow answers `Resolve` on purpose, so the "tick a box in Setup"
+        // message would send someone hunting for a setting that should not
+        // exist.
+        let mut stuck = repo(3, 0, None, false);
+        stuck.in_progress = Some(crate::services::git::InProgress::Rebase);
+        let why = why_stopped(&FlowBook::defaults(), &stuck, &[]).expect("still worth saying");
+        assert!(why.contains("Preflight"), "{why}");
+        assert!(
+            !why.contains("Setup"),
+            "not a flow-declaration problem: {why}"
+        );
     }
 
     #[test]
@@ -269,7 +602,7 @@ mod tests {
         // A release is due but no flow says it handles one: there is nothing
         // for a trusted run to start, and inventing one would be worse.
         let waiting = repo(0, 0, None, true);
-        assert_eq!(next_flow(&FlowBook::defaults(), &waiting), None);
+        assert_eq!(next_flow(&FlowBook::defaults(), &waiting, &[]), None);
     }
 
     #[test]
@@ -279,7 +612,7 @@ mod tests {
         let mut stuck = repo(3, 0, None, false);
         stuck.in_progress = Some(crate::services::git::InProgress::Rebase);
         assert!(stuck.wants().needs_a_person());
-        assert_eq!(next_flow(&FlowBook::defaults(), &stuck), None);
+        assert_eq!(next_flow(&FlowBook::defaults(), &stuck, &[]), None);
     }
 
     #[test]
@@ -302,6 +635,33 @@ mod tests {
         let mut rejected = done.clone();
         rejected.set_status("commit", NodeStatus::Rejected);
         assert!(!may_continue(&rejected, &graph));
+    }
+
+    #[test]
+    fn skipping_the_analysis_does_not_buy_a_trusted_merge() {
+        // Skip is a deliberate button, and pressing it says "I will judge this
+        // myself" — not "merge it for me with nothing having looked".
+        let mut skipped = state("looks_safe", "0", "passing");
+        skipped.artifacts.remove("verdict");
+        skipped.artifacts.remove("finding_count");
+        let held = decide(&node(Step::Merge), &skipped);
+        assert!(held.reason().unwrap().contains("Nothing analysed"));
+    }
+
+    #[test]
+    fn a_bypassed_step_does_not_stop_the_chain() {
+        // Unlike a failure: the person chose to carry on without it, so the
+        // trusted run carrying on is doing what they said.
+        let graph = FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph();
+        let mut state = RunState::fresh(&graph);
+        for node in &graph.nodes {
+            state.set_status(&node.id, NodeStatus::Done);
+        }
+        state.set_status("test", NodeStatus::Bypassed);
+        assert!(may_continue(&state, &graph));
     }
 
     #[test]

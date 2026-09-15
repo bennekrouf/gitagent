@@ -8,11 +8,12 @@ mod components;
 mod screens;
 mod services;
 mod update_check;
+mod notice;
 
 use dioxus::desktop::LogicalSize;
 use dioxus::prelude::*;
 
-use screens::{welcome::Welcome, workspace::Workspace};
+use screens::{first_run::FirstRun, welcome::Welcome, workspace::Workspace};
 use services::llm::LlmConfig;
 use services::store;
 
@@ -30,8 +31,31 @@ fn window_config(title: &str) -> dioxus::desktop::Config {
         .with_window(
             dioxus::desktop::WindowBuilder::new()
                 .with_title(title)
-                .with_inner_size(LogicalSize::new(1240.0, 820.0)),
+                .with_inner_size(LogicalSize::new(1240.0, 820.0))
+                .with_window_icon(window_icon()),
         )
+}
+
+/// The window icon, decoded from the embedded logo.
+///
+/// build.rs embeds `assets/icon.ico` into the .exe resource, which covers the
+/// Start menu and shortcuts — but the *window* (title bar, alt-tab, taskbar
+/// button) shows only what the app sets at runtime, and Windows falls back to
+/// a blank default when it sets nothing.
+///
+/// Downscaled to 64px on the way in: tao hands Windows this single bitmap for
+/// every size it needs, and letting it stretch a 1024px source down to a 16px
+/// title bar is what makes the icon look muddy.
+fn window_icon() -> Option<dioxus::desktop::tao::window::Icon> {
+    const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+    const SIZE: u32 = 64;
+
+    let img = image::load_from_memory(ICON_PNG).ok()?.resize_exact(
+        SIZE,
+        SIZE,
+        image::imageops::FilterType::Lanczos3,
+    );
+    dioxus::desktop::tao::window::Icon::from_rgba(img.into_rgba8().into_raw(), SIZE, SIZE).ok()
 }
 
 /// Opens another window on `path`, in this same process.
@@ -103,6 +127,17 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
     // Deliberately after a delay and entirely best-effort: a release check is
     // never worth slowing a cold start, and a failed one is not worth saying
     // anything about.
+    // ── Notice from mayorana.ch ────────────────────────────────────────────
+    // A message to the people running this build (see notice.rs). Same
+    // posture as the update check: delayed, best-effort, silent on failure.
+    let mut mayorana_notice = use_signal(|| Option::<notice::Notice>::None);
+    use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        if let Some(n) = notice::fetch().await {
+            mayorana_notice.set(Some(n));
+        }
+    });
+
     let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
     let mut update_dismissed = use_signal(|| false);
     use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
@@ -142,6 +177,11 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
         }
     });
 
+    // Asked once, before anything else can be reached: every flow depends on
+    // the answer, and a run that discovers it mid-way is a run that has already
+    // wasted your time.
+    let mut configured = use_signal(store::is_configured);
+
     let open = workspace.read().clone();
 
     rsx! {
@@ -167,6 +207,41 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
             }
         }
 
+        // Notice from mayorana.ch — shown until dismissed, then remembered.
+        if let Some(n) = mayorana_notice.read().clone() {
+            {
+                let id = n.id.clone();
+                let link_text = n.link_text.clone().unwrap_or_else(|| "Open".to_string());
+                rsx! {
+                    div { class: "update-banner notice-banner",
+                        span { class: "update-banner-text", "{n.text}" }
+                        if let Some(url) = n.url.clone() {
+                            a {
+                                class: "update-banner-link",
+                                href: "{url}",
+                                target: "_blank",
+                                "{link_text}"
+                            }
+                        }
+                        button {
+                            class: "update-banner-dismiss",
+                            onclick: move |_| {
+                                notice::dismiss(&id);
+                                mayorana_notice.set(None);
+                            },
+                            "×"
+                        }
+                    }
+                }
+            }
+        }
+
+        if !*configured.read() {
+            FirstRun {
+                llm_config,
+                on_done: move |_| configured.set(true),
+            }
+        } else {
         match open {
             None => rsx! {
                 Welcome {
@@ -188,6 +263,7 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                     },
                 }
             },
+        }
         }
     }
 }

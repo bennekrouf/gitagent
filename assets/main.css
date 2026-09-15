@@ -170,18 +170,58 @@ body {
 }
 .sidebar-head {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 11px 12px 4px;
+    /* Less top padding than the 11px this had: the action buttons below now
+       carry their own height, so the head keeps roughly its old proportions
+       instead of growing by the whole difference. */
+    padding: 6px 8px 4px;
 }
 .sidebar-title {
     font-size: 10px; color: var(--text3);
     text-transform: uppercase; letter-spacing: 0.6px;
 }
-.sidebar-actions { display: flex; gap: 2px; }
-.sidebar-switch {
-    background: none; border: none; color: var(--text3);
-    font-size: 13px; cursor: pointer; padding: 0 2px; line-height: 1;
+/* Discreet by design: it sits between the title and the buttons and is only
+   worth a glance. The tick is the one thing allowed to be green. */
+.sidebar-tally {
+    margin-right: auto; padding-left: 8px;
+    font-size: 10px; color: var(--text3);
+    font-variant-numeric: tabular-nums;
 }
-.sidebar-switch:hover { color: var(--green); }
+.tally-remaining { color: var(--text2); font-weight: 600; }
+.tally-clear { color: var(--green); font-size: 11px; }
+
+.sidebar-actions { display: flex; gap: 6px; }
+/* A real target rather than the glyph's own ink. These were 13x13 with 2px of
+   padding, so three of them sat in 45px with their hit areas touching — small
+   enough to miss, and close enough that missing meant hitting the next one
+   along. 32px square with an 18px glyph is the smallest that reads clearly on
+   a desktop pointer, and the hover surface is what makes them look clickable
+   at all. The embedded webview doesn't reliably show the native `title`
+   tooltip, so we render our own from the same attribute on hover. */
+.sidebar-switch {
+    position: relative;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; padding: 0;
+    background: none; border: none; border-radius: 6px;
+    color: var(--text3); font-size: 18px; line-height: 1; cursor: pointer;
+}
+.sidebar-switch:hover { color: var(--green); background: var(--bg2); }
+.sidebar-switch:disabled { cursor: default; }
+.sidebar-switch:disabled:hover { background: none; color: var(--text3); }
+
+.sidebar-switch::after {
+    content: attr(title);
+    position: absolute; top: calc(100% + 6px); right: 0;
+    padding: 4px 8px; border-radius: 5px;
+    background: var(--bg2); color: var(--text1);
+    font-size: 11px; font-weight: 500; line-height: 1.2;
+    white-space: nowrap; pointer-events: none;
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    z-index: 20;
+}
+.sidebar-switch:hover::after { opacity: 1; transform: translateY(0); }
+.sidebar-switch:disabled::after { content: none; }
 .sidebar-path {
     padding: 0 12px 10px;
     font-size: 10px; color: var(--text3);
@@ -235,7 +275,36 @@ body {
     background: color-mix(in srgb, var(--red) 22%, transparent);
     color: var(--red);
 }
-.sidebar-note { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; }
+.sidebar-note {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px;
+    display: inline-flex; align-items: center; gap: 3px;
+}
+/* Slightly larger than the word beside it: the glyph is what the eye lands on,
+   the word is what confirms it. */
+.note-icon { font-size: 11px; line-height: 1; }
+.note-icon:empty { display: none; }
+
+/* The last run failed. A mark beside the name, never the status slot — what
+   the repository needs now belongs there. */
+.run-failed-mark {
+    flex-shrink: 0; font-size: 9px; font-weight: 700; line-height: 1;
+    padding: 1px 4px; border-radius: 999px;
+    background: color-mix(in srgb, var(--red) 20%, transparent);
+    color: var(--red);
+}
+
+/* Hovering a row swaps its status for a button that re-reads just this
+   repository. The two occupy the same slot, so nothing moves on hover. */
+.row-status { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.row-reprobe {
+    display: none;
+    background: none; border: 0; padding: 0 2px;
+    color: var(--text3); font-size: 12px; line-height: 1; cursor: pointer;
+    flex-shrink: 0;
+}
+.row-reprobe:hover { color: var(--text1); }
+.sidebar-row:hover .row-status { display: none; }
+.sidebar-row:hover .row-reprobe { display: inline-block; }
 .sidebar-detail {
     font-size: 10px; color: var(--text3);
     background: var(--bg3); border-radius: 9px; padding: 1px 6px;
@@ -284,6 +353,8 @@ body {
     padding: 8px 10px;
     border-bottom: 1px solid var(--border2);
     flex-shrink: 0;
+    /* The picker hangs off the strip's bottom-right corner. */
+    position: relative;
 }
 .flow-tab {
     flex: 1; border-radius: 6px; cursor: pointer;
@@ -313,15 +384,45 @@ body {
 }
 .flow-tab:hover .flow-tab-hide { opacity: 1; }
 .flow-tab-hide:hover { color: var(--red); }
-.flow-tab-hidden-count {
+.flow-tab-picker {
     flex-shrink: 0; font-family: var(--mono); font-size: 10px;
     padding: 6px 9px; border-radius: 6px; cursor: pointer;
     background: transparent; color: var(--text3); border: 1px dashed var(--border2);
 }
-.flow-tab-hidden-count:hover { color: var(--text1); border-color: var(--border); }
-.flow-tab-hidden-count-on {
+.flow-tab-picker:hover { color: var(--text1); border-color: var(--border); }
+.flow-tab-picker-on {
     color: var(--text1); border-style: solid; border-color: var(--border);
     background: var(--bg2);
+}
+
+/* Which flows this repository shows: a checklist anchored under the picker
+   button, closed by clicking anywhere else. Sits below the modal layer so a
+   confirm dialog opened from it still lands on top. */
+.flow-picker-backdrop { position: fixed; inset: 0; z-index: 60; }
+.flow-picker {
+    position: absolute; top: calc(100% - 2px); right: 10px; z-index: 61;
+    min-width: 240px; max-width: 320px;
+    background: var(--bg1); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    padding: 6px 0;
+}
+.flow-picker-head {
+    padding: 6px 12px 8px; font-size: 10px; color: var(--text3);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.flow-picker-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; color: var(--text1);
+}
+.flow-picker-row:hover { background: var(--bg2); }
+.flow-picker-row input { accent-color: var(--green); cursor: pointer; margin: 0; flex-shrink: 0; }
+.flow-picker-row-off .flow-picker-label { color: var(--text3); }
+.flow-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-picker-note {
+    margin: 6px 12px 4px; padding-top: 8px; border-top: 1px solid var(--border2);
+    font-size: 10.5px; color: var(--text3); line-height: 1.4;
 }
 
 /* A flow that no longer validates: still listed, plainly marked, and refused
@@ -345,15 +446,60 @@ body {
 .flow-broken-list { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
 .flow-broken-list li { font-family: var(--mono); line-height: 1.45; }
 
-.hidden-flows {
-    padding: 6px 10px; display: flex; flex-direction: column; gap: 4px;
-    border-bottom: 1px solid var(--border2); background: var(--bg1);
+/* Start the run and click through its approvals. Distinct from the primary
+   Start, because it is a different promise, not a shortcut to the same one. */
+.btn-trusted { border-color: var(--border); }
+.btn-trusted:not(:disabled):hover { border-color: var(--blue); color: var(--blue); }
+.btn-trusted-on {
+    border-color: var(--blue); color: var(--blue);
+    display: inline-flex; align-items: center; gap: 6px;
 }
-.hidden-flow {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    font-size: 11px; color: var(--text2);
+
+/* First run: three ways to answer "what writes the prose", one of which is
+   "nothing". They are laid out as equals on purpose — running without a model
+   is a choice, not a degraded mode. */
+.first-run { display: flex; flex-direction: column; gap: 10px; margin: 18px 0 20px; }
+.choice {
+    border: 1px solid var(--border2); border-radius: 8px;
+    padding: 12px 14px; cursor: pointer; background: var(--bg1);
+    transition: border-color 0.12s, background 0.12s;
 }
-.hidden-flow-label { font-family: var(--mono); }
+.choice:hover { border-color: var(--border); }
+.choice-on { border-color: var(--blue); background: var(--bg2); }
+.choice-head { display: flex; align-items: center; gap: 9px; }
+.choice-title { font-weight: 600; color: var(--text1); }
+.choice-body {
+    margin: 6px 0 0 23px; font-size: 11px; line-height: 1.55; color: var(--text2);
+}
+.radio {
+    width: 13px; height: 13px; border-radius: 50%; flex-shrink: 0;
+    border: 1px solid var(--text3); box-sizing: border-box;
+}
+.radio-on { border: 4px solid var(--blue); }
+.choice-tag {
+    margin-left: auto; font-size: 10px; font-family: var(--mono); color: var(--text3);
+}
+.choice-tag-ok { color: var(--green); }
+.choice-tag-off { color: var(--text3); }
+.choice-fields { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.choice-note { font-size: 10px; color: var(--text3); }
+.first-run-actions { display: flex; align-items: center; gap: 12px; }
+.first-run-note { font-size: 11px; color: var(--text3); }
+
+/* Skip, offered on a step that is pending or still running — the two states
+   with no other control on them. */
+.step-actions {
+    padding: 10px 0 0; display: flex; gap: 8px;
+    border-top: 1px solid var(--border2); margin-top: 10px;
+}
+
+/* Why a trusted run handed this approval back. */
+.approval-held {
+    margin-bottom: 10px; padding: 8px 10px;
+    border: 1px solid var(--blue); border-left-width: 3px; border-radius: 4px;
+    background: var(--bg1); color: var(--text1);
+    font-size: 11px; line-height: 1.5;
+}
 
 /* Start the run and click through its approvals. Distinct from the primary
    Start, because it is a different promise, not a shortcut to the same one. */
@@ -491,8 +637,8 @@ body {
 .items-head-right { display: flex; align-items: baseline; gap: 6px; }
 .items-toggle {
     background: none; border: 1px solid var(--border2); border-radius: 4px;
-    color: var(--text3); font-size: 11px; line-height: 1; cursor: pointer;
-    padding: 2px 6px;
+    color: var(--text3); font-size: 10px; line-height: 1; cursor: pointer;
+    padding: 3px 7px; white-space: nowrap;
 }
 .items-toggle:hover { color: var(--text1); border-color: var(--border); }
 .items {
@@ -944,3 +1090,37 @@ body {
     opacity: 0.7;
 }
 .update-banner-dismiss:hover { opacity: 1; }
+
+/* Why a trusted run stopped. Sits under the run buttons because that is where
+   you are looking when nothing happened. */
+.chain-note {
+    display: flex; align-items: center; gap: 8px;
+    margin: 8px 0 0; padding: 8px 10px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--yellow) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
+    font-size: 11px; line-height: 1.5; color: var(--text2);
+}
+.chain-note-icon { color: var(--yellow); flex-shrink: 0; }
+.chain-note-text { flex: 1; min-width: 0; }
+.chain-note-open {
+    flex-shrink: 0; cursor: pointer;
+    background: none; border: 1px solid var(--border);
+    color: var(--text2); border-radius: 5px;
+    font-size: 10px; padding: 3px 8px;
+}
+.chain-note-open:hover { color: var(--text1); border-color: var(--text3); }
+.chain-note-close {
+    flex-shrink: 0; cursor: pointer;
+    background: none; border: 0; color: var(--text3);
+    font-size: 11px; padding: 0 2px; line-height: 1;
+}
+.chain-note-close:hover { color: var(--text1); }
+
+.handles-none {
+    margin-left: 8px; font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 1px 6px; border-radius: 999px;
+    background: color-mix(in srgb, var(--yellow) 18%, transparent);
+    color: var(--yellow);
+}

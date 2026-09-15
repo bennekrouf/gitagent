@@ -23,7 +23,7 @@ use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
-use crate::services::graph::{Graph, NodeRun, NodeStatus, Remedy, RunState};
+use crate::services::graph::{Graph, NodeKind, NodeRun, NodeStatus, Remedy, RunState};
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
@@ -87,8 +87,10 @@ fn default_selection(
     repo: &str,
     wants: Option<Wants>,
     open_prs: &[probe::PrBrief],
+    hidden: &[String],
 ) -> (String, String, String) {
-    let runnable = book.runnable();
+    // Landing on a flow hidden here would open a tab the strip does not show.
+    let runnable = book.runnable_for(hidden);
 
     // A person being waited on outranks everything else, same precedence as
     // the sidebar's dot — check every flow for one before falling back.
@@ -140,6 +142,21 @@ fn default_selection(
         .unwrap_or_default()
 }
 
+/// Woken whenever an approval decision is recorded, or a run's trusted flag
+/// changes — the two things a node parked in `AwaitingApproval` is waiting to
+/// hear about.
+///
+/// Before this, the wait was a 120 ms poll: a run left on an approval
+/// overnight woke eight times a second, taking a borrow of every run's state
+/// each time, and never went idle. One notifier for the whole process rather
+/// than one per run, because a wake only costs a re-read of state the loop
+/// looks at anyway — routing them precisely would be more bookkeeping than
+/// the spurious wakes are worth.
+fn approvals() -> &'static tokio::sync::Notify {
+    static APPROVALS: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    APPROVALS.get_or_init(tokio::sync::Notify::new)
+}
+
 /// How many flows one trusted run will chain through before stopping.
 ///
 /// Commit, review, release is three; the cap is not a limit anyone should
@@ -184,6 +201,10 @@ async fn drive(
         }
 
         if node.requires_approval {
+            // The approval describes what will run, so it has to read the same
+            // resolved state the step will — otherwise the proposal quotes one
+            // node's `commit_subject` and the commit uses another's.
+            let state = state.resolved_for(&node);
             let proposal = flow::proposal(&node, &state);
             let items = flow::proposal_items(&node, &state);
             let preview_diff = flow::diff_preview(&node, &repo, &state)
@@ -211,12 +232,34 @@ async fn drive(
             // actually happened.
             let mut auto: Option<trusted::Verdict> = None;
             let approved = loop {
-                let decision = states
-                    .read()
-                    .get(&key)
-                    .and_then(|s| s.decisions.get(&node.id).copied());
+                // Registered before the state is read, not after. `enable`
+                // puts this future in the waiter list now rather than on
+                // first poll, so a decision written in the window between
+                // the read below and the park at the bottom still wakes it
+                // — the lost-wakeup race every condition-variable wait has.
+                let waiter = approvals().notified();
+                tokio::pin!(waiter);
+                waiter.as_mut().enable();
+
+                // `None` breaks out as "bypassed": somebody pressed Skip
+                // while this sat here, so there is no decision coming and
+                // nothing to run. Reading the status rather than inventing a
+                // third decision value is what makes Skip behave identically
+                // whether the run is still waiting here or has already
+                // finished and failed.
+                let (bypassed, decision) = {
+                    let snapshot = states.read();
+                    let entry = snapshot.get(&key);
+                    (
+                        entry.map(|s| s.status(&node.id)) == Some(NodeStatus::Bypassed),
+                        entry.and_then(|s| s.decisions.get(&node.id).copied()),
+                    )
+                };
+                if bypassed {
+                    break None;
+                }
                 if let Some(decision) = decision {
-                    break decision;
+                    break Some(decision);
                 }
 
                 if auto.is_none() && trusted.read().contains(&key) {
@@ -259,9 +302,18 @@ async fn drive(
                     continue;
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                // Nothing left but to wait for a person. The timeout is a
+                // safety net rather than the mechanism: if a wake is ever
+                // missed the run resumes late instead of never.
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(30), waiter).await;
             };
 
+            let Some(approved) = approved else {
+                // `bypass` already set the status and freed whatever was
+                // blocked behind it, so there is nothing to do here but move
+                // on to the next ready node.
+                continue;
+            };
             if !approved {
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();
@@ -279,7 +331,30 @@ async fn drive(
             .or_default()
             .set_status(&node.id, NodeStatus::Running);
 
-        let state = snapshot(&states, &key);
+        // A model step on an install with no model never calls one: it writes
+        // what can be derived from the diff and is marked skipped. Done here,
+        // once, rather than in each of the three model steps — and before the
+        // approval, so what you approve is what will actually be used.
+        if node.kind == NodeKind::Model && !cfg.read().uses_model() {
+            let stand_in = flow::without_model(&node, &state);
+            let mut w = states.write();
+            let entry = w.entry(key.clone()).or_default();
+            for (k, v) in stand_in.artifacts {
+                entry
+                    .artifacts
+                    .insert(crate::services::graph::qualified(&node.id, &k), v.clone());
+                entry.artifacts.insert(k, v);
+            }
+            let run = entry.runs.entry(node.id.clone()).or_default();
+            run.status = NodeStatus::Bypassed;
+            run.summary = stand_in.summary;
+            run.log = stand_in.log;
+            continue;
+        }
+
+        // As this node sees it: bound inputs already resolved to the
+        // producer each one names, so the step reads its own literal keys.
+        let state = snapshot(&states, &key).resolved_for(&node);
         let cfg_snapshot = cfg.read().clone();
 
         // Fills in the node's log as its command's output arrives, rather
@@ -287,21 +362,90 @@ async fn drive(
         // at all. `result`'s own `outcome.log`/`failure.message` still wins
         // once the step settles, so formatting (a placeholder for empty
         // output, the failing command echoed back) stays exactly as before.
+        // The live log is a preview, and only a preview: whatever the step
+        // finally returns replaces `run.log` wholesale below, on both the
+        // success and the failure path. That is what makes coalescing the
+        // writes and capping the growth here free at the end and worth a lot
+        // in the middle — one signal write per line meant one full Dioxus
+        // render per line, each cloning the entire run map and re-running
+        // syntect over the diff. `cargo test` on a real project emits
+        // thousands of lines, so the cost was quadratic in output length.
+        const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+        /// Enough to watch a command work. The whole output still arrives
+        /// when the step settles.
+        const LIVE_LOG_CAP: usize = 200_000;
+
+        let mut pending = String::new();
+        let mut last_flush = std::time::Instant::now();
         let mut push_line = {
             let mut states = states;
             let key = key.clone();
             let node_id = node.id.clone();
             move |line: &str| {
+                if !pending.is_empty() {
+                    pending.push('\n');
+                }
+                pending.push_str(line);
+                if last_flush.elapsed() < FLUSH_EVERY {
+                    return;
+                }
+                last_flush = std::time::Instant::now();
+
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();
                 let run = entry.runs.entry(node_id.clone()).or_default();
                 if !run.log.is_empty() {
                     run.log.push('\n');
                 }
-                run.log.push_str(line);
+                run.log.push_str(&pending);
+                pending.clear();
+
+                // Keep the tail: the end of a log is the part worth watching,
+                // and an unbounded one is a step away from a looping script
+                // eating the heap.
+                if run.log.len() > LIVE_LOG_CAP {
+                    let mut cut = run.log.len() - LIVE_LOG_CAP;
+                    while cut < run.log.len() && !run.log.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    run.log.drain(..cut);
+                }
             }
         };
-        let result = flow::execute(&node, &repo, &cfg_snapshot, &state, &mut push_line).await;
+        // Racing the step against a skip, rather than only awaiting it, is what
+        // makes Skip work on a step that is *already running* — which is the
+        // case that matters, because a model call that will take fifteen
+        // minutes is exactly the one you want to abandon. Dropping the future
+        // cancels it: an in-flight request is dropped, and `git` children are
+        // spawned `kill_on_drop`.
+        let result = {
+            let step = flow::execute(&node, &repo, &cfg_snapshot, &state, &mut push_line);
+            tokio::pin!(step);
+            loop {
+                tokio::select! {
+                    // Biased so a step that has finished is never discarded in
+                    // favour of a skip that arrived in the same breath.
+                    biased;
+                    settled = &mut step => break Some(settled),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                        let bypassed = states
+                            .read()
+                            .get(&key)
+                            .map(|s| s.status(&node.id))
+                            == Some(NodeStatus::Bypassed);
+                        if bypassed {
+                            break None;
+                        }
+                    }
+                }
+            }
+        };
+        let Some(result) = result else {
+            // Skipped mid-flight. `bypass` has already set the status and freed
+            // whatever was blocked behind it, and the log it wrote so far is
+            // kept as the account of how far it got.
+            continue;
+        };
 
         let mut w = states.write();
         let entry = w.entry(key.clone()).or_default();
@@ -408,6 +552,62 @@ fn retry_node(
     });
 }
 
+/// Marks a node bypassed and lets the run carry on without it.
+///
+/// Shares its shape with `retry_node` because it answers the same shape of
+/// question — a settled node and what to do about it — and differs in one
+/// place: the node ends `Bypassed` rather than back in the queue.
+///
+/// Both entry points land here. A node still sitting at its approval has a
+/// driver waiting on it, which sees the new status and moves on, so the
+/// `running` guard below is what stops a second one being started. A node that
+/// failed has no driver left, so this starts one.
+#[allow(clippy::too_many_arguments)]
+fn skip_node(
+    mut states: Signal<States>,
+    mut running: Signal<BTreeSet<Key>>,
+    selected_node: Signal<String>,
+    selected_repo: Signal<Option<String>>,
+    selected_flow: Signal<String>,
+    selected_pr: Signal<String>,
+    cfg: Signal<LlmConfig>,
+    statuses: Signal<BTreeMap<String, RepoStatus>>,
+    graph: Graph,
+    key: Key,
+    node: &str,
+    trusted: Signal<BTreeSet<Key>>,
+) {
+    states
+        .write()
+        .entry(key.clone())
+        .or_default()
+        .bypass(node, &graph);
+    // Wake the waiting driver the same way an approval does, so a skip takes
+    // effect immediately rather than on the next timeout tick.
+    approvals().notify_waiters();
+
+    if running.read().contains(&key) {
+        return;
+    }
+    running.write().insert(key.clone());
+    spawn(async move {
+        drive(
+            graph,
+            key.clone(),
+            cfg,
+            states,
+            selected_node,
+            selected_repo,
+            selected_flow,
+            selected_pr,
+            trusted,
+        )
+        .await;
+        running.write().remove(&key);
+        reprobe(key.0.clone(), statuses);
+    });
+}
+
 /// Re-reads one repository. Called after a run settles, so the Start button
 /// reflects what the run just did — committing empties the tree, opening a pull
 /// request gives the review flow something to work on.
@@ -423,7 +623,7 @@ fn reprobe(path: String, mut statuses: Signal<BTreeMap<String, RepoStatus>>) {
 #[allow(clippy::too_many_arguments)]
 fn refresh_all(
     repos: Signal<Vec<store::Repo>>,
-    mut statuses: Signal<BTreeMap<String, RepoStatus>>,
+    statuses: Signal<BTreeMap<String, RepoStatus>>,
     mut probing: Signal<usize>,
     mut picked: Signal<bool>,
     mut selected_repo: Signal<Option<String>>,
@@ -434,44 +634,68 @@ fn refresh_all(
         return;
     }
     let list = repos.read().clone();
+    if list.is_empty() {
+        return;
+    }
     probing.set(list.len());
 
-    for repo in list.clone() {
-        let all = list.clone();
-        spawn(async move {
-            let status = probe::probe(&repo.path).await;
-            statuses.write().insert(repo.path.clone(), status);
-            let left = probing.read().saturating_sub(1);
-            probing.set(left);
+    // One task for the whole sweep rather than one per repository, with the
+    // concurrency bounded.
+    //
+    // Two things were wrong with a task each. `probe` runs several
+    // subprocesses, two of them network calls to the forge, so a workspace of
+    // forty repositories opened forty concurrent `gh` calls — enough to trip
+    // GitHub's secondary rate limiter — alongside a few hundred process
+    // spawns at once. And the "are we done" counter was decremented inside
+    // each task, so a single task that never got there left `probing` above
+    // zero and wedged every later refresh for the life of the window. There
+    // is one completion point now, and it does not depend on arithmetic.
+    const AT_ONCE: usize = 6;
 
-            if left == 0 && !*picked.read() {
-                picked.set(true);
-                let map = statuses.read().clone();
-                // Most urgent first; ties broken by the order on disk.
-                let best = all
-                    .iter()
-                    .filter_map(|r| map.get(&r.path).map(|s| (r.path.clone(), s.wants())))
-                    .filter(|(_, wants)| wants.needs_a_person())
-                    .min_by_key(|(_, wants)| *wants);
+    spawn(async move {
+        use futures_util::stream::StreamExt;
 
-                if let Some((path, wants)) = best {
-                    // Open on whichever flow says it answers this, whatever
-                    // its name.
-                    let answering = wants.need().and_then(|need| {
-                        book.read()
-                            .runnable()
-                            .iter()
-                            .find(|f| f.answers(need))
-                            .map(|f| f.id.clone())
-                    });
-                    if let Some(id) = answering {
-                        selected_flow.set(id);
-                    }
-                    selected_repo.set(Some(path));
+        // Each result lands as it arrives, so the sidebar fills in rather
+        // than appearing all at once at the end.
+        futures_util::stream::iter(list.clone())
+            .for_each_concurrent(AT_ONCE, |repo| {
+                let mut statuses = statuses;
+                async move {
+                    let status = probe::probe(&repo.path).await;
+                    statuses.write().insert(repo.path.clone(), status);
                 }
+            })
+            .await;
+        probing.set(0);
+
+        if *picked.read() {
+            return;
+        }
+        picked.set(true);
+        let map = statuses.read().clone();
+        // Most urgent first; ties broken by the order on disk.
+        let best = list
+            .iter()
+            .filter_map(|r| map.get(&r.path).map(|s| (r.path.clone(), s.wants())))
+            .filter(|(_, wants)| wants.needs_a_person())
+            .min_by_key(|(_, wants)| *wants);
+
+        if let Some((path, wants)) = best {
+            // Open on whichever flow says it answers this, whatever its name.
+            let hidden_here = store::load_repo_flows().hidden_for(&path).to_vec();
+            let answering = wants.need().and_then(|need| {
+                book.read()
+                    .runnable_for(&hidden_here)
+                    .iter()
+                    .find(|f| f.answers(need))
+                    .map(|f| f.id.clone())
+            });
+            if let Some(id) = answering {
+                selected_flow.set(id);
             }
-        });
-    }
+            selected_repo.set(Some(path));
+        }
+    });
 }
 
 #[component]
@@ -491,6 +715,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // working one exists. But if every flow is broken, select the first anyway:
     // an empty column explains nothing, whereas the selected tab's banner says
     // exactly what to fix.
+    //
+    // Repo-blind on purpose, unlike every other flow choice in this file: no
+    // repository is selected yet, so there is nothing for "hidden here" to be
+    // relative to. Picking one replaces this via `default_selection`.
     let first_flow = {
         let book = book.read();
         book.runnable()
@@ -510,6 +738,17 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // only while that is wanted: taking it out mid-run hands the next approval
     // straight back to the person, without disturbing the run itself.
     let mut trusted = use_signal(BTreeSet::<Key>::new);
+    // Every repository, every flow, no asking. Set from the "Trust all" button
+    // in the top bar rather than per repository — for someone who wants
+    // GitAgent to just run, not for the default. Turning it on also trusts
+    // whatever is already running, the same way adopting a single run does;
+    // turning it off does not untrust anything already in flight, so a run
+    // that is mid-chain still finishes the leg it is on before the next
+    // approval asks a person again.
+    let mut global_trust = use_signal(|| false);
+    // Why the last trusted run stopped, when the reason was not "there is
+    // nothing left". Cleared when the next one starts.
+    let mut chain_note = use_signal(String::new);
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     // Which flows the *current* repository has chosen not to see — a filter
@@ -528,10 +767,32 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut branches_busy = use_signal(|| Option::<String>::None);
     let mut base_editor_open = use_signal(|| Option::<String>::None);
     let mut base_editor_value = use_signal(String::new);
-    // Which repository's hidden-flow list is open, rather than a single flag
-    // for all of them: opening it on one repository used to leave it open on
-    // the next one you selected, which reads as a panel that will not close.
-    let mut hidden_open = use_signal(|| Option::<String>::None);
+    // Which repository's flow picker is open, rather than a single flag for
+    // all of them: opening it on one repository used to leave it open on the
+    // next one you selected, which reads as a panel that will not close.
+    let mut picker_open = use_signal(|| Option::<String>::None);
+
+    // Hiding a flow is one operation whether it comes from a tab's × or from
+    // the picker's checkbox, including the part that is easy to forget: the
+    // graph column must not keep showing a tab the strip no longer does.
+    let mut hide_flow = move |repo: &str, id: &str| {
+        repo_flows.write().hide(repo, id);
+        store::save_repo_flows(&repo_flows.read());
+        if selected_repo.read().as_deref() == Some(repo) && *selected_flow.read() == id {
+            let next = {
+                let still_hidden = repo_flows.read();
+                book.read()
+                    .runnable()
+                    .iter()
+                    .find(|f| !still_hidden.is_hidden(repo, &f.id))
+                    .map(|f| f.id.clone())
+                    .unwrap_or_default()
+            };
+            let first_node = book.read().get(&next).map(|f| f.first_node()).unwrap_or_default();
+            selected_flow.set(next);
+            selected_node.set(first_node);
+        }
+    };
 
     // Pane widths, dragged by the dividers and remembered on disk.
     let saved = use_signal(store::load_layout);
@@ -636,28 +897,64 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let Some(repo) = selected_repo.read().clone() else {
             return;
         };
+        // "Trust all" overrides the button that was actually clicked — even a
+        // plain Start runs trusted once it's on, since the whole point is not
+        // having to remember which button to press per repository.
+        let trust = trust || *global_trust.read();
         // Settings live in a per-window signal but one file on disk. Re-reading
         // here is what stops a second window running against a stale provider.
         llm_config_mut.set(store::load_settings());
+        chain_note.set(String::new());
 
         // An ordinary Start runs the flow on screen. A trusted run is for the
         // repository, not for one flow, so it starts on whichever flow answers
         // what the repository actually needs — which is how "Trusted run" on
         // the Commit → PR tab does the release a repository is waiting for
         // instead of refusing because there is nothing to commit.
+        //
+        // Falling back to the flow on screen matters as much as the preference
+        // does. `next_flow` answers "what does this repository most need",
+        // which is `None` for a repository that needs nothing in particular —
+        // and that used to disable the button on every tab at once, including
+        // a "Deploy VPS" flow whose whole point is that you run it when you
+        // decide to, not when a probe says so.
         let opening = if trust {
             statuses
                 .read()
                 .get(&repo)
-                .and_then(|status| trusted::next_flow(&book.read(), status))
+                .and_then(|status| {
+                    trusted::next_flow(&book.read(), status, repo_flows.read().hidden_for(&repo))
+                })
+                .or_else(|| Some((selected_flow.read().clone(), selected_pr.read().clone())))
         } else {
             Some((selected_flow.read().clone(), selected_pr.read().clone()))
         };
         let Some((mut id, mut pr)) = opening else {
+            // Nothing to start at all. Silently doing nothing is what made
+            // this button feel broken, so say why.
+            if trust {
+                if let Some(status) = statuses.read().get(&repo) {
+                    chain_note.set(
+                        trusted::why_stopped(
+                            &book.read(),
+                            status,
+                            repo_flows.read().hidden_for(&repo),
+                        )
+                        .unwrap_or_default(),
+                    );
+                }
+            }
             return;
         };
 
         spawn(async move {
+            // Whether the run is *currently* trusted, which is not the same as
+            // the button that started it. A run started with plain Start and
+            // adopted part-way — "stop asking me" at an approval — has to chain
+            // like any other trusted run from that point, so this is re-read
+            // from the trusted set after every leg rather than captured once.
+            let mut trusting = trust;
+
             // Each turn of this loop is one flow, start to finish. Only a
             // trusted run goes round twice.
             for _ in 0..MOST_FLOWS_IN_A_TRUSTED_RUN {
@@ -682,7 +979,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 }
                 states.write().insert(key.clone(), fresh);
                 running.write().insert(key.clone());
-                if trust {
+                if trusting {
                     trusted.write().insert(key.clone());
                 } else {
                     trusted.write().remove(&key);
@@ -712,18 +1009,28 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 
                 // `drive` takes the key back out when it stopped at something
                 // it would not approve, so this is also how a hold ends the
-                // chain rather than only the leg it happened on.
-                let still_trusted = trusted.read().contains(&key);
+                // chain rather than only the leg it happened on. It is equally
+                // how adoption gets picked up: the key is in the set because a
+                // person put it there mid-flight.
+                trusting = trusted.read().contains(&key);
                 trusted.write().remove(&key);
 
                 let status = probe::probe(&repo).await;
                 let finished = snapshot(&states, &key);
                 statuses.write().insert(repo.clone(), status.clone());
 
-                if !trust || !still_trusted || !trusted::may_continue(&finished, &graph) {
+                if !trusting || !trusted::may_continue(&finished, &graph) {
                     break;
                 }
-                let Some(next) = trusted::next_flow(&book.read(), &status) else {
+                let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
+                let Some(next) = trusted::next_flow(&book.read(), &status, &hidden_here) else {
+                    // The commonest end of a chain, and until now the most
+                    // silent: a release is due and the release flow never
+                    // declared that it handles releases.
+                    chain_note.set(
+                        trusted::why_stopped(&book.read(), &status, &hidden_here)
+                            .unwrap_or_default(),
+                    );
                     break;
                 };
                 // The same flow again means the last one did not move the
@@ -759,6 +1066,23 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     span { class: "topbar-path", "{props.workspace}" }
                 }
                 div { class: "topbar-right",
+                    button {
+                        class: if *global_trust.read() { "btn btn-trusted btn-trusted-on" } else { "btn btn-ghost" },
+                        title: if *global_trust.read() {
+                            "Every repository and every flow is running trusted. Click to go back to approving each one yourself."
+                        } else {
+                            "Trust every repository and every flow: runs answer their own approvals instead of asking, the same as clicking \u{201c}Trusted run\u{201d} everywhere at once."
+                        },
+                        onclick: move |_| {
+                            let on = !*global_trust.read();
+                            global_trust.set(on);
+                            if on {
+                                trusted.write().extend(running.read().iter().cloned());
+                                approvals().notify_waiters();
+                            }
+                        },
+                        if *global_trust.read() { "Trusting everything…" } else { "Trust all" }
+                    }
                     button {
                         class: "btn btn-ghost",
                         onclick: move |_| setup_open.set(true),
@@ -825,6 +1149,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     on_refresh: move |_| {
                         refresh_all(repos, statuses, probing, picked, selected_repo, selected_flow, book);
                     },
+                    on_reprobe: move |path: String| reprobe(path, statuses),
                     on_select: move |path: String| {
                         let (flow_id, node_id, pr_id) =
                             default_selection(
@@ -838,6 +1163,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     .map(|s| s.prs.clone())
                                     .unwrap_or_default()
                                     .as_slice(),
+                                repo_flows.read().hidden_for(&path),
                             );
                         selected_repo.set(Some(path));
                         if !flow_id.is_empty() {
@@ -885,12 +1211,17 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         // flows, so the button has to look at the repository
                         // rather than at this tab's key alone.
                         let is_trusted = trusted.read().iter().any(|(r, _, _)| r == &repo);
+                        // Flows this repository has hidden. Needed both for the
+                        // tab strip below and for the trusted-run hint just
+                        // under here, which must not offer a flow the strip
+                        // does not even show.
+                        let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
                         // What a trusted run would take on, which is not
                         // necessarily the flow on screen: a clean tree with a
                         // release due offers one from the Commit → PR tab.
                         let trusted_next = status_map
                             .get(&repo)
-                            .and_then(|status| trusted::next_flow(&flows, status));
+                            .and_then(|status| trusted::next_flow(&flows, status, &hidden_here));
                         // A repo reviewing PR #7 shouldn't also be able to start
                         // reviewing #5 — two runs racing each other's git state
                         // (checkout, fetch) in the same working tree.
@@ -907,32 +1238,36 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             &pr_id,
                             &flow_problems,
                         );
+                        // What the trusted button will actually start. The
+                        // repository's most urgent need by preference — that
+                        // is the whole point of the button — but the flow on
+                        // screen when there is no such need and this flow can
+                        // run anyway. Requiring a need meant the button was
+                        // dead on every tab whenever the probe said "nothing
+                        // in particular", which reads as "trusted runs only
+                        // work on Commit → PR".
+                        let trusted_start = trusted_next
+                            .clone()
+                            .or_else(|| can_run.enabled.then(|| (flow_id.clone(), pr_id.clone())));
+
                         // Both flows end with a pull request worth linking to:
                         // the one just opened, or the one just merged.
                         let pr_url = state.artifact("pr_url").to_string();
                         let finished = state.started && state.is_finished(&graph);
 
-                        let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
                         let visible_tabs: Vec<(String, String, Vec<String>)> = listed
                             .iter()
                             .filter(|(id, _, _)| !hidden_here.contains(id))
                             .cloned()
                             .collect();
-                        let showing_hidden = !hidden_here.is_empty()
-                            && hidden_open.read().as_deref() == Some(repo.as_str());
-                        // A label for a hidden flow can vanish from `listed`
-                        // entirely — deleted in Setup — so fall back to the id
-                        // rather than letting the restore list lose a row.
-                        let hidden_tabs: Vec<(String, String)> = hidden_here
+                        let showing_picker = picker_open.read().as_deref() == Some(repo.as_str());
+                        // Counted against the book rather than the stored
+                        // list: an id left behind by a flow deleted in Setup
+                        // must not advertise "1 hidden" with nothing to show.
+                        let hidden_count = listed
                             .iter()
-                            .map(|id| {
-                                let label = flows
-                                    .get(id)
-                                    .map(|f| f.label.clone())
-                                    .unwrap_or_else(|| id.clone());
-                                (id.clone(), label)
-                            })
-                            .collect();
+                            .filter(|(id, _, _)| hidden_here.contains(id))
+                            .count();
 
                         rsx! {
                             div { class: "graph-col", style: "width: {middle_w}px;",
@@ -1017,23 +1352,54 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                     // one on screen — the chain may already have
                                                     // moved on to another flow's key.
                                                     trusted.write().retain(|(r, _, _)| r != &repo);
+                                                    approvals().notify_waiters();
                                                 }
                                             },
                                             span { class: "flow-tab-dot" }
                                             "Trusting…"
                                         }
+                                    } else if is_running {
+                                        // A run is already going, and you are
+                                        // most likely reading this because it
+                                        // has stopped to ask you something.
+                                        // Adopting it is a different action
+                                        // from starting one: nothing is reset,
+                                        // the approval in front of you is
+                                        // answered, and every one after it in
+                                        // this repository is too. `drive` is
+                                        // already watching the trusted set on
+                                        // its approval wait, so putting the key
+                                        // in is the whole mechanism.
+                                        button {
+                                            class: "btn btn-trusted",
+                                            title: "Approve this step, and every step after it in this repository, without asking again. Still stops at a merge the analysis or CI is unhappy about.",
+                                            onclick: {
+                                                let key = key.clone();
+                                                let mut trusted = trusted;
+                                                move |_| {
+                                                    trusted.write().insert(key.clone());
+                                                    approvals().notify_waiters();
+                                                }
+                                            },
+                                            "Stop asking me"
+                                        }
                                     } else {
                                         button {
                                             class: "btn btn-trusted",
-                                            disabled: is_running || other_pr_running || trusted_next.is_none(),
-                                            title: match (&trusted_next, is_running || other_pr_running) {
-                                                (_, true) => "A run is already going in this repository.".to_string(),
+                                            disabled: other_pr_running || trusted_start.is_none(),
+                                            title: match (&trusted_start, other_pr_running) {
+                                                (_, true) => "Another pull request review is already running in this repository.".to_string(),
                                                 (None, _) => format!(
-                                                    "Nothing here needs a run — {}.",
-                                                    status_map
-                                                        .get(&repo)
-                                                        .map(|s| s.wants().note())
-                                                        .unwrap_or("still reading this repository")
+                                                    "Nothing here needs a run, and this flow cannot start — {}.",
+                                                    if can_run.reason.is_empty() {
+                                                        status_map
+                                                            .get(&repo)
+                                                            .map(|s| s.wants().note())
+                                                            .unwrap_or("still reading this repository")
+                                                            .to_string()
+                                                    } else {
+                                                        can_run.reason.clone()
+                                                    }
                                                 ),
                                                 (Some((id, _)), _) => format!(
                                                     "Work through what this repository needs, starting with \u{201c}{}\u{201d}, \
@@ -1057,6 +1423,25 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         },
                                         onclick: start,
                                         if is_running { "Running…" } else { "{can_run.label}" }
+                                    }
+                                }
+
+                                // Where the chain stopped, when it stopped for
+                                // a reason you can act on.
+                                if !chain_note.read().is_empty() {
+                                    div { class: "chain-note",
+                                        span { class: "chain-note-icon", "\u{26a0}" }
+                                        span { class: "chain-note-text", "{chain_note}" }
+                                        button {
+                                            class: "chain-note-open",
+                                            onclick: move |_| setup_open.set(true),
+                                            "Open Setup"
+                                        }
+                                        button {
+                                            class: "chain-note-close",
+                                            onclick: move |_| chain_note.set(String::new()),
+                                            "\u{2715}"
+                                        }
                                     }
                                 }
 
@@ -1084,13 +1469,22 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                     let first = flows.get(&id)
                                                         .map(|f| f.first_node())
                                                         .unwrap_or_default();
+                                                    // A tab is a flow, not one particular PR review
+                                                    // within it, so the previous tab's selection must
+                                                    // not carry over and silently scope the next
+                                                    // "Start" to it. Clearing it outright was the
+                                                    // over-correction: arriving at a review flow with
+                                                    // one open pull request and nothing selected makes
+                                                    // you click a list of one to say the only thing it
+                                                    // could have said.
+                                                    let obvious = status_map
+                                                        .get(&repo)
+                                                        .map(|s| s.default_pr())
+                                                        .unwrap_or_default();
                                                     move |_| {
                                                         selected_flow.set(id.clone());
                                                         selected_node.set(first.clone());
-                                                        // A tab is a flow, not one particular PR review
-                                                        // within it — leaving a PR selected here would
-                                                        // silently scope the next "Start" to it.
-                                                        selected_pr.set(String::new());
+                                                        selected_pr.set(obvious.clone());
                                                     }
                                                 },
                                                 if !problems.is_empty() {
@@ -1116,47 +1510,80 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             }
                                         }
                                     }
-                                    if !hidden_tabs.is_empty() {
-                                        button {
-                                            class: if showing_hidden {
-                                                "flow-tab-hidden-count flow-tab-hidden-count-on"
-                                            } else {
-                                                "flow-tab-hidden-count"
-                                            },
-                                            title: if showing_hidden {
-                                                "Hide this list again"
-                                            } else {
-                                                "Flows hidden for this repository"
-                                            },
-                                            onclick: {
-                                                let repo = repo.clone();
-                                                move |_| {
-                                                    let open = hidden_open.read().as_deref() == Some(repo.as_str());
-                                                    hidden_open.set(if open { None } else { Some(repo.clone()) });
-                                                }
-                                            },
-                                            "{hidden_tabs.len()} hidden"
+                                    // Always there, even with nothing hidden:
+                                    // the × only appears on hover, so this is
+                                    // how someone learns the strip is theirs
+                                    // to edit at all.
+                                    button {
+                                        class: if showing_picker {
+                                            "flow-tab-picker flow-tab-picker-on"
+                                        } else {
+                                            "flow-tab-picker"
+                                        },
+                                        title: "Choose which flows {label} shows",
+                                        onclick: {
+                                            let repo = repo.clone();
+                                            move |_| {
+                                                let open = picker_open.read().as_deref() == Some(repo.as_str());
+                                                picker_open.set(if open { None } else { Some(repo.clone()) });
+                                            }
+                                        },
+                                        if hidden_count > 0 {
+                                            "{hidden_count} hidden"
+                                        } else {
+                                            "\u{22ef}"
                                         }
                                     }
-                                }
-
-                                if showing_hidden {
-                                    div { class: "hidden-flows",
-                                        for (id, label) in hidden_tabs.iter().cloned() {
-                                            div { key: "{id}", class: "hidden-flow",
-                                                span { class: "hidden-flow-label", "{label}" }
-                                                button {
-                                                    class: "btn",
-                                                    onclick: {
-                                                        let repo = repo.clone();
-                                                        let id = id.clone();
-                                                        move |_| {
-                                                            repo_flows.write().show(&repo, &id);
-                                                            store::save_repo_flows(&repo_flows.read());
+                                    if showing_picker {
+                                        // Clicking anywhere else closes it; a
+                                        // transparent backdrop is what makes
+                                        // "anywhere else" mean the whole window.
+                                        div {
+                                            class: "flow-picker-backdrop",
+                                            onclick: move |_| picker_open.set(None),
+                                        }
+                                        div {
+                                            class: "flow-picker",
+                                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                                            div { class: "flow-picker-head", "Flows shown for {label}" }
+                                            // Every flow in the book, checked or
+                                            // not, so the choice is made against
+                                            // the full list rather than by
+                                            // remembering what was taken away.
+                                            for (id, flow_label, problems) in listed.iter().cloned() {
+                                                {
+                                                    let shown = !hidden_here.contains(&id);
+                                                    rsx! {
+                                                        label {
+                                                            key: "{id}",
+                                                            class: if shown { "flow-picker-row" } else { "flow-picker-row flow-picker-row-off" },
+                                                            title: if problems.is_empty() { String::new() } else { problems.join("\n") },
+                                                            input {
+                                                                r#type: "checkbox",
+                                                                checked: shown,
+                                                                onchange: {
+                                                                    let repo = repo.clone();
+                                                                    let id = id.clone();
+                                                                    move |_| {
+                                                                        if repo_flows.read().is_hidden(&repo, &id) {
+                                                                            repo_flows.write().show(&repo, &id);
+                                                                            store::save_repo_flows(&repo_flows.read());
+                                                                        } else {
+                                                                            hide_flow(&repo, &id);
+                                                                        }
+                                                                    }
+                                                                },
+                                                            }
+                                                            if !problems.is_empty() {
+                                                                span { class: "flow-tab-warn", "\u{26a0}" }
+                                                            }
+                                                            span { class: "flow-picker-label", "{flow_label}" }
                                                         }
-                                                    },
-                                                    "Show"
+                                                    }
                                                 }
+                                            }
+                                            div { class: "flow-picker-note",
+                                                "Only this repository is affected. Flows themselves are edited in Setup."
                                             }
                                         }
                                     }
@@ -1303,11 +1730,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         }
                                     }),
                                     is_light: *is_light.read(),
+                                    run_started: state.started,
                                     on_approve: {
                                         let key = key.clone();
                                         move |id: String| {
                                             states.write().entry(key.clone()).or_default()
                                                 .decisions.insert(id, true);
+                                            approvals().notify_waiters();
                                         }
                                     },
                                     on_reject: {
@@ -1315,6 +1744,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         move |id: String| {
                                             states.write().entry(key.clone()).or_default()
                                                 .decisions.insert(id, false);
+                                            approvals().notify_waiters();
                                         }
                                     },
                                     on_toggle: {
@@ -1387,6 +1817,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                 states, running, selected_node,
                                                 selected_repo, selected_flow, selected_pr,
                                                 llm_config, statuses, retry_graph.clone(),
+                                                key.clone(), &node, trusted,
+                                            );
+                                        }
+                                    },
+                                    on_skip: {
+                                        let key = key.clone();
+                                        let skip_graph = graph.clone();
+                                        move |node: String| {
+                                            skip_node(
+                                                states, running, selected_node,
+                                                selected_repo, selected_flow, selected_pr,
+                                                llm_config, statuses, skip_graph.clone(),
                                                 key.clone(), &node, trusted,
                                             );
                                         }
@@ -1582,8 +2024,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 p { class: "field-note",
                                     "\"{label}\" will no longer show as a tab for {repo_label}. \
                                      It still exists — every other repository keeps seeing it, \
-                                     and you can bring it back from the \"hidden\" list next to \
-                                     the tabs."
+                                     and you can bring it back from the picker at the end of \
+                                     the tab strip."
                                 }
                                 div { class: "approval-actions",
                                     button {
@@ -1592,25 +2034,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             let repo = repo.clone();
                                             let id = id.clone();
                                             move |_| {
-                                                repo_flows.write().hide(&repo, &id);
-                                                store::save_repo_flows(&repo_flows.read());
-                                                // Hiding the flow on screen must not leave the
-                                                // graph column showing a tab that no longer exists.
-                                                if selected_repo.read().as_deref() == Some(repo.as_str())
-                                                    && *selected_flow.read() == id
-                                                {
-                                                    let still_hidden = repo_flows.read();
-                                                    let next = book.read().runnable().iter()
-                                                        .find(|f| !still_hidden.is_hidden(&repo, &f.id))
-                                                        .map(|f| f.id.clone())
-                                                        .unwrap_or_default();
-                                                    drop(still_hidden);
-                                                    let first_node = book.read().get(&next)
-                                                        .map(|f| f.first_node())
-                                                        .unwrap_or_default();
-                                                    selected_flow.set(next);
-                                                    selected_node.set(first_node);
-                                                }
+                                                hide_flow(&repo, &id);
                                                 confirm_hide.set(None);
                                             }
                                         },
@@ -1661,7 +2085,7 @@ mod tests {
         let prs = [brief("7"), brief("9")];
 
         let (flow_id, _, pr_id) =
-            default_selection(&book, &states, "/repo", Some(Wants::Merge), &prs);
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &prs, &[]);
         assert_eq!(flow_id, "review_and_merge");
         assert_eq!(pr_id, "7", "the first one, matching the order shown");
     }
@@ -1670,8 +2094,14 @@ mod tests {
     fn a_commit_flow_selects_no_pull_request() {
         let book = FlowBook::defaults();
         let states = States::new();
-        let (_, _, pr_id) =
-            default_selection(&book, &states, "/repo", Some(Wants::Commit), &[brief("7")]);
+        let (_, _, pr_id) = default_selection(
+            &book,
+            &states,
+            "/repo",
+            Some(Wants::Commit),
+            &[brief("7")],
+            &[],
+        );
         assert!(pr_id.is_empty(), "nothing to scope a commit run to");
     }
 
@@ -1679,7 +2109,8 @@ mod tests {
     fn a_review_with_no_pull_requests_listed_selects_none() {
         let book = FlowBook::defaults();
         let states = States::new();
-        let (_, _, pr_id) = default_selection(&book, &states, "/repo", Some(Wants::Merge), &[]);
+        let (_, _, pr_id) =
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &[], &[]);
         assert!(pr_id.is_empty());
     }
 
@@ -1691,11 +2122,12 @@ mod tests {
         let states = States::new();
 
         let (flow_id, node_id, _) =
-            default_selection(&book, &states, "/repo", Some(Wants::Merge), &[]);
+            default_selection(&book, &states, "/repo", Some(Wants::Merge), &[], &[]);
         assert_eq!(flow_id, "review_and_merge");
         assert_eq!(node_id, book.get("review_and_merge").unwrap().first_node());
 
-        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Commit), &[]);
+        let (flow_id, _, _) =
+            default_selection(&book, &states, "/repo", Some(Wants::Commit), &[], &[]);
         assert_eq!(flow_id, "commit_and_pr");
     }
 
@@ -1704,7 +2136,8 @@ mod tests {
         // Wants::Release points at a flow id nobody has built yet.
         let book = FlowBook::defaults();
         let states = States::new();
-        let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Release), &[]);
+        let (flow_id, _, _) =
+            default_selection(&book, &states, "/repo", Some(Wants::Release), &[], &[]);
         assert_eq!(flow_id, book.runnable().first().unwrap().id);
     }
 
@@ -1720,7 +2153,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None, &[]);
+        let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None, &[], &[]);
         assert_eq!(flow_id, flow.id);
         assert_eq!(node_id, "scan");
         assert_eq!(pr_id, "");
@@ -1737,7 +2170,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/other-repo".into(), flow.id.clone(), String::new()), run);
 
-        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", None, &[]);
+        let (flow_id, node_id, _) = default_selection(&book, &states, "/repo", None, &[], &[]);
         // Nothing running here — falls back to the first runnable flow's
         // first node, same as an untouched repository.
         assert_eq!(flow_id, book.runnable().first().unwrap().id);
@@ -1757,7 +2190,7 @@ mod tests {
         let mut states = States::new();
         states.insert(("/repo".into(), flow.id.clone(), String::new()), run);
 
-        let (_, node_id, _) = default_selection(&book, &states, "/repo", None, &[]);
+        let (_, node_id, _) = default_selection(&book, &states, "/repo", None, &[], &[]);
         assert_eq!(node_id, "commit");
     }
 }

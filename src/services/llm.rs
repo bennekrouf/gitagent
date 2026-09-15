@@ -93,6 +93,13 @@ pub enum ProviderKind {
     /// kept as an alias so an existing settings.json still loads.
     #[serde(alias = "DeepSeek")]
     Remote,
+    /// No model at all. Every step that would have called one is skipped, and
+    /// the flows still run — see `flow::without_model` for what stands in.
+    ///
+    /// A first-class choice, not an error state: plenty of people want the
+    /// graph, the approvals and the git handling without a model anywhere near
+    /// their code.
+    Off,
 }
 
 impl ProviderKind {
@@ -100,6 +107,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Ollama => "ollama (local)",
             ProviderKind::Remote => "remote API",
+            ProviderKind::Off => "no AI",
         }
     }
 }
@@ -146,6 +154,7 @@ impl LlmConfig {
         match self.kind {
             ProviderKind::Ollama => &self.ollama_model,
             ProviderKind::Remote => self.remote_model_name(),
+            ProviderKind::Off => "no AI",
         }
     }
 }
@@ -165,6 +174,31 @@ impl LlmConfig {
         }
     }
 
+    /// Whether it is safe to put the API key on a request to this endpoint.
+    ///
+    /// The base URL is free text in Settings, and every remote call attaches
+    /// a bearer token to it. Over plain `http` that token crosses the network
+    /// in the clear, so a mistyped scheme leaks the key to anything on the
+    /// path. Loopback is exempt: a local vLLM or LM Studio on `http://
+    /// localhost` is a normal setup and never leaves the machine.
+    pub fn endpoint_carries_key_safely(&self) -> bool {
+        let url = self.remote_base_url();
+        if url.starts_with("https://") {
+            return true;
+        }
+        let Some(rest) = url.strip_prefix("http://") else {
+            return false;
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        // An IPv6 literal is bracketed and full of colons, so the port
+        // cannot simply be split off at the first one.
+        let host = match authority.strip_prefix('[') {
+            Some(v6) => v6.split(']').next().unwrap_or(""),
+            None => authority.split(':').next().unwrap_or(""),
+        };
+        matches!(host, "localhost" | "127.0.0.1" | "::1")
+    }
+
     pub fn remote_model_name(&self) -> &str {
         if self.remote_model.trim().is_empty() {
             self.preset().model
@@ -174,6 +208,11 @@ impl LlmConfig {
     }
 
     /// The API key for the selected provider, from its environment variable.
+    /// Whether any step is allowed to call a model.
+    pub fn uses_model(&self) -> bool {
+        self.kind != ProviderKind::Off
+    }
+
     pub fn remote_key(&self) -> Option<String> {
         api_key(self.preset().env)
     }
@@ -183,9 +222,25 @@ pub fn api_key(env: &str) -> Option<String> {
     std::env::var(env).ok().filter(|k| !k.is_empty())
 }
 
-fn client() -> Result<reqwest::Client, String> {
+/// How long a local model is given to answer.
+///
+/// Generous on purpose. A 14B model on a laptop spends real minutes on a large
+/// prompt — measured here: ~80s for 8k tokens, past five minutes for 14k — and
+/// the old 300s cut those off mid-generation. A wait you can see the end of
+/// beats a failure you have to diagnose.
+const OLLAMA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// A hosted endpoint that has not answered in this long is not going to.
+const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// "Can I reach it at all", which is a question with a fast answer. The
+/// settings panel blocks on this, so it must never inherit a generation-sized
+/// wait.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(timeout)
         .build()
         .map_err(|e| format!("http client: {e}"))
 }
@@ -212,6 +267,16 @@ pub async fn complete_json(
     let raw = match cfg.kind {
         ProviderKind::Ollama => call_ollama(cfg, &system, user, schema).await?,
         ProviderKind::Remote => call_openai_compatible(cfg, &system, user).await?,
+        // Reaching here means a model step ran with no model configured, which
+        // the executor is supposed to have headed off. Say which of the two is
+        // broken rather than pretending the provider is unreachable.
+        ProviderKind::Off => {
+            return Err(
+                "this step needs a model, but this install is set to run without one. \
+                 Pick a provider in Settings, or skip the step."
+                    .into(),
+            )
+        }
     };
 
     parse_object(&raw)
@@ -260,9 +325,28 @@ async fn call_ollama(
         ],
     });
 
-    let resp =
-        client()?.post(&url).json(&body).send().await.map_err(|e| {
-            format!("ollama unreachable at {url} — is `ollama serve` running? ({e})")
+    let resp = client(OLLAMA_TIMEOUT)?
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            // A timeout is not a missing server, and saying so sent people to
+            // check `ollama serve` — which was running the whole time — while
+            // the actual problem was a prompt this model cannot answer inside
+            // the wait. Name which of the two happened, and what to do.
+            if e.is_timeout() {
+                format!(
+                    "{} did not answer within {}s. That is the model being too slow for this \
+                     prompt, not ollama being down. Skip this step, send it less (the diff is \
+                     capped at {} characters), or use a smaller model.",
+                    cfg.ollama_model,
+                    OLLAMA_TIMEOUT.as_secs(),
+                    super::git::DIFF_CAP,
+                )
+            } else {
+                format!("ollama unreachable at {url} — is `ollama serve` running? ({e})")
+            }
         })?;
 
     let status = resp.status();
@@ -287,6 +371,15 @@ async fn call_openai_compatible(
     user: &str,
 ) -> Result<String, String> {
     let preset = cfg.preset();
+    if !cfg.endpoint_carries_key_safely() {
+        return Err(format!(
+            "refusing to send {} to {} — it is not https, and a bearer token over plain \
+             http crosses the network in the clear. Use https, or a loopback address for \
+             a local endpoint.",
+            preset.env,
+            cfg.remote_base_url()
+        ));
+    }
     let key = cfg
         .remote_key()
         .ok_or_else(|| format!("{} is not set — export it and restart the app", preset.env))?;
@@ -305,34 +398,40 @@ async fn call_openai_compatible(
         ],
     });
 
-    let resp = client()?
+    let resp = client(REMOTE_TIMEOUT)?
         .post(&url)
         .bearer_auth(key)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("DeepSeek unreachable at {url}: {e}"))?;
+        .map_err(|e| format!("{} unreachable at {url}: {e}", preset.label))?;
 
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!("DeepSeek returned {status}: {text}"));
+        return Err(format!("{} returned {status}: {text}", preset.label));
     }
 
-    let value: Value =
-        serde_json::from_str(&text).map_err(|e| format!("DeepSeek sent invalid JSON: {e}"))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{} sent invalid JSON: {e}", preset.label))?;
     value["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("DeepSeek reply had no choices[0].message.content: {text}"))
+        .ok_or_else(|| {
+            format!(
+                "{} reply had no choices[0].message.content: {text}",
+                preset.label
+            )
+        })
 }
 
 /// Cheap reachability check for the settings panel.
 pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
     match cfg.kind {
+        ProviderKind::Off => Ok("no AI — model steps are skipped".into()),
         ProviderKind::Ollama => {
             let url = format!("{}/api/tags", cfg.ollama_url.trim_end_matches('/'));
-            let resp = client()?
+            let resp = client(PROBE_TIMEOUT)?
                 .get(&url)
                 .send()
                 .await
@@ -358,11 +457,18 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
         }
         ProviderKind::Remote => {
             let preset = cfg.preset();
+            if !cfg.endpoint_carries_key_safely() {
+                return Err(format!(
+                    "{} is not https — refusing to send {} over it in the clear",
+                    cfg.remote_base_url(),
+                    preset.env
+                ));
+            }
             let Some(key) = cfg.remote_key() else {
                 return Err(format!("{} is not set", preset.env));
             };
             let url = format!("{}/models", cfg.remote_base_url().trim_end_matches('/'));
-            let resp = client()?
+            let resp = client(PROBE_TIMEOUT)?
                 .get(&url)
                 .bearer_auth(key)
                 .send()
@@ -384,6 +490,48 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bearer_token_is_not_sent_over_plain_http() {
+        let mut cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            remote_url: "http://api.example.com/v1".into(),
+            ..Default::default()
+        };
+        assert!(!cfg.endpoint_carries_key_safely());
+
+        cfg.remote_url = "https://api.example.com/v1".into();
+        assert!(cfg.endpoint_carries_key_safely());
+    }
+
+    #[test]
+    fn a_local_endpoint_over_http_is_still_allowed() {
+        // vLLM or LM Studio on loopback never leaves the machine.
+        for url in [
+            "http://localhost:8000/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8000/v1",
+        ] {
+            let cfg = LlmConfig {
+                kind: ProviderKind::Remote,
+                remote_url: url.into(),
+                ..Default::default()
+            };
+            assert!(cfg.endpoint_carries_key_safely(), "{url}");
+        }
+    }
+
+    #[test]
+    fn every_shipped_preset_is_https() {
+        for preset in REMOTES {
+            let cfg = LlmConfig {
+                kind: ProviderKind::Remote,
+                remote: preset.key.into(),
+                ..Default::default()
+            };
+            assert!(cfg.endpoint_carries_key_safely(), "{}", preset.key);
+        }
+    }
 
     #[test]
     fn bare_json_parses() {

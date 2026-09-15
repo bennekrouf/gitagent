@@ -102,6 +102,30 @@ impl Wants {
         }
     }
 
+    /// Whether this state is worth any words in a list of repositories.
+    ///
+    /// The two resting states get none. A column where every clean repository
+    /// says CLEAN is a column you have to read to find the one that does not —
+    /// which is exactly backwards. The dot still carries the state for anyone
+    /// who wants it.
+    pub fn is_worth_saying(self) -> bool {
+        !matches!(self, Wants::Nothing | Wants::Wait)
+    }
+
+    /// A glyph for the states worth saying something about, so a row can be
+    /// sorted by eye before it is read.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Wants::Resolve => "\u{26a0}",
+            Wants::Merge => "\u{2713}",
+            Wants::Attention => "\u{2715}",
+            Wants::Commit => "\u{270e}",
+            Wants::OpenPr => "\u{2197}",
+            Wants::Release => "\u{2191}",
+            Wants::Wait | Wants::Nothing => "",
+        }
+    }
+
     pub fn css(self) -> &'static str {
         match self {
             Wants::Resolve => "failed",
@@ -189,7 +213,8 @@ impl RepoStatus {
             return Wants::Resolve;
         }
 
-        let from_pr = self.pr.as_ref().and_then(|pr| match pr.checks {
+        let acting = self.pr_to_act_on();
+        let from_pr = acting.and_then(|pr| match pr.checks {
             Checks::Passing | Checks::Unknown => Some(Wants::Merge),
             Checks::Failing => Some(Wants::Attention),
             // Nothing to decide yet — but that is not the same as nothing to
@@ -204,12 +229,41 @@ impl RepoStatus {
             // proposed and the decision is the pull request's.
             (self.pr.is_none() && self.unmerged > 0).then_some(Wants::OpenPr),
             self.release.due().then_some(Wants::Release),
-            self.pr.is_some().then_some(Wants::Wait),
+            acting.is_some().then_some(Wants::Wait),
         ]
         .into_iter()
         .flatten()
         .min()
         .unwrap_or(Wants::Nothing)
+    }
+
+    /// The pull request this repository most needs a decision on, if any.
+    ///
+    /// The checked-out branch's own comes first — that is the one being worked
+    /// on. Falling back to the rest is not a nicety, it is the difference
+    /// between a working chain and a dead one: a commit flow that ends in
+    /// `sync` checks the base branch back out, so seconds after opening a pull
+    /// request `self.pr` is `None` and the repository it just worked on reads
+    /// as having nothing to do. `prs` is what the forge says is actually open,
+    /// regardless of where HEAD happens to be pointing.
+    pub fn pr_to_act_on(&self) -> Option<&PrBrief> {
+        if let Some(pr) = &self.pr {
+            return Some(pr);
+        }
+        // Most actionable first: one that can be decided now beats one that is
+        // red, which beats one nothing can be said about yet.
+        self.prs.iter().min_by_key(|pr| match pr.checks {
+            Checks::Passing | Checks::Unknown => 0,
+            Checks::Failing => 1,
+            Checks::Pending => 2,
+        })
+    }
+
+    /// The pull request to open a review on, when nothing else has said.
+    pub fn default_pr(&self) -> String {
+        self.pr_to_act_on()
+            .map(|pr| pr.number.clone())
+            .unwrap_or_default()
     }
 
     /// One line for the sidebar.
@@ -418,23 +472,36 @@ pub async fn stored_base_branch(repo: &str) -> (String, String) {
     base_branch(repo, override_base).await
 }
 
+/// Everything the sidebar needs to know about one repository.
+///
+/// Run in two waves rather than as ten sequential awaits. Each of these
+/// shells out to `git` or `gh`, so awaiting them one after another spent the
+/// whole latency of every subprocess in series — and it was what made the
+/// caller fan out across repositories hard enough to trip the forge's rate
+/// limiter. Only two things are genuine dependencies: the forge has to be
+/// known before the pull requests can be listed, and the base branch before
+/// the release and unmerged-commit counts. Everything else goes at once.
 pub async fn probe(repo: &str) -> RepoStatus {
-    let branch = git::current_branch(repo).await.unwrap_or_default();
-    let changes = git::status(repo).await.map(|c| c.len()).unwrap_or(0);
-    let forge = git::remote_url(repo)
-        .await
-        .map(|url| forge::detect(&url))
-        .unwrap_or(Forge::None);
-    let pr = open_pr(repo, &forge).await;
-    let (prs, prs_error) = match list_open_prs(repo, &forge).await {
+    let (branch, changes, url, (ahead, behind), (base, _), in_progress) = tokio::join!(
+        async { git::current_branch(repo).await.unwrap_or_default() },
+        async { git::status(repo).await.map(|c| c.len()).unwrap_or(0) },
+        git::remote_url(repo),
+        ahead_behind(repo),
+        stored_base_branch(repo),
+        git::in_progress(repo),
+    );
+    let forge = url.map(|url| forge::detect(&url)).unwrap_or(Forge::None);
+
+    let (pr, listed, release, unmerged) = tokio::join!(
+        open_pr(repo, &forge),
+        list_open_prs(repo, &forge),
+        release::status(repo, &base),
+        unmerged_commits(repo, &base),
+    );
+    let (prs, prs_error) = match listed {
         Ok(list) => (list, None),
         Err(e) => (vec![], Some(e)),
     };
-    let (ahead, behind) = ahead_behind(repo).await;
-    let (base, _) = stored_base_branch(repo).await;
-    let release = release::status(repo, &base).await;
-    let unmerged = unmerged_commits(repo, &base).await;
-    let in_progress = git::in_progress(repo).await;
 
     RepoStatus {
         branch,
@@ -657,6 +724,92 @@ fn rollup(value: &serde_json::Value) -> Checks {
         (true, _) => Checks::Failing,
         (false, true) => Checks::Pending,
         _ => Checks::Passing,
+    }
+}
+
+#[cfg(test)]
+mod default_pr_tests {
+    use super::*;
+    use crate::services::forge::Forge;
+    use crate::services::release::ReleaseState;
+
+    fn brief(number: &str) -> PrBrief {
+        PrBrief {
+            number: number.into(),
+            title: "t".into(),
+            url: "u".into(),
+            checks: Checks::Passing,
+            files: 1,
+            additions: 1,
+            deletions: 0,
+            commits: 1,
+        }
+    }
+
+    fn status(pr: Option<&str>, prs: &[&str]) -> RepoStatus {
+        RepoStatus {
+            branch: "feat/x".into(),
+            changes: 0,
+            forge: Forge::GitHub,
+            pr: pr.map(brief),
+            prs: prs.iter().map(|n| brief(n)).collect(),
+            prs_error: None,
+            ahead: 0,
+            behind: 0,
+            unmerged: 0,
+            release: ReleaseState::default(),
+            in_progress: None,
+        }
+    }
+
+    #[test]
+    fn the_only_open_pull_request_needs_no_choosing() {
+        // The reported case: open Review -> Merge, one pull request, and
+        // nothing selected. The list had exactly one entry and clicking it
+        // said nothing that was not already known.
+        assert_eq!(status(None, &["7"]).default_pr(), "7");
+    }
+
+    #[test]
+    fn the_checked_out_branchs_own_wins_over_the_rest() {
+        assert_eq!(status(Some("7"), &["3", "7", "9"]).default_pr(), "7");
+    }
+
+    #[test]
+    fn a_pull_request_the_checked_out_branch_does_not_own_is_still_work() {
+        // This is the one that killed every trusted run. The commit flow ends
+        // in `sync`, which is `git checkout <base>` — so seconds after opening
+        // a pull request, HEAD is on `develop`, `pr` is None, and a repository
+        // with two open pull requests reported `Nothing`. The chain asked what
+        // to do next, was told nothing, and stopped. Every time, on every
+        // repository, whatever else had been fixed.
+        let synced = status(None, &["3", "9"]);
+        assert_eq!(synced.wants(), Wants::Merge, "not Nothing");
+        assert_eq!(synced.default_pr(), "3");
+    }
+
+    #[test]
+    fn the_most_actionable_open_pull_request_is_the_one_chosen() {
+        let mut mixed = status(None, &["3", "9"]);
+        mixed.prs[0].checks = Checks::Pending;
+        mixed.prs[1].checks = Checks::Passing;
+        assert_eq!(mixed.default_pr(), "9", "decidable beats still-running");
+
+        mixed.prs[0].checks = Checks::Failing;
+        mixed.prs[1].checks = Checks::Pending;
+        assert_eq!(mixed.default_pr(), "3", "red beats nothing-known-yet");
+    }
+
+    #[test]
+    fn a_repository_with_no_open_pull_requests_is_unaffected() {
+        let clean = status(None, &[]);
+        assert_eq!(clean.wants(), Wants::Nothing);
+        assert_eq!(clean.default_pr(), "");
+    }
+
+    #[test]
+    fn no_pull_requests_selects_nothing() {
+        assert_eq!(status(None, &[]).default_pr(), "");
     }
 }
 

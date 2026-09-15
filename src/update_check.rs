@@ -15,6 +15,13 @@ const LATEST_URL: &str = "https://mayorana.ch/downloads/gitagent/latest/latest.j
 /// instead of at a link that would 404.
 const RELEASES_URL: &str = "https://mayorana.ch/en/apps";
 
+/// Sent on the update check so the download logs can tell a new install
+/// (a browser hitting the site) from an existing user updating. Also
+/// carries the version, which is what makes per-version adoption
+/// visible — the number that says how many people are still on a build
+/// with a bug that is already fixed.
+const USER_AGENT: &str = concat!("gitagent/", env!("CARGO_PKG_VERSION"), " (updater)");
+
 #[derive(Debug, Deserialize)]
 struct LatestJson {
     version: String,
@@ -32,8 +39,6 @@ struct Platforms {
 #[derive(Debug, Deserialize)]
 struct Artifact {
     url: String,
-    #[allow(dead_code)]
-    sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +48,14 @@ pub struct UpdateInfo {
     pub latest_tag: String,
     /// Direct link to this OS's build, so the banner's button downloads the
     /// binary itself rather than opening a landing page to pick one from.
+    ///
+    /// The download happens in the user's browser, not here, so there is
+    /// nothing for this app to verify a checksum against. `latest.json`
+    /// publishes a `sha256` per artifact and this deliberately does not
+    /// deserialise it: parsing a checksum that is never checked reads like
+    /// integrity checking to the next person to touch the file. Verifying it
+    /// means downloading the build in-process first, which is a different
+    /// feature.
     pub release_url: String,
 }
 
@@ -57,6 +70,7 @@ pub async fn check() -> Option<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION");
     let body = reqwest::Client::new()
         .get(LATEST_URL)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -85,11 +99,23 @@ fn platform_url(platforms: &Platforms) -> String {
         "linux" => &platforms.linux,
         _ => return RELEASES_URL.to_string(),
     };
+    // Keyed on the architecture, not "whichever the map yielded first".
+    // `HashMap` iteration order is randomised per process, so once
+    // `latest.json` lists both `aarch64` and `x86_64` under one OS, taking
+    // the first value hands out an arbitrary build — a different one from
+    // launch to launch. Fall back to any entry only when nothing matches
+    // this machine, which is still better than the landing page.
     by_os
-        .values()
-        .next()
+        .get(std::env::consts::ARCH)
+        .or_else(|| by_os.values().next())
         .map(|a| a.url.clone())
         .filter(|u| !u.is_empty())
+        // Marks the hit as coming from an existing install. The banner opens
+        // this in the user's browser, so the updater's own User-Agent is not
+        // what fetches the file — without the marker the request is
+        // indistinguishable from a first-time download off the website.
+        // nginx serves the file regardless of the query string.
+        .map(|u| format!("{u}?src=updater"))
         .unwrap_or_else(|| RELEASES_URL.to_string())
 }
 
@@ -98,12 +124,7 @@ fn is_newer(a: &str, b: &str) -> bool {
         let mut parts = s.trim_start_matches('v').split('.');
         let major = parts.next()?.parse().ok()?;
         let minor = parts.next()?.parse().ok()?;
-        let patch = parts
-            .next()?
-            .split(|c: char| c == '-' || c == '+')
-            .next()?
-            .parse()
-            .ok()?;
+        let patch = parts.next()?.split(['-', '+']).next()?.parse().ok()?;
         Some((major, minor, patch))
     };
     match (parse(a), parse(b)) {
