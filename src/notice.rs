@@ -110,7 +110,11 @@ async fn get(url: &str) -> Option<Notice> {
 /// usually the same message, and dismissing it in one tool should not mean
 /// seeing it again in the next.
 fn dismissed_path() -> Option<PathBuf> {
-    Some(dirs::data_local_dir()?.join("mayorana").join("dismissed-notices.json"))
+    Some(
+        dirs::data_local_dir()?
+            .join("mayorana")
+            .join("dismissed-notices.json"),
+    )
 }
 
 fn dismissed_ids() -> Vec<String> {

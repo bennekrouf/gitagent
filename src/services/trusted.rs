@@ -14,7 +14,6 @@ use super::flowdef::FlowBook;
 use super::graph::{Graph, NodeSpec, NodeStatus, RunState, Step};
 use super::probe::{Need, RepoStatus, Wants};
 
-
 #[derive(Clone, PartialEq, Debug)]
 pub enum Verdict {
     /// Click it, the same way a person would.

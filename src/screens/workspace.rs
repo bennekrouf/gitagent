@@ -788,7 +788,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     .map(|f| f.id.clone())
                     .unwrap_or_default()
             };
-            let first_node = book.read().get(&next).map(|f| f.first_node()).unwrap_or_default();
+            let first_node = book
+                .read()
+                .get(&next)
+                .map(|f| f.first_node())
+                .unwrap_or_default();
             selected_flow.set(next);
             selected_node.set(first_node);
         }
