@@ -19,6 +19,19 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+use tokio::sync::Semaphore;
+
+/// Ollama serializes generations on one model by default (`OLLAMA_NUM_PARALLEL=1`),
+/// so firing several draft steps at once doesn't run them in parallel — it just
+/// queues them on the server, each still burning its own client-side timeout while
+/// it waits its turn. Gate calls here instead: only one request is in flight at a
+/// time, and the ones behind it wait on this permit rather than on a socket, so a
+/// slow model shows as "queued" instead of every step looking equally hung.
+fn ollama_gate() -> &'static Semaphore {
+    static GATE: OnceLock<Semaphore> = OnceLock::new();
+    GATE.get_or_init(|| Semaphore::new(1))
+}
 
 /// A remote provider that speaks the OpenAI wire format.
 ///
@@ -324,6 +337,14 @@ async fn call_ollama(
             { "role": "user",   "content": user },
         ],
     });
+
+    // Wait for exclusive access to the (serialized) local model before spending
+    // any of the generation timeout — the permit never expires, so queued
+    // callers wait here rather than racing a clock they can't win.
+    let _permit = ollama_gate()
+        .acquire()
+        .await
+        .expect("ollama_gate semaphore is never closed");
 
     let resp = client(OLLAMA_TIMEOUT)?
         .post(&url)

@@ -5,10 +5,10 @@
 //! engine underneath it is not.
 
 mod components;
+mod notice;
 mod screens;
 mod services;
 mod update_check;
-mod notice;
 
 use dioxus::desktop::LogicalSize;
 use dioxus::prelude::*;
