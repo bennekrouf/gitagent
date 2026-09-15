@@ -189,21 +189,39 @@ body {
 .tally-remaining { color: var(--text2); font-weight: 600; }
 .tally-clear { color: var(--green); font-size: 11px; }
 
-.sidebar-actions { display: flex; gap: 4px; }
+.sidebar-actions { display: flex; gap: 6px; }
 /* A real target rather than the glyph's own ink. These were 13x13 with 2px of
    padding, so three of them sat in 45px with their hit areas touching — small
    enough to miss, and close enough that missing meant hitting the next one
-   along. 26px square is the smallest that reads as a button on a desktop
-   pointer, and the hover surface is what makes them look clickable at all. */
+   along. 32px square with an 18px glyph is the smallest that reads clearly on
+   a desktop pointer, and the hover surface is what makes them look clickable
+   at all. The embedded webview doesn't reliably show the native `title`
+   tooltip, so we render our own from the same attribute on hover. */
 .sidebar-switch {
+    position: relative;
     display: inline-flex; align-items: center; justify-content: center;
-    width: 26px; height: 26px; padding: 0;
+    width: 32px; height: 32px; padding: 0;
     background: none; border: none; border-radius: 6px;
-    color: var(--text3); font-size: 15px; line-height: 1; cursor: pointer;
+    color: var(--text3); font-size: 18px; line-height: 1; cursor: pointer;
 }
 .sidebar-switch:hover { color: var(--green); background: var(--bg2); }
 .sidebar-switch:disabled { cursor: default; }
 .sidebar-switch:disabled:hover { background: none; color: var(--text3); }
+
+.sidebar-switch::after {
+    content: attr(title);
+    position: absolute; top: calc(100% + 6px); right: 0;
+    padding: 4px 8px; border-radius: 5px;
+    background: var(--bg2); color: var(--text1);
+    font-size: 11px; font-weight: 500; line-height: 1.2;
+    white-space: nowrap; pointer-events: none;
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    z-index: 20;
+}
+.sidebar-switch:hover::after { opacity: 1; transform: translateY(0); }
+.sidebar-switch:disabled::after { content: none; }
 .sidebar-path {
     padding: 0 12px 10px;
     font-size: 10px; color: var(--text3);
