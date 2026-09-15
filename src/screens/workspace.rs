@@ -738,6 +738,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // only while that is wanted: taking it out mid-run hands the next approval
     // straight back to the person, without disturbing the run itself.
     let mut trusted = use_signal(BTreeSet::<Key>::new);
+    // Every repository, every flow, no asking. Set from the "Trust all" button
+    // in the top bar rather than per repository — for someone who wants
+    // GitAgent to just run, not for the default. Turning it on also trusts
+    // whatever is already running, the same way adopting a single run does;
+    // turning it off does not untrust anything already in flight, so a run
+    // that is mid-chain still finishes the leg it is on before the next
+    // approval asks a person again.
+    let mut global_trust = use_signal(|| false);
     // Why the last trusted run stopped, when the reason was not "there is
     // nothing left". Cleared when the next one starts.
     let mut chain_note = use_signal(String::new);
@@ -889,6 +897,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let Some(repo) = selected_repo.read().clone() else {
             return;
         };
+        // "Trust all" overrides the button that was actually clicked — even a
+        // plain Start runs trusted once it's on, since the whole point is not
+        // having to remember which button to press per repository.
+        let trust = trust || *global_trust.read();
         // Settings live in a per-window signal but one file on disk. Re-reading
         // here is what stops a second window running against a stale provider.
         llm_config_mut.set(store::load_settings());
@@ -1054,6 +1066,23 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     span { class: "topbar-path", "{props.workspace}" }
                 }
                 div { class: "topbar-right",
+                    button {
+                        class: if *global_trust.read() { "btn btn-trusted btn-trusted-on" } else { "btn btn-ghost" },
+                        title: if *global_trust.read() {
+                            "Every repository and every flow is running trusted. Click to go back to approving each one yourself."
+                        } else {
+                            "Trust every repository and every flow: runs answer their own approvals instead of asking, the same as clicking \u{201c}Trusted run\u{201d} everywhere at once."
+                        },
+                        onclick: move |_| {
+                            let on = !*global_trust.read();
+                            global_trust.set(on);
+                            if on {
+                                trusted.write().extend(running.read().iter().cloned());
+                                approvals().notify_waiters();
+                            }
+                        },
+                        if *global_trust.read() { "Trusting everything…" } else { "Trust all" }
+                    }
                     button {
                         class: "btn btn-ghost",
                         onclick: move |_| setup_open.set(true),
