@@ -1096,7 +1096,11 @@ async fn switch_to_work_branch(
     }
 
     let mut name = state.artifact("branch_name").to_string();
-    if git::branch_exists(repo, &name).await {
+    // Origin too: a merged pull request's branch often outlives it there, and
+    // reusing its name makes the push fail as "behind its remote counterpart".
+    if git::branch_exists(repo, &name).await
+        || git::branch_exists(repo, &format!("refs/remotes/origin/{name}")).await
+    {
         name = format!("{name}-{}", chrono::Local::now().format("%H%M%S"));
     }
     log.push_str(&git::create_branch(repo, &name).await?);

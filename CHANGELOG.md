@@ -28,6 +28,12 @@ were never released.
   without asking the model. Flows that run `release.sh` get the two new steps
   added in front of it once; remove them in Setup if you don't want them.
 
+### Fixed
+
+- A commit no longer lands on a branch named like one still on GitHub from an
+  earlier, merged pull request. The push used to be rejected as "behind its
+  remote counterpart", with pulling the old branch in as the only offered fix.
+
 ## [0.1.54] - 2026-09-25
 
 ### Fixed
