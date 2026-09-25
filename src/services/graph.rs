@@ -204,6 +204,10 @@ pub struct Remedy {
     /// makes the step moot instead (closing the pull request it was trying
     /// to merge), where retrying would just fail again for a new reason.
     pub retry_after: bool,
+    /// Whether ending the run gives the step's work up (closing the pull
+    /// request) rather than doing it another way (releasing without notes).
+    /// Only decides how the button reads.
+    pub abandons: bool,
 }
 
 impl Remedy {
@@ -217,12 +221,23 @@ impl Remedy {
             output: String::new(),
             done: false,
             retry_after: true,
+            abandons: false,
         }
     }
 
     /// A remedy that resolves the failure by abandoning the step rather than
     /// unblocking it — the run ends here on success instead of re-queuing.
     pub fn terminal(label: &str, program: &str, args: &[&str]) -> Self {
+        Self {
+            retry_after: false,
+            abandons: true,
+            ..Self::new(label, program, args)
+        }
+    }
+
+    /// A remedy that does the step's job itself, differently — the run ends
+    /// on success because there is nothing left for the step to do.
+    pub fn completes(label: &str, program: &str, args: &[&str]) -> Self {
         Self {
             retry_after: false,
             ..Self::new(label, program, args)

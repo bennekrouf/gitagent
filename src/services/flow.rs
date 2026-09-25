@@ -512,9 +512,7 @@ async fn run_script(
     let (ok, output) =
         git::run_shell_streaming(repo, &command, node.setting("stdin"), on_line).await;
     if !ok {
-        return Err(StepFailure::from(format!(
-            "`{command}` failed.\n\n{output}"
-        )));
+        return Err(script_failure(&command, output));
     }
 
     Ok(StepOutcome {
@@ -531,6 +529,35 @@ async fn run_script(
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// A script is opaque, but `release.sh` stopping for want of release notes is
+/// common enough, and its own output names the way round it, that the choice
+/// belongs on screen rather than in a terminal.
+fn script_failure(command: &str, output: String) -> StepFailure {
+    let wants_notes = command.contains("release.sh")
+        && output.contains("--no-notes")
+        && !command.contains("--no-notes");
+    if !wants_notes {
+        return StepFailure::from(format!("`{command}` failed.\n\n{output}"));
+    }
+    let build_only = format!("{command} --no-notes");
+    StepFailure {
+        message: format!(
+            "The release stopped because CHANGELOG.md has nothing under [Unreleased], \
+             so this version would ship with no release notes. Nothing was bumped, \
+             tagged or pushed.\n\n\
+             If users will notice something in this release, add the notes under \
+             [Unreleased] in CHANGELOG.md, commit and push them, then retry this step.\n\n\
+             If nothing users can see changed (CI, scripts, docs), release it as \
+             build-only below.\n\n{output}"
+        ),
+        remedies: vec![Remedy::completes(
+            "Release as build-only, with no notes",
+            "sh",
+            &["-c", &build_only],
+        )],
+    }
 }
 
 async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
@@ -1268,6 +1295,43 @@ async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
 mod tests {
     use super::*;
     use crate::services::graph::NodeStatus;
+
+    const NO_NOTES_OUTPUT: &str =
+        "  ❌ Release notes: nothing under [Unreleased] in CHANGELOG.md\n     \
+        Add the entry (## [Unreleased] + ### Added/Changed/Fixed/Removed),\n     \
+        or pass --no-notes for a build-only release.";
+
+    #[test]
+    fn a_release_missing_its_notes_offers_a_build_only_release() {
+        let failure = script_failure("./scripts/release.sh --patch", NO_NOTES_OUTPUT.into());
+        assert!(failure.message.contains("Nothing was bumped"));
+        assert_eq!(failure.remedies.len(), 1);
+        let fix = &failure.remedies[0];
+        assert_eq!(fix.args, ["-c", "./scripts/release.sh --patch --no-notes"]);
+        assert!(
+            !fix.retry_after,
+            "the fix is the release; running it again would bump twice"
+        );
+        assert!(!fix.abandons, "releasing is not giving up");
+    }
+
+    #[test]
+    fn any_other_script_failure_offers_nothing() {
+        assert!(
+            script_failure("./scripts/release.sh", "❌ Tag v1 already exists".into())
+                .remedies
+                .is_empty()
+        );
+        assert!(script_failure("make deploy", NO_NOTES_OUTPUT.into())
+            .remedies
+            .is_empty());
+        assert!(
+            script_failure("./scripts/release.sh --no-notes", NO_NOTES_OUTPUT.into())
+                .remedies
+                .is_empty(),
+            "already build-only: offering it again would loop"
+        );
+    }
 
     #[test]
     fn a_truncated_branch_name_does_not_end_on_a_separator() {

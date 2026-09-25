@@ -225,10 +225,10 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                 {
                                     let btn_class = if remedy.done {
                                         "btn"
-                                    } else if remedy.retry_after {
-                                        "btn btn-primary"
-                                    } else {
+                                    } else if remedy.abandons {
                                         "btn btn-danger"
+                                    } else {
+                                        "btn btn-primary"
                                     };
                                     rsx! {
                                 button {
@@ -240,8 +240,8 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                     },
                                     if remedy.running { "Running…" }
                                     else if remedy.done { "Done" }
-                                    else if remedy.retry_after { "Run" }
-                                    else { "Abandon" }
+                                    else if remedy.abandons { "Abandon" }
+                                    else { "Run" }
                                 }
                                     }
                                 }
