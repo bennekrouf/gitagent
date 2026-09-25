@@ -292,6 +292,7 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
                 },
             )
         }
+        Step::WriteNotes => super::notes::proposal(state.artifact("release_notes")),
         Step::Push => format!(
             "git push -u origin {}\n\nThis publishes the branch to origin.",
             state.artifact("work_branch")
@@ -305,6 +306,13 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
         ),
         _ => String::new(),
     }
+}
+
+/// A gated node that would do nothing if approved. Stopping to ask would be
+/// a question with no content: release notes that were already written leave
+/// `write_notes` nothing to write, and that is the usual case, not the rare one.
+pub fn nothing_to_approve(node: &NodeSpec, state: &RunState) -> bool {
+    node.step == Step::WriteNotes && state.artifact("release_notes").trim().is_empty()
 }
 
 /// The items a gated node lets the human pick through before approving.
@@ -374,6 +382,8 @@ pub async fn execute(
         // Only these two shell out to a process that can run long enough for
         // live output to matter — everything else above finishes fast enough
         // that a final log is all "streaming" would ever show anyway.
+        Step::DraftNotes => super::notes::draft(repo, cfg).await,
+        Step::WriteNotes => super::notes::write(repo, state.artifact("release_notes")).await,
         Step::RunTests => run_tests(node, repo, on_line).await,
         Step::RunScript => run_script(node, repo, on_line).await,
         Step::RunRemote => run_remote(node, on_line).await,
@@ -1300,6 +1310,21 @@ mod tests {
         "  ❌ Release notes: nothing under [Unreleased] in CHANGELOG.md\n     \
         Add the entry (## [Unreleased] + ### Added/Changed/Fixed/Removed),\n     \
         or pass --no-notes for a build-only release.";
+
+    #[test]
+    fn writing_notes_asks_only_when_there_is_a_draft_to_read() {
+        let mut s = RunState::default();
+        let write = spec(Step::WriteNotes);
+        assert!(nothing_to_approve(&write, &s), "notes already written");
+        s.artifacts
+            .insert("release_notes".into(), "### Fixed\n\n- A fix.".into());
+        assert!(!nothing_to_approve(&write, &s));
+        assert!(proposal(&write, &s).contains("- A fix."));
+        assert!(!nothing_to_approve(
+            &spec(Step::Commit),
+            &RunState::default()
+        ));
+    }
 
     #[test]
     fn a_release_missing_its_notes_offers_a_build_only_release() {

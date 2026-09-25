@@ -176,6 +176,15 @@ pub fn decide(node: &NodeSpec, state: &RunState) -> Verdict {
              should always run unattended.",
             node.title,
         )),
+        // Published word for word on the releases page. Everything else a
+        // trusted run approves can be reviewed afterwards; public text nobody
+        // read before it shipped cannot be unread.
+        Step::WriteNotes => Verdict::Hold(
+            "These release notes are published as written, and nobody has read them yet. \
+             A trusted run will not approve them — read them here and approve, or reject \
+             and write them yourself."
+                .into(),
+        ),
         // Committing, pushing and opening a pull request are this app's own
         // work, in shapes it controls: all reversible, or reviewable
         // afterwards by the person who asked for the run.
@@ -324,6 +333,12 @@ mod tests {
             },
             in_progress: None,
         }
+    }
+
+    #[test]
+    fn a_trusted_run_will_not_publish_release_notes_nobody_read() {
+        let verdict = decide(&node(Step::WriteNotes), &RunState::default());
+        assert!(matches!(verdict, Verdict::Hold(_)));
     }
 
     #[test]

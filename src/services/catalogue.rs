@@ -269,6 +269,37 @@ pub const CATALOGUE: &[StepInfo] = &[
         testable: false,
     },
     StepInfo {
+        step: Step::DraftNotes,
+        key: "draft_notes",
+        title: "Draft release notes",
+        subtitle: "Model call — CHANGELOG entry since the last tag",
+        about: "Writes the [Unreleased] entry of CHANGELOG.md from the commits and \
+                diff since the last tag, for someone using the app rather than a \
+                reviewer. Does nothing when the notes are already written. Put it \
+                before the step that runs your release script.",
+        kind: NodeKind::Model,
+        reads: &[],
+        writes: &["release_notes"],
+        gate_by_default: false,
+        config: &[],
+        testable: false,
+    },
+    StepInfo {
+        step: Step::WriteNotes,
+        key: "write_notes",
+        title: "Write release notes",
+        subtitle: "Add them to CHANGELOG.md and commit",
+        about: "Shows the drafted notes, and once approved adds them under \
+                [Unreleased] in CHANGELOG.md and commits them. Asks nothing when \
+                there is nothing to write.",
+        kind: NodeKind::Deterministic,
+        reads: &["release_notes"],
+        writes: &[],
+        gate_by_default: true,
+        config: &[],
+        testable: false,
+    },
+    StepInfo {
         step: Step::RunTests,
         key: "run_tests",
         title: "Run tests",
@@ -429,6 +460,8 @@ mod tests {
             Step::Analyse,
             Step::Merge,
             Step::Sync,
+            Step::DraftNotes,
+            Step::WriteNotes,
             Step::RunTests,
             Step::RunScript,
             Step::RunRemote,

@@ -204,6 +204,34 @@ impl FlowDef {
         true
     }
 
+    /// Puts `draft_notes → write_notes` in front of a step that runs
+    /// `release.sh`, so a release with no notes gets a draft to approve
+    /// rather than a script refusing to run. Returns whether anything changed.
+    pub fn insert_notes_steps(&mut self) -> bool {
+        if self.nodes.iter().any(|n| n.step == "draft_notes") {
+            return false;
+        }
+        let Some(release) = self.nodes.iter().position(|n| {
+            n.step == "run_script"
+                && n.config
+                    .get("command")
+                    .is_some_and(|c| c.contains("release.sh"))
+        }) else {
+            return false;
+        };
+
+        let draft = self.free_id("draft_notes");
+        let write = self.free_id("write_notes");
+        let mut draft_node = NodeDef::from_catalogue(&draft, "draft_notes");
+        draft_node.deps = std::mem::replace(&mut self.nodes[release].deps, vec![write.clone()]);
+        self.nodes.insert(release, draft_node);
+        self.nodes.insert(
+            release + 1,
+            dep(NodeDef::from_catalogue(&write, "write_notes"), &[&draft]),
+        );
+        true
+    }
+
     /// Removes a node and every reference to it, so deleting can never leave a
     /// dangling dependency behind.
     pub fn remove_node(&mut self, id: &str) {
@@ -510,6 +538,9 @@ pub struct FlowBook {
 /// Names the one-time adoption that adds the test step to an existing book.
 pub const ADOPTED_TEST_STEP: &str = "run_tests";
 
+/// Names the one-time adoption that adds the release-notes steps.
+pub const ADOPTED_NOTES_STEPS: &str = "release_notes";
+
 const FLOWS_FILE: &str = "flows.toml";
 
 impl FlowBook {
@@ -517,7 +548,10 @@ impl FlowBook {
     /// so this stays the definition of standard rather than a one-time seed.
     pub fn defaults() -> Self {
         Self {
-            adopted: vec![ADOPTED_TEST_STEP.to_string()],
+            adopted: vec![
+                ADOPTED_TEST_STEP.to_string(),
+                ADOPTED_NOTES_STEPS.to_string(),
+            ],
             flows: vec![
                 FlowDef {
                     id: "commit_and_pr".into(),
@@ -593,7 +627,8 @@ impl FlowBook {
         match toml::from_str::<FlowBook>(&text) {
             Ok(mut book) if !book.flows.is_empty() => {
                 book.adopt_missing_declarations();
-                if book.adopt_missing_test_step() {
+                // `|` rather than `||`: each adoption must get its turn.
+                if book.adopt_missing_test_step() | book.adopt_notes_steps() {
                     book.save();
                 }
                 book
@@ -652,6 +687,19 @@ impl FlowBook {
         }
         // Even when no flow changed, the marker did — and it is only worth
         // anything if it survives the launch that set it.
+        true
+    }
+
+    /// Adds the release-notes steps to every flow that runs `release.sh`,
+    /// once ever — same contract as `adopt_missing_test_step`.
+    pub fn adopt_notes_steps(&mut self) -> bool {
+        if self.adopted.iter().any(|a| a == ADOPTED_NOTES_STEPS) {
+            return false;
+        }
+        self.adopted.push(ADOPTED_NOTES_STEPS.to_string());
+        for flow in &mut self.flows {
+            flow.insert_notes_steps();
+        }
         true
     }
 
@@ -1011,6 +1059,53 @@ mod tests {
         };
         book.adopt_missing_test_step();
         assert!(!book.flows[0].nodes.iter().any(|n| n.step == "run_tests"));
+    }
+
+    fn a_release_flow(command: &str) -> FlowBook {
+        let mut script = dep(
+            NodeDef::from_catalogue("run_script", "run_script"),
+            &["preflight"],
+        );
+        script.config.insert("command".into(), command.into());
+        FlowBook {
+            adopted: vec![],
+            flows: vec![FlowDef {
+                id: "release".into(),
+                label: "Release".into(),
+                handles: vec!["release".into()],
+                nodes: vec![NodeDef::from_catalogue("preflight", "preflight"), script],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_release_flow_gets_its_notes_drafted_before_the_script_runs() {
+        let mut book = a_release_flow("./scripts/release.sh --patch");
+        assert!(book.adopt_notes_steps());
+
+        let flow = &book.flows[0];
+        let deps = |id: &str| flow.nodes.iter().find(|n| n.id == id).unwrap().deps.clone();
+        assert_eq!(deps("draft_notes"), vec!["preflight"]);
+        assert_eq!(deps("write_notes"), vec!["draft_notes"]);
+        assert_eq!(deps("run_script"), vec!["write_notes"]);
+        assert_eq!(validate(flow), vec![], "the result must still run");
+    }
+
+    #[test]
+    fn a_script_that_is_not_a_release_is_left_alone() {
+        let mut book = a_release_flow("make deploy");
+        book.adopt_notes_steps();
+        assert_eq!(book.flows[0].nodes.len(), 2);
+    }
+
+    #[test]
+    fn notes_steps_you_deleted_stay_deleted() {
+        let mut book = a_release_flow("./scripts/release.sh");
+        assert!(book.adopt_notes_steps());
+        book.flows[0].remove_node("draft_notes");
+        book.flows[0].remove_node("write_notes");
+        assert!(!book.adopt_notes_steps(), "it only ever runs once");
+        assert_eq!(book.flows[0].nodes.len(), 2);
     }
 
     #[test]
