@@ -455,9 +455,26 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
     let diff = git::run(repo, "git", &["diff", &range, "--unified=3"]).await?;
 
     if diff.trim().is_empty() {
-        return Ok(StepOutcome::nothing(format!(
-            "No difference between origin/{base} and origin/{head} — nothing to review."
-        )));
+        let ahead = git::run(
+            repo,
+            "git",
+            &[
+                "rev-list",
+                "--count",
+                &format!("origin/{base}..origin/{head}"),
+            ],
+        )
+        .await
+        .ok()
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+        return Err(empty_pr(
+            &Forge::from_key(state.artifact("forge")),
+            state.artifact("pr_number"),
+            base,
+            head,
+            ahead,
+        ));
     }
 
     let files = stat.lines().count().saturating_sub(1);
@@ -471,6 +488,51 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// An open pull request that changes nothing still wants a decision, so this
+/// is a failure with a fix on offer rather than a quiet "nothing to do" that
+/// leaves the sidebar saying "ready to merge" and no way forward.
+fn empty_pr(forge: &Forge, number: &str, base: &str, head: &str, ahead: usize) -> StepFailure {
+    let why = if ahead == 0 {
+        format!("Everything on `{head}` is already in `{base}`.")
+    } else {
+        format!(
+            "`{head}` has {ahead} commit(s) that `{base}` does not, but together they change \
+             no files — typically merge commits whose conflict resolution kept `{base}`'s side. \
+             If those commits were meant to change something, that work was lost in the merge."
+        )
+    };
+    let message = format!(
+        "Pull request #{number} ({head} → {base}) has no changes, so there is nothing to review \
+         and merging it would change nothing.\n\n{why}\n\nClose it below. The branch is kept, \
+         so its history stays reachable."
+    );
+    let comment = "Closing — this pull request no longer changes any files.";
+    let remedies = match forge {
+        Forge::GitHub => vec![Remedy::terminal(
+            &format!("Close #{number} — it changes nothing"),
+            "gh",
+            &["pr", "close", number, "--comment", comment],
+        )],
+        Forge::AzureDevOps => vec![Remedy::terminal(
+            &format!("Abandon !{number} — it changes nothing"),
+            "az",
+            &[
+                "repos",
+                "pr",
+                "update",
+                "--id",
+                number,
+                "--status",
+                "abandoned",
+                "--output",
+                "none",
+            ],
+        )],
+        _ => vec![],
+    };
+    StepFailure { message, remedies }
 }
 
 async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepFailure> {
@@ -821,6 +883,34 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
     fn the_update_remedy_targets_the_pull_requests_own_base() {
         let failure = merge_failure("1", "develop", "not mergeable".to_string());
         assert_eq!(failure.remedies[0].args, vec!["merge", "origin/develop"]);
+    }
+
+    #[test]
+    fn an_empty_pull_request_offers_closing_it() {
+        let failure = empty_pr(&Forge::GitHub, "11", "feat/a", "chore/b", 3);
+        assert!(failure.message.contains("#11"));
+        assert!(
+            failure.message.contains("3 commit(s)"),
+            "says why it is empty"
+        );
+        assert_eq!(failure.remedies.len(), 1);
+        let close = &failure.remedies[0];
+        assert_eq!(close.args[0..3], ["pr", "close", "11"]);
+        assert!(
+            !close.args.iter().any(|a| a == "--delete-branch"),
+            "history stays reachable"
+        );
+        assert!(
+            !close.retry_after,
+            "retrying the diff after closing would be pointless"
+        );
+    }
+
+    #[test]
+    fn an_empty_pull_request_already_in_its_base_says_so() {
+        let failure = empty_pr(&Forge::AzureDevOps, "4", "main", "topic", 0);
+        assert!(failure.message.contains("already in `main`"));
+        assert_eq!(failure.remedies[0].program, "az");
     }
 
     #[test]
