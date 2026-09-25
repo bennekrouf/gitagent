@@ -455,8 +455,8 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
     let diff = git::run(repo, "git", &["diff", &range, "--unified=3"]).await?;
 
     if diff.trim().is_empty() {
-        return Err(StepFailure::from(format!(
-            "No difference between origin/{base} and origin/{head}."
+        return Ok(StepOutcome::nothing(format!(
+            "No difference between origin/{base} and origin/{head} — nothing to review."
         )));
     }
 
