@@ -200,7 +200,7 @@ async fn drive(
             selected_node.set(node.id.clone());
         }
 
-        if node.requires_approval {
+        if node.requires_approval && !flow::nothing_to_approve(&node, &state.resolved_for(&node)) {
             // The approval describes what will run, so it has to read the same
             // resolved state the step will — otherwise the proposal quotes one
             // node's `commit_subject` and the commit uses another's.

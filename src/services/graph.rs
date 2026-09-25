@@ -36,6 +36,9 @@ pub enum Step {
     Analyse,
     Merge,
     Sync,
+    // ── Release ──
+    DraftNotes,
+    WriteNotes,
     // ── Generic ──
     RunTests,
     RunScript,

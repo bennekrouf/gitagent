@@ -17,6 +17,23 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A release with no notes in CHANGELOG.md no longer stops at the script. The
+  model drafts the notes from what changed since the last release, and you
+  read and approve them before they are added and committed. A release that
+  only touched CI, scripts or docs gets a "no user-visible change" line
+  without asking the model. Flows that run `release.sh` get the two new steps
+  added in front of it once; remove them in Setup if you don't want them.
+
+### Fixed
+
+- A commit no longer lands on a branch named like one still on GitHub from an
+  earlier, merged pull request. The push used to be rejected as "behind its
+  remote counterpart", with pulling the old branch in as the only offered fix.
+
 ## [0.1.54] - 2026-09-25
 
 ### Fixed
