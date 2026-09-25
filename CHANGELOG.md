@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A push rejected because GitHub still has a branch of the same name from an
+  already merged or closed pull request now says so, and offers to push under
+  a new name. The pull request then opens under that name too. Before, the
+  only fix offered was pulling the old branch in, which mixed its commits into
+  your change.
+
 ## [0.1.55] - 2026-09-25
 
 ### Added
