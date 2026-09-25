@@ -1782,8 +1782,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             });
 
                                             spawn(async move {
-                                                let (ok, output) =
-                                                    git::run_command(&remedy.program, &remedy.args).await;
+                                                // In the repo: `gh pr close 11` from anywhere
+                                                // else closes #11 of whichever repo that is.
+                                                let (ok, output) = git::run_streaming(
+                                                    &remedy.program,
+                                                    &remedy.args,
+                                                    Some(&key.0),
+                                                    "",
+                                                    &mut |_| {},
+                                                )
+                                                .await;
                                                 set_remedy(states, &key, &node, index, |r| {
                                                     r.running = false;
                                                     r.done = ok;
