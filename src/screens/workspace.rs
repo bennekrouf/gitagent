@@ -1801,6 +1801,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                         output.clone()
                                                     };
                                                 });
+                                                if ok && !remedy.sets.is_empty() {
+                                                    let mut w = states.write();
+                                                    let entry = w.entry(key.clone()).or_default();
+                                                    for (k, v) in &remedy.sets {
+                                                        entry.artifacts.insert(k.clone(), v.clone());
+                                                    }
+                                                }
                                                 if ok && remedy.retry_after {
                                                     // A fix that unblocked this step is only
                                                     // useful if the run moves on, so re-queue it.

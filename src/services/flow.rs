@@ -1249,6 +1249,12 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
     })
 }
 
+fn push_rejected(output: &str) -> bool {
+    output.contains("non-fast-forward")
+        || output.contains("tip of your current branch is behind")
+        || output.contains("Updates were rejected")
+}
+
 /// A push git refused because the branch is behind its remote.
 ///
 /// Universal enough to detect from output alone, and the fix is exactly the
@@ -1256,11 +1262,7 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
 /// sending the person to a terminal. Rebase rather than merge: it keeps the
 /// linear history these repositories already have.
 fn pull_remedy(output: &str) -> Vec<Remedy> {
-    let rejected = output.contains("non-fast-forward")
-        || output.contains("tip of your current branch is behind")
-        || output.contains("Updates were rejected");
-
-    if !rejected {
+    if !push_rejected(output) {
         return vec![];
     }
     vec![Remedy::new(
@@ -1270,12 +1272,112 @@ fn pull_remedy(output: &str) -> Vec<Remedy> {
     )]
 }
 
+/// Why the branch of the same name on origin is somebody else's finished
+/// work rather than newer commits of this one — `None` when it may well be
+/// the latter, and pulling is the right fix after all.
+///
+/// The forge first, because squash merges leave nothing in git to connect a
+/// branch to what it became on the base. Git second, for a plain merge.
+async fn leftover_on_origin(repo: &str, state: &RunState, branch: &str) -> Option<String> {
+    let base = state.artifact("base");
+    if branch == base {
+        return None;
+    }
+    if Forge::from_key(state.artifact("forge")) == Forge::GitHub {
+        let out = git::run(
+            repo,
+            "gh",
+            &[
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--state",
+                "all",
+                "--json",
+                "number,state",
+            ],
+        )
+        .await
+        .ok()?;
+        let prs: serde_json::Value = serde_json::from_str(&out).ok()?;
+        let prs = prs.as_array()?;
+        if prs.iter().any(|p| p["state"] == "OPEN") {
+            return None;
+        }
+        if let Some(pr) = prs.first() {
+            return Some(format!(
+                "it belongs to #{}, which is {}",
+                pr["number"],
+                pr["state"].as_str().unwrap_or("closed").to_lowercase()
+            ));
+        }
+    }
+    git::run(repo, "git", &["fetch", "origin", branch, base])
+        .await
+        .ok()?;
+    git::run(
+        repo,
+        "git",
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &format!("origin/{branch}"),
+            &format!("origin/{base}"),
+        ],
+    )
+    .await
+    .ok()
+    .map(|_| format!("everything on it is already in {base}"))
+}
+
+/// `branch-2`, `branch-3`… — the first not taken locally or on origin.
+async fn free_branch_name(repo: &str, branch: &str) -> String {
+    for n in 2.. {
+        let name = format!("{branch}-{n}");
+        if !git::branch_exists(repo, &name).await
+            && !git::branch_exists(repo, &format!("refs/remotes/origin/{name}")).await
+        {
+            return name;
+        }
+    }
+    unreachable!()
+}
+
+fn rename_remedy(branch: &str, new: &str) -> Remedy {
+    Remedy::new(
+        &format!("Push under a new name, {new}"),
+        "git",
+        &["branch", "-m", branch, new],
+    )
+    .setting("work_branch", new)
+}
+
 async fn push(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let branch = state.artifact("work_branch").to_string();
-    let out = git::push(repo, &branch).await.map_err(|e| StepFailure {
-        remedies: pull_remedy(&e),
-        message: e,
-    })?;
+    let out = match git::push(repo, &branch).await {
+        Ok(out) => out,
+        Err(e) if push_rejected(&e) => {
+            let Some(why) = leftover_on_origin(repo, state, &branch).await else {
+                return Err(StepFailure {
+                    remedies: pull_remedy(&e),
+                    message: e,
+                });
+            };
+            let new = free_branch_name(repo, &branch).await;
+            return Err(StepFailure {
+                message: format!(
+                    "origin already has a branch called {branch}, and {why}: it is left over, \
+                     not newer work of yours. Pulling it in would mix its old commits into \
+                     this change.\n\n\
+                     Rename yours to {new} and the push, and the pull request after it, go \
+                     ahead under that name. Your commits are untouched.\n\n{e}"
+                ),
+                remedies: vec![rename_remedy(&branch, &new)],
+            });
+        }
+        Err(e) => return Err(e.into()),
+    };
     Ok(StepOutcome {
         summary: format!("pushed {branch}"),
         log: out.clone(),
@@ -1682,6 +1784,24 @@ hint: Updates were rejected because the tip of your current branch is behind";
         assert!(
             remedies[0].retry_after,
             "once the branch is caught up the step is worth running again"
+        );
+    }
+
+    #[test]
+    fn renaming_a_leftover_branch_renames_it_for_the_rest_of_the_run() {
+        let fix = rename_remedy("feat/release-notes", "feat/release-notes-2");
+        assert_eq!(
+            fix.args,
+            ["branch", "-m", "feat/release-notes", "feat/release-notes-2"]
+        );
+        assert!(fix.retry_after, "the push is retried under the new name");
+        assert_eq!(
+            fix.sets,
+            vec![(
+                "work_branch".to_string(),
+                "feat/release-notes-2".to_string()
+            )],
+            "push and open_pr read work_branch, so it has to change with git"
         );
     }
 

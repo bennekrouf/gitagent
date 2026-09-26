@@ -211,6 +211,10 @@ pub struct Remedy {
     /// request) rather than doing it another way (releasing without notes).
     /// Only decides how the button reads.
     pub abandons: bool,
+    /// Artifacts this remedy changes when it succeeds, written before the
+    /// step is retried: renaming a branch has to rename it for every later
+    /// step too, not only in git.
+    pub sets: Vec<(String, String)>,
 }
 
 impl Remedy {
@@ -225,7 +229,13 @@ impl Remedy {
             done: false,
             retry_after: true,
             abandons: false,
+            sets: vec![],
         }
+    }
+
+    pub fn setting(mut self, key: &str, value: &str) -> Self {
+        self.sets.push((key.into(), value.into()));
+        self
     }
 
     /// A remedy that resolves the failure by abandoning the step rather than
