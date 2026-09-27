@@ -315,14 +315,37 @@ pub async fn untracked_diff(repo: &str, path: &str) -> String {
     .await
 }
 
+/// Whether the checked-out branch has a commit yet. Straight after
+/// `git init` it does not, and there is no `HEAD` to diff against.
+pub async fn has_commits(repo: &str) -> bool {
+    run(repo, "git", &["rev-parse", "--verify", "--quiet", "HEAD"])
+        .await
+        .is_ok()
+}
+
+/// `HEAD`, or git's empty tree before the first commit — so a first commit's
+/// diff is everything staged, instead of an error about an unknown revision.
+/// Hashed rather than hard-coded: a SHA-256 repository's empty tree differs.
+async fn diff_base(repo: &str) -> String {
+    if has_commits(repo).await {
+        return "HEAD".into();
+    }
+    run(repo, "git", &["hash-object", "-t", "tree", "--stdin"])
+        .await
+        .map(|h| h.trim().to_string())
+        .unwrap_or_else(|_| "4b825dc642cb6eb9a060e54bf8d69288fbee4904".into())
+}
+
 /// The diff of tracked changes against HEAD, capped.
 pub async fn diff(repo: &str) -> Result<String, String> {
-    let out = run(repo, "git", &["diff", "HEAD", "--unified=3"]).await?;
+    let base = diff_base(repo).await;
+    let out = run(repo, "git", &["diff", &base, "--unified=3"]).await?;
     Ok(cap(&out))
 }
 
 pub async fn diff_stat(repo: &str) -> Result<String, String> {
-    Ok(run(repo, "git", &["diff", "HEAD", "--stat"])
+    let base = diff_base(repo).await;
+    Ok(run(repo, "git", &["diff", &base, "--stat"])
         .await?
         .trim()
         .to_string())

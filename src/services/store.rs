@@ -453,6 +453,26 @@ mod tests {
     }
 
     #[test]
+    fn a_second_look_at_the_folder_sees_clones_and_deletions_since_the_first() {
+        let root = std::env::temp_dir().join(format!("gitagent-discover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["alpha", "beta", "not-a-repo"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        std::fs::create_dir_all(root.join("alpha/.git")).unwrap();
+        std::fs::create_dir_all(root.join("beta/.git")).unwrap();
+        let folder = root.to_string_lossy().to_string();
+        let labels =
+            |f: &str| -> Vec<String> { discover_repos(f).into_iter().map(|r| r.label).collect() };
+        assert_eq!(labels(&folder), ["alpha", "beta"]);
+
+        std::fs::create_dir_all(root.join("gamma/.git")).unwrap();
+        std::fs::remove_dir_all(root.join("beta")).unwrap();
+        assert_eq!(labels(&folder), ["alpha", "gamma"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn discovery_of_a_folder_that_does_not_exist_is_empty_not_a_panic() {
         assert!(discover_repos("/nope/does/not/exist").is_empty());
     }

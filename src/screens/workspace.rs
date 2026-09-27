@@ -618,12 +618,14 @@ fn reprobe(path: String, mut statuses: Signal<BTreeMap<String, RepoStatus>>) {
     });
 }
 
-/// Re-probes every repository, concurrently, and opens on whichever one wants
-/// a person if nothing has been chosen yet.
+/// Re-reads the workspace folder, re-probes every repository in it
+/// concurrently, and opens on whichever one wants a person if nothing has been
+/// chosen yet.
 #[allow(clippy::too_many_arguments)]
 fn refresh_all(
-    repos: Signal<Vec<store::Repo>>,
-    statuses: Signal<BTreeMap<String, RepoStatus>>,
+    workspace: &str,
+    mut repos: Signal<Vec<store::Repo>>,
+    mut statuses: Signal<BTreeMap<String, RepoStatus>>,
     mut probing: Signal<usize>,
     mut picked: Signal<bool>,
     mut selected_repo: Signal<Option<String>>,
@@ -633,7 +635,23 @@ fn refresh_all(
     if *probing.read() > 0 {
         return;
     }
-    let list = repos.read().clone();
+    // The folder, not the list read when the workspace opened: a repository
+    // cloned since then belongs in it, and one deleted since does not.
+    let list = store::discover_repos(workspace);
+    if list != *repos.read() {
+        let kept: std::collections::HashSet<&str> = list.iter().map(|r| r.path.as_str()).collect();
+        statuses
+            .write()
+            .retain(|path, _| kept.contains(path.as_str()));
+        let gone = selected_repo
+            .read()
+            .as_deref()
+            .is_some_and(|path| !kept.contains(path));
+        if gone {
+            selected_repo.set(None);
+        }
+        repos.set(list.clone());
+    }
     if list.is_empty() {
         return;
     }
@@ -813,16 +831,21 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // repositories each needing a `gh` round-trip is seconds sequentially and
     // barely one concurrently. Results land as they arrive, so the list fills
     // in rather than appearing all at once.
-    use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
-        refresh_all(
-            repos,
-            statuses,
-            probing,
-            picked,
-            selected_repo,
-            selected_flow,
-            book,
-        );
+    let opened = workspace.clone();
+    use_coroutine(move |_rx: UnboundedReceiver<()>| {
+        let opened = opened.clone();
+        async move {
+            refresh_all(
+                &opened,
+                repos,
+                statuses,
+                probing,
+                picked,
+                selected_repo,
+                selected_flow,
+                book,
+            );
+        }
     });
 
     let llm_config = props.llm_config;
@@ -1150,8 +1173,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     selected: active.clone(),
                     workspace: props.workspace.clone(),
                     probing: *probing.read(),
-                    on_refresh: move |_| {
-                        refresh_all(repos, statuses, probing, picked, selected_repo, selected_flow, book);
+                    on_refresh: {
+                        let workspace = workspace.clone();
+                        move |_| {
+                            refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book);
+                        }
                     },
                     on_reprobe: move |path: String| reprobe(path, statuses),
                     on_select: move |path: String| {
