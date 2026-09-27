@@ -5,7 +5,7 @@
 //! side-effect-free so it can run in the background at startup.
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Served from mayorana.ch alongside the builds it describes, so update
 /// checks do not depend on the source repository staying publicly readable.
@@ -29,11 +29,18 @@ struct LatestJson {
     platforms: Platforms,
 }
 
-#[derive(Debug, Deserialize)]
+/// Builds per OS, keyed by package format (`dmg`, `exe_or_msi`, `tarball`…)
+/// — not by CPU architecture. A `BTreeMap` so the fallback pick in
+/// `platform_url` is the same on every launch; `HashMap` iteration order is
+/// randomised per process.
+#[derive(Debug, Default, Deserialize)]
 struct Platforms {
-    macos: HashMap<String, Artifact>,
-    windows: HashMap<String, Artifact>,
-    linux: HashMap<String, Artifact>,
+    #[serde(default)]
+    macos: BTreeMap<String, Artifact>,
+    #[serde(default)]
+    windows: BTreeMap<String, Artifact>,
+    #[serde(default)]
+    linux: BTreeMap<String, Artifact>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,31 +90,43 @@ pub async fn check() -> Option<UpdateInfo> {
         Some(UpdateInfo {
             latest_version: latest.version,
             latest_tag: latest.tag,
-            release_url: platform_url(&latest.platforms),
+            release_url: platform_url(std::env::consts::OS, &latest.platforms),
         })
     } else {
         None
     }
 }
 
-/// Picks the one artifact URL published for this OS. Empty (build missing
-/// for this OS) or unparseable falls back to the landing page.
-fn platform_url(platforms: &Platforms) -> String {
-    let by_os = match std::env::consts::OS {
+/// Formats to offer, best first, per OS. On Linux, AppImage runs on any
+/// distribution without installing anything as root; the tarball is what is
+/// published today.
+fn preferred_formats(os: &str) -> &'static [&'static str] {
+    match os {
+        "macos" => &["dmg"],
+        "windows" => &["msi", "exe", "exe_or_msi"],
+        "linux" => &["appimage", "deb", "tarball"],
+        _ => &[],
+    }
+}
+
+/// The download link for `os`: the preferred format that is published, else
+/// any build for that OS, else the landing page.
+///
+/// `latest.json` keys builds by format, not architecture: looking up
+/// `std::env::consts::ARCH` never matched, and the choice silently fell to
+/// "whichever entry the map yielded first" — harmless only while each OS
+/// publishes a single build.
+fn platform_url(os: &str, platforms: &Platforms) -> String {
+    let by_format = match os {
         "macos" => &platforms.macos,
         "windows" => &platforms.windows,
         "linux" => &platforms.linux,
         _ => return RELEASES_URL.to_string(),
     };
-    // Keyed on the architecture, not "whichever the map yielded first".
-    // `HashMap` iteration order is randomised per process, so once
-    // `latest.json` lists both `aarch64` and `x86_64` under one OS, taking
-    // the first value hands out an arbitrary build — a different one from
-    // launch to launch. Fall back to any entry only when nothing matches
-    // this machine, which is still better than the landing page.
-    by_os
-        .get(std::env::consts::ARCH)
-        .or_else(|| by_os.values().next())
+    preferred_formats(os)
+        .iter()
+        .find_map(|format| by_format.get(*format))
+        .or_else(|| by_format.values().next())
         .map(|a| a.url.clone())
         .filter(|u| !u.is_empty())
         // Marks the hit as coming from an existing install. The banner opens
@@ -130,5 +149,59 @@ fn is_newer(a: &str, b: &str) -> bool {
     match (parse(a), parse(b)) {
         (Some(av), Some(bv)) => av > bv,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn platforms(json: &str) -> Platforms {
+        serde_json::from_str::<LatestJson>(json).unwrap().platforms
+    }
+
+    // The shape published today, plus a second Linux build.
+    const FEED: &str = r#"{
+        "version": "0.1.59", "tag": "v0.1.59",
+        "platforms": {
+            "macos": { "dmg": { "url": "https://x/gitagent-macos-arm64.dmg", "sha256": "a" } },
+            "windows": { "exe_or_msi": { "url": "https://x/gitagent-setup.exe", "sha256": "b" } },
+            "linux": {
+                "tarball": { "url": "https://x/gitagent-linux.tar.gz", "sha256": "c" },
+                "appimage": { "url": "https://x/gitagent-linux.AppImage", "sha256": "d" }
+            }
+        }
+    }"#;
+
+    #[test]
+    fn links_straight_to_the_build_for_each_os() {
+        let p = platforms(FEED);
+        assert_eq!(platform_url("macos", &p), "https://x/gitagent-macos-arm64.dmg?src=updater");
+        assert_eq!(platform_url("windows", &p), "https://x/gitagent-setup.exe?src=updater");
+        // Two Linux builds: the preferred one, every time.
+        assert_eq!(platform_url("linux", &p), "https://x/gitagent-linux.AppImage?src=updater");
+    }
+
+    #[test]
+    fn falls_back_to_the_landing_page() {
+        let p = platforms(FEED);
+        assert_eq!(platform_url("freebsd", &p), RELEASES_URL);
+        let no_mac = platforms(r#"{ "version": "1.0.0", "tag": "v1.0.0",
+            "platforms": { "linux": { "tarball": { "url": "https://x/a.tar.gz" } } } }"#);
+        assert_eq!(platform_url("macos", &no_mac), RELEASES_URL);
+    }
+
+    #[test]
+    fn unknown_format_still_downloads() {
+        let p = platforms(r#"{ "version": "1.0.0", "tag": "v1.0.0",
+            "platforms": { "windows": { "zip": { "url": "https://x/a.zip" } } } }"#);
+        assert_eq!(platform_url("windows", &p), "https://x/a.zip?src=updater");
+    }
+
+    #[test]
+    fn semver_comparison() {
+        assert!(is_newer("0.1.60", "0.1.59"));
+        assert!(!is_newer("0.1.59", "0.1.59"));
+        assert!(!is_newer("garbage", "0.1.59"));
     }
 }
