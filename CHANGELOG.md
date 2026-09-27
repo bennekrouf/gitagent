@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The Branches panel spots branches that are ahead of the base branch but
+  would change no file if merged — old merge commits, or work the base already
+  has from a squash merge — and marks them "nothing new". A Clean up button
+  closes the branch's open pull request and deletes it on GitHub and locally,
+  after a confirmation. Before, such a branch was listed as needing a pull
+  request, and one named `main` offered no action at all.
+
 ## [0.1.61] - 2026-09-27
 
 ### Fixed

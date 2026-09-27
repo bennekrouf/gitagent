@@ -1953,6 +1953,31 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 });
                             }
                         },
+                        on_clean_up: {
+                            let repo = repo.clone();
+                            let forge = forge.clone();
+                            let reload = reload.clone();
+                            move |branch: String| {
+                                let repo = repo.clone();
+                                let forge = forge.clone();
+                                let mut reload = reload.clone();
+                                let found = branches_data
+                                    .read()
+                                    .as_ref()
+                                    .and_then(|r| r.as_ref().ok())
+                                    .and_then(|list| list.iter().find(|b| b.name == branch).cloned());
+                                let Some(info) = found else { return };
+                                branches_busy.set(Some(branch.clone()));
+                                spawn(async move {
+                                    branches_action_error.set(None);
+                                    if let Err(e) = crate::services::branches::clean_up(&repo, &forge, &info).await {
+                                        branches_action_error.set(Some(format!("Couldn't clean up {branch}: {e}")));
+                                    }
+                                    branches_busy.set(None);
+                                    reload();
+                                });
+                            }
+                        },
                         on_create_pr: {
                             let repo = repo.clone();
                             let forge = forge.clone();
