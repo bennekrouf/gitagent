@@ -30,6 +30,13 @@ were never released.
   commit now goes on the branch you are on and is pushed as that branch, with
   no pull request, since the remote has nothing yet to open one against.
 
+## [0.1.60] - 2026-09-27
+
+### Added
+
+- The update check now considers preferred formats for each operating system,
+  ensuring a more tailored download experience.
+
 ## [0.1.58] - 2026-09-27
 
 ### Fixed
