@@ -934,11 +934,12 @@ async fn draft_commit(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, 
           (e.g. `fix/stale-lockfile`), at most 40 characters.\n\
         Describe only what the diff actually shows. Do not invent motivation.";
 
-    let user = format!(
-        "Diffstat:\n{}\n\nDiff:\n{}",
-        state.artifact("stat"),
-        state.artifact("diff")
+    let head = format!("Diffstat:\n{}\n\nDiff:\n", state.artifact("stat"));
+    let fitted = git::fit(
+        state.artifact("diff"),
+        cfg.input_budget().saturating_sub(head.len()),
     );
+    let user = format!("{head}{}", fitted.text);
 
     let schema = json!({
         "type": "object",
@@ -970,7 +971,10 @@ async fn draft_commit(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, 
 
     Ok(StepOutcome {
         summary: subject.clone(),
-        log: format!("branch:  {branch}\nsubject: {subject}\n\n{body}"),
+        log: format!(
+            "branch:  {branch}\nsubject: {subject}\n\n{body}{}",
+            fitted.note()
+        ),
         artifacts: vec![
             ("branch_name".into(), branch),
             ("commit_subject".into(), subject),
@@ -1208,12 +1212,16 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
           diff touches. Never write a generic checklist.\n\
         Describe only what the diff shows.";
 
-    let user = format!(
-        "Commit subject: {}\n\nDiffstat:\n{}\n\nDiff:\n{}",
+    let head = format!(
+        "Commit subject: {}\n\nDiffstat:\n{}\n\nDiff:\n",
         state.artifact("commit_subject"),
         state.artifact("stat"),
-        state.artifact("diff")
     );
+    let fitted = git::fit(
+        state.artifact("diff"),
+        cfg.input_budget().saturating_sub(head.len()),
+    );
+    let user = format!("{head}{}", fitted.text);
 
     let schema = json!({
         "type": "object",
@@ -1242,7 +1250,7 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
 
     Ok(StepOutcome {
         summary: title.clone(),
-        log: format!("{title}\n\n{body}"),
+        log: format!("{title}\n\n{body}{}", fitted.note()),
         artifacts: vec![("pr_title".into(), title), ("pr_body".into(), body)],
         nothing_to_do: false,
         items: vec![],

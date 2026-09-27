@@ -235,6 +235,44 @@ pub fn api_key(env: &str) -> Option<String> {
     std::env::var(env).ok().filter(|k| !k.is_empty())
 }
 
+/// The longest answer any step asks for. Every step replies with a small JSON
+/// object; a model that runs past this is rambling, and on a local model each
+/// extra token is time.
+const ANSWER_TOKENS: u32 = 3072;
+
+/// Instructions and the JSON schema appended to them, in tokens, give or take.
+const INSTRUCTION_TOKENS: u32 = 2000;
+
+/// Code is dense: about three characters to a token, sometimes fewer. Erring
+/// low means a prompt that fits with room to spare, not one that overflows.
+const CHARS_PER_TOKEN: u32 = 3;
+
+impl LlmConfig {
+    /// How many characters of input a step may send this model, diff and all.
+    ///
+    /// Local: whatever the context window leaves after the instructions and
+    /// the answer. Past it, ollama silently drops the *start* of the prompt —
+    /// the instructions — and spends the longest possible time doing so.
+    /// Lowering the context window in Settings is the way to trade coverage
+    /// for speed.
+    ///
+    /// Remote: every preset's window is far larger than a diff worth
+    /// reviewing, so the ceiling is cost, not fit — the same cap a diff is
+    /// stored under.
+    pub fn input_budget(&self) -> usize {
+        match self.kind {
+            ProviderKind::Ollama => {
+                let tokens = self
+                    .ollama_num_ctx
+                    .saturating_sub(INSTRUCTION_TOKENS + ANSWER_TOKENS)
+                    .max(1000);
+                ((tokens * CHARS_PER_TOKEN) as usize).min(super::git::DIFF_CAP)
+            }
+            ProviderKind::Remote | ProviderKind::Off => super::git::DIFF_CAP,
+        }
+    }
+}
+
 /// How long a local model is given to answer.
 ///
 /// Generous on purpose. A 14B model on a laptop spends real minutes on a large
@@ -331,6 +369,7 @@ async fn call_ollama(
             "temperature": 0,
             "seed": 7,
             "num_ctx": cfg.ollama_num_ctx,
+            "num_predict": ANSWER_TOKENS,
         },
         "messages": [
             { "role": "system", "content": system },
@@ -359,11 +398,12 @@ async fn call_ollama(
             if e.is_timeout() {
                 format!(
                     "{} did not answer within {}s. That is the model being too slow for this \
-                     prompt, not ollama being down. Skip this step, send it less (the diff is \
-                     capped at {} characters), or use a smaller model.",
+                     prompt, not ollama being down. Skip this step, lower the context window \
+                     in Settings so it is sent less (it gets {} characters now), or use a \
+                     smaller model.",
                     cfg.ollama_model,
                     OLLAMA_TIMEOUT.as_secs(),
-                    super::git::DIFF_CAP,
+                    cfg.input_budget(),
                 )
             } else {
                 format!("ollama unreachable at {url} — is `ollama serve` running? ({e})")
@@ -412,6 +452,7 @@ async fn call_openai_compatible(
         "model": cfg.remote_model_name(),
         "stream": false,
         "temperature": 0,
+        "max_tokens": ANSWER_TOKENS,
         "response_format": { "type": "json_object" },
         "messages": [
             { "role": "system", "content": system },
@@ -657,5 +698,31 @@ mod tests {
     fn the_default_context_is_large_enough_for_a_real_diff() {
         // Guards against regressing to ollama's 4096 default.
         assert!(LlmConfig::default().ollama_num_ctx >= 16384);
+    }
+
+    #[test]
+    fn a_local_model_is_sent_what_its_window_holds() {
+        let mut cfg = LlmConfig::default();
+        // 16384 - 2000 - 3072 tokens, three characters each.
+        assert_eq!(cfg.input_budget(), 33_936);
+        cfg.ollama_num_ctx = 8192;
+        assert_eq!(
+            cfg.input_budget(),
+            9_360,
+            "a smaller window is a faster answer"
+        );
+        cfg.ollama_num_ctx = 131_072;
+        assert_eq!(cfg.input_budget(), crate::services::git::DIFF_CAP);
+        cfg.ollama_num_ctx = 2048;
+        assert_eq!(cfg.input_budget(), 3_000, "never nothing at all");
+    }
+
+    #[test]
+    fn a_remote_model_is_capped_by_cost_not_by_its_window() {
+        let cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            ..LlmConfig::default()
+        };
+        assert_eq!(cfg.input_budget(), crate::services::git::DIFF_CAP);
     }
 }

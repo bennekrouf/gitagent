@@ -547,12 +547,16 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
         - Report nothing rather than something vague. \"Consider adding tests\" and \
           \"verify error handling\" are not findings.";
 
-    let user = format!(
-        "Title: {}\n\nDiffstat:\n{}\n\nDiff:\n{}",
+    let head = format!(
+        "Title: {}\n\nDiffstat:\n{}\n\nDiff:\n",
         state.artifact("pr_title"),
         state.artifact("pr_stat"),
-        state.artifact("pr_diff"),
     );
+    let fitted = git::fit(
+        state.artifact("pr_diff"),
+        cfg.input_budget().saturating_sub(head.len()),
+    );
+    let user = format!("{head}{}", fitted.text);
 
     let schema = json!({
         "type": "object",
@@ -621,7 +625,7 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
 
     Ok(StepOutcome {
         summary: format!("{verdict} · {} finding(s)", kept.len()),
-        log: analysis.clone(),
+        log: format!("{analysis}{}", fitted.note()),
         artifacts: vec![
             ("verdict".into(), verdict),
             ("analysis".into(), analysis),

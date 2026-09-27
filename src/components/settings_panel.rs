@@ -93,7 +93,10 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                         }
                         p { class: "field-note",
                             "ollama defaults to 4096 tokens whatever the model supports, which \
-                             silently truncates a real diff. This value is sent with every call."
+                             silently truncates a real diff. This value is sent with every call, \
+                             and a diff is cut to fit it — about {current.input_budget()} characters \
+                             now. Lower it for faster answers on large changes, raise it to review \
+                             more of them."
                         }
                     } else {
                         div { class: "items",
