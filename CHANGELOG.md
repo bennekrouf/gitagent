@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A flow's steps are listed in the order they run. Steps added in Setup in
+  front of an existing one used to appear at the bottom of the run view, after
+  the step they come before, even though Setup showed them in the right place.
+
 ## [0.1.57] - 2026-09-27
 
 ### Fixed

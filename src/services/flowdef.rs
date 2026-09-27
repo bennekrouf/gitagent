@@ -108,11 +108,25 @@ impl FlowDef {
     /// Materialises the runnable graph. Nodes naming an unknown step are
     /// dropped — `validate` reports them, and a broken entry must not take the
     /// rest of the flow down with it.
+    ///
+    /// In dependency order, not file order: a step added in Setup lands at the
+    /// end of the file wherever it sits in the graph, and the run view lists
+    /// the graph as it comes. Anything in a cycle keeps its file position at
+    /// the end — such a flow does not validate, so it is only ever displayed.
     pub fn to_graph(&self) -> Graph {
+        let mut order = topological_order(self);
+        for node in &self.nodes {
+            if !order.contains(&node.id) {
+                order.push(node.id.clone());
+            }
+        }
+        let rank = |id: &str| order.iter().position(|o| o == id).unwrap_or(usize::MAX);
+        let mut sorted: Vec<&NodeDef> = self.nodes.iter().collect();
+        sorted.sort_by_key(|n| rank(&n.id));
+
         Graph {
-            nodes: self
-                .nodes
-                .iter()
+            nodes: sorted
+                .into_iter()
                 .filter_map(|def| {
                     let info = catalogue::by_key(&def.step)?;
                     Some(NodeSpec {
@@ -1509,6 +1523,46 @@ deps = ["find_pr"]
         assert!(!validate(&f)
             .iter()
             .any(|p| matches!(p, Problem::UnknownDep { .. })));
+    }
+
+    #[test]
+    fn steps_added_later_in_setup_are_listed_where_they_run() {
+        // Deploy mayorana: the deploy step existed first, the notes steps were
+        // added in front of it afterwards, so the file has them last.
+        let f = FlowDef {
+            id: "deploy".into(),
+            label: "Deploy".into(),
+            handles: vec![],
+            nodes: vec![
+                node("preflight", "preflight", &[]),
+                node("run_remote", "run_remote", &["preflight", "write_notes"]),
+                node("write_notes", "write_notes", &["draft_notes"]),
+                node("draft_notes", "draft_notes", &["preflight"]),
+            ],
+        };
+        let ids: Vec<String> = f.to_graph().nodes.into_iter().map(|n| n.id).collect();
+        assert_eq!(
+            ids,
+            ["preflight", "draft_notes", "write_notes", "run_remote"]
+        );
+    }
+
+    #[test]
+    fn steps_on_the_same_level_keep_their_file_order() {
+        let ids: Vec<String> = FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph()
+            .nodes
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        let at = |id: &str| ids.iter().position(|i| i == id).unwrap();
+        assert!(
+            at("draft_commit") < at("test"),
+            "declared first, listed first"
+        );
+        assert!(at("commit") < at("draft_pr"));
     }
 
     #[test]
