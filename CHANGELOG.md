@@ -17,6 +17,13 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The update check now considers preferred formats for each operating system,
+  ensuring a more tailored download experience.
+
 ## [0.1.58] - 2026-09-27
 
 ### Fixed
