@@ -225,8 +225,18 @@ fn branch_from(subject: &str) -> String {
 /// disagree — a stale local `main` in a `master` repository is enough — and
 /// when they do, the protected-name rule wins.
 pub fn must_branch(state: &RunState) -> bool {
+    // Nothing exists yet to branch from or open a pull request into: the
+    // first commit goes on the branch itself, and pushing it creates it.
+    if is_first_commit(state) {
+        return false;
+    }
     let branch = state.artifact("branch");
     branch == state.artifact("base") || git::is_protected(branch)
+}
+
+/// Set by `scan` in a repository with no commits yet.
+pub fn is_first_commit(state: &RunState) -> bool {
+    state.artifact("first_commit") == "true"
 }
 
 /// Exactly what will happen if the human approves this node. Rendered in the
@@ -279,6 +289,12 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
         Step::Commit => {
             let branching = if must_branch(state) {
                 format!("git checkout -b {}\n", state.artifact("branch_name"))
+            } else if is_first_commit(state) {
+                format!(
+                    "stay on branch {} — the repository's first commit, so there is \
+                     nothing to branch from yet\n",
+                    state.artifact("branch")
+                )
             } else {
                 format!("stay on branch {}\n", state.artifact("branch"))
             };
@@ -312,7 +328,20 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
 /// a question with no content: release notes that were already written leave
 /// `write_notes` nothing to write, and that is the usual case, not the rare one.
 pub fn nothing_to_approve(node: &NodeSpec, state: &RunState) -> bool {
-    node.step == Step::WriteNotes && state.artifact("release_notes").trim().is_empty()
+    match node.step {
+        Step::WriteNotes => state.artifact("release_notes").trim().is_empty(),
+        Step::OpenPr => is_first_commit(state),
+        _ => false,
+    }
+}
+
+fn first_commit_note(state: &RunState) -> String {
+    format!(
+        "No pull request: this was the repository's first commit, pushed straight to {} \
+         — origin had no branch to open one against. Work from here on goes through \
+         pull requests as usual.",
+        state.artifact("work_branch")
+    )
 }
 
 /// The items a gated node lets the human pick through before approving.
@@ -850,6 +879,7 @@ async fn already_committed(
 async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let branch = git::current_branch(repo).await?;
     let changes = git::status(repo).await?;
+    let first_commit = !git::has_commits(repo).await;
 
     if changes.is_empty() {
         // A clean tree isn't necessarily nothing to do — a commit made
@@ -917,6 +947,10 @@ async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
                     .map(|c| c.path.clone())
                     .collect::<Vec<_>>()
                     .join("\n"),
+            ),
+            (
+                "first_commit".into(),
+                if first_commit { "true" } else { "" }.into(),
             ),
         ],
         nothing_to_do: false,
@@ -1095,7 +1129,11 @@ async fn switch_to_work_branch(
     // topic branch, commit there rather than stacking another one.
     if !must_branch(state) {
         let name = state.artifact("branch").to_string();
-        log.push_str(&format!("already on {name}, committing there\n"));
+        log.push_str(&if is_first_commit(state) {
+            format!("first commit in this repository — made on {name} itself\n")
+        } else {
+            format!("already on {name}, committing there\n")
+        });
         return Ok((name, None));
     }
 
@@ -1396,6 +1434,9 @@ async fn push(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
 }
 
 async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
+    if is_first_commit(state) {
+        return Ok(StepOutcome::nothing(first_commit_note(state)));
+    }
     let forge = Forge::from_key(state.artifact("forge"));
     let url = forge::create_pr(
         &forge,
@@ -1424,6 +1465,27 @@ mod tests {
         "  ❌ Release notes: nothing under [Unreleased] in CHANGELOG.md\n     \
         Add the entry (## [Unreleased] + ### Added/Changed/Fixed/Removed),\n     \
         or pass --no-notes for a build-only release.";
+
+    #[test]
+    fn a_first_commit_stays_on_its_branch_and_opens_no_pull_request() {
+        let mut s = RunState::default();
+        s.artifacts.insert("branch".into(), "main".into());
+        s.artifacts.insert("base".into(), "master".into());
+        s.artifacts.insert("work_branch".into(), "main".into());
+        assert!(
+            must_branch(&s),
+            "an ordinary commit on main branches off it"
+        );
+
+        s.artifacts.insert("first_commit".into(), "true".into());
+        assert!(!must_branch(&s), "nothing exists yet to branch from");
+        assert!(proposal(&spec(Step::Commit), &s).contains("first commit"));
+        assert!(
+            nothing_to_approve(&spec(Step::OpenPr), &s),
+            "no approval for a pull request that cannot exist"
+        );
+        assert!(first_commit_note(&s).contains("main"));
+    }
 
     #[test]
     fn writing_notes_asks_only_when_there_is_a_draft_to_read() {

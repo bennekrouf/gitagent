@@ -176,25 +176,38 @@ mod tests {
     #[test]
     fn links_straight_to_the_build_for_each_os() {
         let p = platforms(FEED);
-        assert_eq!(platform_url("macos", &p), "https://x/gitagent-macos-arm64.dmg?src=updater");
-        assert_eq!(platform_url("windows", &p), "https://x/gitagent-setup.exe?src=updater");
+        assert_eq!(
+            platform_url("macos", &p),
+            "https://x/gitagent-macos-arm64.dmg?src=updater"
+        );
+        assert_eq!(
+            platform_url("windows", &p),
+            "https://x/gitagent-setup.exe?src=updater"
+        );
         // Two Linux builds: the preferred one, every time.
-        assert_eq!(platform_url("linux", &p), "https://x/gitagent-linux.AppImage?src=updater");
+        assert_eq!(
+            platform_url("linux", &p),
+            "https://x/gitagent-linux.AppImage?src=updater"
+        );
     }
 
     #[test]
     fn falls_back_to_the_landing_page() {
         let p = platforms(FEED);
         assert_eq!(platform_url("freebsd", &p), RELEASES_URL);
-        let no_mac = platforms(r#"{ "version": "1.0.0", "tag": "v1.0.0",
-            "platforms": { "linux": { "tarball": { "url": "https://x/a.tar.gz" } } } }"#);
+        let no_mac = platforms(
+            r#"{ "version": "1.0.0", "tag": "v1.0.0",
+            "platforms": { "linux": { "tarball": { "url": "https://x/a.tar.gz" } } } }"#,
+        );
         assert_eq!(platform_url("macos", &no_mac), RELEASES_URL);
     }
 
     #[test]
     fn unknown_format_still_downloads() {
-        let p = platforms(r#"{ "version": "1.0.0", "tag": "v1.0.0",
-            "platforms": { "windows": { "zip": { "url": "https://x/a.zip" } } } }"#);
+        let p = platforms(
+            r#"{ "version": "1.0.0", "tag": "v1.0.0",
+            "platforms": { "windows": { "zip": { "url": "https://x/a.zip" } } } }"#,
+        );
         assert_eq!(platform_url("windows", &p), "https://x/a.zip?src=updater");
     }
 

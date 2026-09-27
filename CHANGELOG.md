@@ -17,6 +17,19 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Refresh in the repository list now looks at the folder again: a repository
+  cloned into it since it was opened appears, and one deleted or moved away
+  disappears. Before, it only re-checked the repositories already listed, and
+  a new one needed the folder to be reopened.
+- Committing in a repository with no commits yet — straight after `git init` —
+  works. Scan changes used to fail with "ambiguous argument 'HEAD'". The first
+  commit now goes on the branch you are on and is pushed as that branch, with
+  no pull request, since the remote has nothing yet to open one against.
+
 ## [0.1.60] - 2026-09-27
 
 ### Added
