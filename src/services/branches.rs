@@ -56,6 +56,12 @@ pub struct BranchInfo {
     /// `Closed`): 0 here means there is nothing a PR would even carry, so
     /// deleting is the only sensible option, not a choice.
     pub ahead: usize,
+    /// Merging this branch into `base` would change no file. Its commits are
+    /// old merges, a release bump already superseded, or work that reached
+    /// the base another way (a squash merge) — the count above is real, but
+    /// there is nothing in it to ship.
+    pub changes_nothing: bool,
+    pub is_base: bool,
 }
 
 impl BranchInfo {
@@ -63,7 +69,15 @@ impl BranchInfo {
     /// offered a pull request for instead of only a delete button — commits
     /// that exist nowhere else, and no live PR already carrying them.
     pub fn worth_a_pr(&self) -> bool {
-        self.ahead > 0 && matches!(self.pr_state, PrState::None | PrState::Closed)
+        self.ahead > 0
+            && !self.changes_nothing
+            && matches!(self.pr_state, PrState::None | PrState::Closed)
+    }
+
+    /// Commits ahead that add nothing: safe to clean up, pull request and
+    /// all. Never the base itself, whatever it is called.
+    pub fn leftover(&self) -> bool {
+        self.ahead > 0 && self.changes_nothing && !self.is_base
     }
 }
 
@@ -122,7 +136,10 @@ pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInf
         } else {
             ahead_count(repo, &base_ref, &name).await
         };
+        let changes_nothing = ahead > 0 && merges_to_nothing(repo, &base_ref, &name).await;
         out.push(BranchInfo {
+            changes_nothing,
+            is_base: name == base,
             is_current: name == current,
             protected: git::is_protected(&name),
             pr_number,
@@ -146,6 +163,29 @@ async fn resolve_ref(repo: &str, base: &str) -> String {
     } else {
         base.to_string()
     }
+}
+
+/// Whether merging `branch` into `base_ref` leaves the base's tree exactly
+/// as it is. Asked of git's merge machinery rather than a diff: a two-dot
+/// diff is non-empty whenever the base has moved on, and a three-dot one
+/// shows a squash-merged branch's changes even though the base already has
+/// them. A conflict, or a git too old for `merge-tree --write-tree`, answers
+/// no — the branch then keeps its ordinary "decide per branch" treatment.
+async fn merges_to_nothing(repo: &str, base_ref: &str, branch: &str) -> bool {
+    let Ok(merged) = git::run(
+        repo,
+        "git",
+        &["merge-tree", "--write-tree", base_ref, branch],
+    )
+    .await
+    else {
+        return false;
+    };
+    let base_tree = git::run(repo, "git", &["rev-parse", &format!("{base_ref}^{{tree}}")])
+        .await
+        .unwrap_or_default();
+    let merged_tree = merged.lines().next().unwrap_or_default().trim();
+    !merged_tree.is_empty() && merged_tree == base_tree.trim()
 }
 
 async fn ahead_count(repo: &str, base_ref: &str, branch: &str) -> usize {
@@ -231,6 +271,41 @@ pub async fn delete(repo: &str, branch: &str, force: bool) -> Result<String, Str
     git::run(repo, "git", &["branch", flag, branch]).await
 }
 
+/// Removes a leftover branch everywhere it lives: closes its open pull
+/// request, deletes it on origin, then locally. Each step is skipped when
+/// there is nothing for it to do, and the log says what was done.
+///
+/// Force-deleting locally is right here and only here: the branch was just
+/// shown to change nothing, which is exactly the case git's own "not fully
+/// merged" check cannot see.
+pub async fn clean_up(repo: &str, forge: &Forge, branch: &BranchInfo) -> Result<String, String> {
+    let mut log = vec![];
+    if let (Forge::GitHub, PrState::Open, Some(number)) =
+        (forge, branch.pr_state, branch.pr_number.as_deref())
+    {
+        git::run(
+            repo,
+            "gh",
+            &[
+                "pr",
+                "close",
+                number,
+                "--comment",
+                "Closing — this branch changes no files compared with the base branch.",
+            ],
+        )
+        .await?;
+        log.push(format!("closed #{number}"));
+    }
+    if git::branch_exists(repo, &format!("refs/remotes/origin/{}", branch.name)).await {
+        git::run(repo, "git", &["push", "origin", "--delete", &branch.name]).await?;
+        log.push("deleted on origin".to_string());
+    }
+    git::run(repo, "git", &["branch", "-D", &branch.name]).await?;
+    log.push("deleted locally".to_string());
+    Ok(log.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,7 +350,93 @@ mod tests {
             pr_title: String::new(),
             pr_state,
             ahead,
+            changes_nothing: false,
+            is_base: false,
         }
+    }
+
+    #[test]
+    fn a_branch_that_changes_nothing_is_a_leftover_not_a_pull_request() {
+        let mut b = branch(3, PrState::None);
+        assert!(b.worth_a_pr() && !b.leftover());
+        b.changes_nothing = true;
+        assert!(
+            !b.worth_a_pr(),
+            "no pull request for commits that add nothing"
+        );
+        assert!(b.leftover());
+        b.is_base = true;
+        assert!(
+            !b.leftover(),
+            "the base is never cleaned up, whatever it holds"
+        );
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[tokio::test]
+    async fn merging_tells_a_leftover_from_real_work() {
+        let dir = std::env::temp_dir().join(format!("gitagent-leftover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "trunk"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        git(&dir, &["add", "a"]);
+        git(&dir, &["commit", "-qm", "one"]);
+
+        // Merge commits only: ahead, but nothing new — splitter's stale `main`.
+        git(&dir, &["checkout", "-qb", "stale"]);
+        git(
+            &dir,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "Merge branch 'trunk'",
+            ],
+        );
+        // Work the trunk then got by a squash merge.
+        git(&dir, &["checkout", "-q", "trunk"]);
+        git(&dir, &["checkout", "-qb", "squashed"]);
+        std::fs::write(dir.join("b"), "2").unwrap();
+        git(&dir, &["add", "b"]);
+        git(&dir, &["commit", "-qm", "add b"]);
+        git(&dir, &["checkout", "-q", "trunk"]);
+        std::fs::write(dir.join("b"), "2").unwrap();
+        git(&dir, &["add", "b"]);
+        git(&dir, &["commit", "-qm", "add b (#1)"]);
+        // Real, unshipped work.
+        git(&dir, &["checkout", "-qb", "real"]);
+        std::fs::write(dir.join("c"), "3").unwrap();
+        git(&dir, &["add", "c"]);
+        git(&dir, &["commit", "-qm", "add c"]);
+        git(&dir, &["checkout", "-q", "trunk"]);
+
+        let repo = dir.to_string_lossy().to_string();
+        let list = list(&repo, &Forge::None, "trunk").await.unwrap();
+        let get = |n: &str| list.iter().find(|b| b.name == n).unwrap().clone();
+        assert!(get("stale").leftover(), "merge commits that add nothing");
+        assert!(
+            get("squashed").leftover(),
+            "squash-merged: the trunk already has it"
+        );
+        assert!(!get("real").leftover() && get("real").ahead == 1);
+        assert!(get("trunk").is_base && !get("trunk").leftover());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

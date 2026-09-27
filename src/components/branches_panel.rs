@@ -28,6 +28,9 @@ pub struct BranchesPanelProps {
     /// Pushes the branch and opens a pull request for it — the alternative
     /// to deleting, offered wherever a branch has real work and no live PR.
     pub on_create_pr: EventHandler<String>,
+    /// Closes the branch's open pull request, deletes it on origin and here —
+    /// offered only for a branch that changes nothing.
+    pub on_clean_up: EventHandler<String>,
 }
 
 fn state_class(state: PrState) -> &'static str {
@@ -82,7 +85,19 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                 .filter(|b| b.worth_a_pr())
                                 .cloned()
                                 .collect();
+                            let leftovers = list.iter().filter(|b| b.leftover()).count();
                             rsx! {
+                                if leftovers > 0 {
+                                    div { class: "branches-cleanup branches-worth-pr",
+                                        span {
+                                            "{leftovers} branch" if leftovers != 1 { "es" }
+                                            " marked \u{201c}nothing new\u{201d} would change no file if merged \
+                                             — their commits are old merges, or work the base branch \
+                                             already has. Clean up closes any open pull request and \
+                                             deletes the branch on GitHub and here."
+                                        }
+                                    }
+                                }
                                 if !worth_a_pr.is_empty() {
                                     div { class: "branches-cleanup branches-worth-pr",
                                         span {
@@ -137,7 +152,54 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                                     " · {b.ahead} ahead"
                                                 }
                                             }
-                                            if !b.is_current && !b.protected {
+                                            if b.leftover() {
+                                                span {
+                                                    class: "branch-pr branch-pr-none",
+                                                    title: "{b.ahead} commit(s) ahead, but merging them would change no file.",
+                                                    "nothing new"
+                                                }
+                                            }
+                                            if b.leftover() && !b.is_current {
+                                                {
+                                                    let is_busy = props.busy.as_deref() == Some(b.name.as_str());
+                                                    let asking = confirming.read().as_deref() == Some(b.name.as_str());
+                                                    let what = match (&b.pr_number, b.pr_state) {
+                                                        (Some(n), PrState::Open) => format!("Closes #{n}, then deletes {} on GitHub and here.", b.name),
+                                                        _ => format!("Deletes {} on GitHub and here.", b.name),
+                                                    };
+                                                    let what = if b.protected {
+                                                        format!("{what} It is named like a main branch, but it is not this repository's base, and it changes nothing.")
+                                                    } else {
+                                                        what
+                                                    };
+                                                    rsx! {
+                                                        button {
+                                                            class: if asking { "btn btn-danger branch-delete" } else { "btn branch-delete" },
+                                                            disabled: is_busy,
+                                                            title: "{what}",
+                                                            onclick: {
+                                                                let name = b.name.clone();
+                                                                move |_| {
+                                                                    if asking {
+                                                                        confirming.set(None);
+                                                                        props.on_clean_up.call(name.clone());
+                                                                    } else {
+                                                                        confirming.set(Some(name.clone()));
+                                                                    }
+                                                                }
+                                                            },
+                                                            if is_busy {
+                                                                span { class: "btn-spinner" }
+                                                                "Cleaning up…"
+                                                            } else if asking {
+                                                                "Really clean up?"
+                                                            } else {
+                                                                "Clean up"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } else if !b.is_current && !b.protected {
                                                 {
                                                     let is_busy = props.busy.as_deref() == Some(b.name.as_str());
                                                     rsx! {
