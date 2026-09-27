@@ -97,10 +97,12 @@ pub async fn draft(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
         })
         .collect();
 
+    let mut left_out = String::new();
     let groups: Vec<(&str, Vec<String>)> = if app.is_empty() {
         vec![]
     } else {
-        let entries = ask_model(repo, cfg, &range, since, &changelog, &app).await?;
+        let (entries, note) = ask_model(repo, cfg, &range, since, &changelog, &app).await?;
+        left_out = note;
         for e in &entries {
             verdicts.push(format!(
                 "  {}  {}",
@@ -137,7 +139,7 @@ pub async fn draft(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
             format!("{count} note(s) drafted")
         },
         log: format!(
-            "Drafted from {since}.\n\nHow each commit was read:\n{}\n\n{notes}",
+            "Drafted from {since}.\n\nHow each commit was read:\n{}\n\n{notes}{left_out}",
             verdicts.join("\n")
         ),
         artifacts: vec![("release_notes".into(), notes)],
@@ -153,7 +155,7 @@ async fn ask_model(
     since: &str,
     changelog: &str,
     commits: &[&Commit],
-) -> Result<Vec<serde_json::Value>, StepFailure> {
+) -> Result<(Vec<serde_json::Value>, String), StepFailure> {
     let listed: Vec<String> = commits
         .iter()
         .map(|c| {
@@ -203,15 +205,16 @@ async fn ask_model(
           user-visible.\n\
         Describe only what the commits and diff show. Do not invent motivation.";
 
-    let user = format!(
+    let head = format!(
         "The project's own rules for release notes:\n{guidance}\n\n\
          The top of {CHANGELOG}, for its conventions and tone:\n{}\n\n\
          Commits since {since}, newest first:\n\n{}\n\n\
-         Their diff:\n{}",
+         Their diff:\n",
         head_of(changelog),
         listed.join("\n\n"),
-        git::cap(&diff),
     );
+    let fitted = git::fit(&diff, cfg.input_budget().saturating_sub(head.len()));
+    let user = format!("{head}{}", fitted.text);
 
     let schema = json!({
         "type": "object",
@@ -236,7 +239,10 @@ async fn ask_model(
         "required": ["commits"]
     });
     let value = complete_json(cfg, system, &user, &schema).await?;
-    Ok(value["commits"].as_array().cloned().unwrap_or_default())
+    Ok((
+        value["commits"].as_array().cloned().unwrap_or_default(),
+        fitted.note(),
+    ))
 }
 
 struct Commit {

@@ -329,19 +329,158 @@ pub async fn diff_stat(repo: &str) -> Result<String, String> {
 }
 
 pub fn cap(text: &str) -> String {
-    if text.len() <= DIFF_CAP {
+    fit(text, DIFF_CAP).text
+}
+
+/// A diff cut down to `budget` bytes, and what was left out of it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Fitted {
+    pub text: String,
+    pub left_out: Vec<String>,
+}
+
+impl Fitted {
+    /// One line for a step's log, empty when nothing was left out.
+    pub fn note(&self) -> String {
+        if self.left_out.is_empty() {
+            return String::new();
+        }
+        format!(
+            "\n\nThe diff was too large for the model, so it did not see: {}",
+            self.left_out.join(", ")
+        )
+    }
+}
+
+/// How little a file's diff tells a reviewer, lowest first to go: lock and
+/// generated files, then documentation, then CI and packaging, then code.
+/// Among equals the largest goes first, so the most files survive.
+fn review_value(path: &str) -> u8 {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let generated = name.ends_with(".lock")
+        || matches!(
+            name,
+            "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "go.sum"
+        )
+        || [".min.js", ".map", ".snap", ".svg"]
+            .iter()
+            .any(|ext| name.ends_with(ext));
+    if generated {
+        0
+    } else if name.ends_with(".md") || path.starts_with("docs/") || name == "LICENSE" {
+        1
+    } else if [
+        ".github/",
+        ".gitlab/",
+        ".circleci/",
+        ".azuredevops/",
+        ".pipelines/",
+        "homebrew/",
+    ]
+    .iter()
+    .any(|dir| path.starts_with(dir))
+    {
+        2
+    } else {
+        3
+    }
+}
+
+/// Cuts a diff to `budget` bytes a whole file at a time rather than wherever
+/// the byte count runs out, which used to leave the model half a file and no
+/// idea the rest existed. Lock and generated files go first, then the
+/// largest files, and the diff opens with a line naming what went — so the
+/// model does not report on code it never saw, and the person knows too.
+pub fn fit(diff: &str, budget: usize) -> Fitted {
+    if diff.len() <= budget {
+        return Fitted {
+            text: diff.to_string(),
+            left_out: vec![],
+        };
+    }
+
+    let starts: Vec<usize> = diff
+        .match_indices("diff --git ")
+        .map(|(i, _)| i)
+        .filter(|&i| i == 0 || diff.as_bytes()[i - 1] == b'\n')
+        .collect();
+    if starts.is_empty() {
+        return Fitted {
+            text: truncate(diff, budget),
+            left_out: vec![],
+        };
+    }
+
+    let preamble = &diff[..starts[0]];
+    let files: Vec<(&str, &str)> = starts
+        .iter()
+        .enumerate()
+        .map(|(n, &start)| {
+            let end = starts.get(n + 1).copied().unwrap_or(diff.len());
+            let chunk = &diff[start..end];
+            let header = chunk.lines().next().unwrap_or_default();
+            let path = header.rsplit(" b/").next().unwrap_or(header);
+            (path, chunk)
+        })
+        .collect();
+
+    let mut order: Vec<usize> = (0..files.len()).collect();
+    order.sort_by_key(|&i| {
+        (
+            review_value(files[i].0),
+            std::cmp::Reverse(files[i].1.len()),
+        )
+    });
+
+    // Room for the line naming what was left out, which grows as files go.
+    let mut kept = vec![true; files.len()];
+    let mut size = diff.len();
+    let mut left_out = vec![];
+    for i in order {
+        let note = 80 + left_out.iter().map(|p: &String| p.len() + 2).sum::<usize>();
+        if size + note <= budget {
+            break;
+        }
+        kept[i] = false;
+        size -= files[i].1.len();
+        left_out.push(files[i].0.to_string());
+    }
+
+    // One file too big on its own is cut rather than dropped entirely.
+    if left_out.len() == files.len() {
+        let (path, chunk) = files
+            .iter()
+            .max_by_key(|(p, c)| (review_value(p), c.len()))
+            .copied()
+            .unwrap_or_default();
+        left_out.retain(|p| p != path);
+        let note = format!("[Left out to fit: {}]\n", left_out.join(", "));
+        let room = budget.saturating_sub(preamble.len() + note.len());
+        return Fitted {
+            text: format!("{note}{preamble}{}", truncate(chunk, room)),
+            left_out,
+        };
+    }
+
+    let mut text = format!("[Left out to fit: {}]\n{preamble}", left_out.join(", "));
+    for (i, (_, chunk)) in files.iter().enumerate() {
+        if kept[i] {
+            text.push_str(chunk);
+        }
+    }
+    Fitted { text, left_out }
+}
+
+fn truncate(text: &str, budget: usize) -> String {
+    if text.len() <= budget {
         return text.to_string();
     }
-    let mut end = DIFF_CAP;
+    let marker = format!("\n\n[…truncated at {budget} of {} bytes…]", text.len());
+    let mut end = budget.saturating_sub(marker.len());
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!(
-        "{}\n\n[…truncated at {} of {} bytes…]",
-        &text[..end],
-        DIFF_CAP,
-        text.len()
-    )
+    format!("{}{marker}", &text[..end])
 }
 
 pub async fn create_branch(repo: &str, name: &str) -> Result<String, String> {
@@ -843,6 +982,72 @@ mod tests {
     #[test]
     fn capping_leaves_a_short_diff_alone() {
         assert_eq!(cap("small"), "small");
+    }
+
+    fn file(path: &str, lines: usize) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n{}",
+            "+line\n".repeat(lines)
+        )
+    }
+
+    #[test]
+    fn a_diff_is_cut_whole_files_at_a_time_noise_first() {
+        let diff = [
+            file("src/a.rs", 50),
+            file("Cargo.lock", 400),
+            file("src/big.rs", 300),
+            file("src/b.rs", 50),
+        ]
+        .concat();
+        let fitted = fit(&diff, 1500);
+        assert!(fitted.text.len() <= 1500, "{}", fitted.text.len());
+        assert_eq!(fitted.left_out, vec!["Cargo.lock", "src/big.rs"]);
+        assert!(fitted
+            .text
+            .starts_with("[Left out to fit: Cargo.lock, src/big.rs]"));
+        let a = fitted.text.find("src/a.rs").unwrap();
+        let b = fitted.text.find("src/b.rs").unwrap();
+        assert!(a < b, "what is kept stays in order");
+        assert!(fitted.note().contains("src/big.rs"));
+    }
+
+    #[test]
+    fn docs_and_ci_go_before_any_code() {
+        let diff = [
+            file("src/flow.rs", 300),
+            file("CHANGELOG.md", 200),
+            file(".github/workflows/release.yml", 100),
+            file("src/small.rs", 20),
+        ]
+        .concat();
+        let fitted = fit(&diff, 2500);
+        assert_eq!(
+            fitted.left_out,
+            vec!["CHANGELOG.md", ".github/workflows/release.yml"]
+        );
+        assert!(
+            fitted.text.contains("b/src/flow.rs"),
+            "the logic is what gets reviewed"
+        );
+    }
+
+    #[test]
+    fn a_diff_that_fits_is_left_alone() {
+        let diff = file("src/a.rs", 5);
+        let fitted = fit(&diff, 10_000);
+        assert_eq!(fitted.text, diff);
+        assert!(fitted.left_out.is_empty() && fitted.note().is_empty());
+    }
+
+    #[test]
+    fn one_file_too_big_on_its_own_is_cut_not_dropped() {
+        let diff = [file("src/huge.rs", 1000), file("Cargo.lock", 10)].concat();
+        let fitted = fit(&diff, 1000);
+        assert!(fitted.text.len() <= 1000, "{}", fitted.text.len());
+        assert!(fitted.text.contains("diff --git a/src/huge.rs"));
+        assert!(fitted.text.contains("truncated"));
+        assert_eq!(fitted.left_out, vec!["Cargo.lock"]);
     }
 
     #[test]

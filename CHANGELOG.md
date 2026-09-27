@@ -17,6 +17,20 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A large change no longer makes a local model lose its instructions and
+  run until the 15-minute timeout. What a step sends is now sized to the
+  model's context window, and every answer has a length limit, with a local
+  model or an API key alike.
+- When a diff is too large, whole files are left out rather than the diff
+  being cut mid-file: lock files first, then docs and CI, then the largest
+  code files. The step's log names what the model did not see.
+- The context window in Settings now shows how much of a diff it allows.
+  Lower it for faster answers on large changes.
+
 ## [0.1.56] - 2026-09-26
 
 ### Fixed
