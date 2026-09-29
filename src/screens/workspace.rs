@@ -633,6 +633,7 @@ fn refresh_all(
     mut selected_repo: Signal<Option<String>>,
     mut selected_flow: Signal<String>,
     book: Signal<FlowBook>,
+    mut free_slots: Signal<licence::Slots>,
 ) {
     if *probing.read() > 0 {
         return;
@@ -654,6 +655,21 @@ fn refresh_all(
         }
         repos.set(list.clone());
     }
+
+    // Without Pro, only the free version's repositories are checked; the rest
+    // are listed locked. The slots are re-read here, not kept per window,
+    // because every window shares them.
+    let licence_now = licence::current();
+    let paths: Vec<String> = list.iter().map(|r| r.path.clone()).collect();
+    let slots = licence::slots_for(&licence_now, &paths);
+    let locked = |path: &str| licence::is_locked(&licence_now, &slots, path);
+    statuses.write().retain(|path, _| !locked(path));
+    if selected_repo.read().as_deref().is_some_and(locked) {
+        selected_repo.set(None);
+    }
+    let list: Vec<store::Repo> = list.into_iter().filter(|r| !locked(&r.path)).collect();
+    free_slots.set(slots.clone());
+
     if list.is_empty() {
         return;
     }
@@ -851,6 +867,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 selected_repo,
                 selected_flow,
                 book,
+                free_slots,
             );
         }
     });
@@ -920,9 +937,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             behind: status_map.get(&repo.path).map(|s| s.behind).unwrap_or(0),
             open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
             prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
-            locked: !licence_status.read().unlimited()
-                && free_slots.read().full()
-                && !free_slots.read().has(&repo.path),
+            locked: licence::is_locked(&licence_status.read(), &free_slots.read(), &repo.path),
         })
         .collect();
 
@@ -1210,11 +1225,31 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     on_refresh: {
                         let workspace = workspace.clone();
                         move |_| {
-                            refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book);
+                            refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots);
                         }
                     },
-                    on_reprobe: move |path: String| reprobe(path, statuses),
+                    on_reprobe: move |path: String| {
+                        if !licence::is_locked(&licence_status.read(), &free_slots.read(), &path) {
+                            reprobe(path, statuses);
+                        }
+                    },
                     on_select: move |path: String| {
+                        // A locked repository can't be selected, so nothing —
+                        // no flow, no branch action — can act on it. With a
+                        // slot free, selecting it takes the slot.
+                        if !licence_status.read().unlimited() {
+                            let mut slots = licence::load_slots();
+                            if !slots.has(&path) {
+                                if !slots.claim(&path) {
+                                    free_slots.set(slots);
+                                    licence_open.set(Some(Some(path)));
+                                    return;
+                                }
+                                licence::save_slots(&slots);
+                                free_slots.set(slots);
+                                reprobe(path.clone(), statuses);
+                            }
+                        }
                         let (flow_id, node_id, pr_id) =
                             default_selection(
                                 &book.read(),
@@ -1952,7 +1987,15 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 slots: free_slots,
                 repos: repos.read().clone(),
                 wanted,
-                on_close: move |_| licence_open.set(None),
+                on_close: {
+                    let workspace = workspace.clone();
+                    move |_| {
+                        licence_open.set(None);
+                        // A licence activated, or a slot given back: re-read
+                        // what is locked, and check what just opened up.
+                        refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots);
+                    }
+                },
             }
         }
 
