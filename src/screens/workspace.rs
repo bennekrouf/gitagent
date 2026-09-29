@@ -19,11 +19,13 @@ use crate::components::forge_icon::ForgeIcon;
 use crate::components::node_card::NodeCard;
 use crate::components::pr_card::PrCard;
 use crate::components::repo_sidebar::{phase_of, Phase, RepoEntry, RepoSidebar};
+use crate::components::licence_panel::LicencePanel;
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{Graph, NodeKind, NodeRun, NodeStatus, Remedy, RunState};
+use crate::services::licence;
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
@@ -769,6 +771,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut chain_note = use_signal(String::new);
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
+    // GitAgent Pro. `licence_open` holds the repository a refused run was
+    // for, when that is why the window opened.
+    let licence_status = use_signal(licence::current);
+    let mut free_slots = use_signal(licence::load_slots);
+    let mut licence_open = use_signal(|| Option::<Option<String>>::None);
     // Which flows the *current* repository has chosen not to see — a filter
     // on top of the shared flow list, not a copy of it. `flows.toml` never
     // changes when a flow is hidden here.
@@ -913,6 +920,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             behind: status_map.get(&repo.path).map(|s| s.behind).unwrap_or(0),
             open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
             prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
+            locked: !licence_status.read().unlimited()
+                && free_slots.read().full()
+                && !free_slots.read().has(&repo.path),
         })
         .collect();
 
@@ -924,6 +934,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let Some(repo) = selected_repo.read().clone() else {
             return;
         };
+        // The free version's five repositories: the first run in one takes a
+        // slot; with none left, say so instead of starting.
+        if !licence::may_run(&licence_status.read(), &repo) {
+            licence_open.set(Some(Some(repo)));
+            return;
+        }
+        free_slots.set(licence::load_slots());
         // "Trust all" overrides the button that was actually clicked — even a
         // plain Start runs trusted once it's on, since the whole point is not
         // having to remember which button to press per repository.
@@ -1109,6 +1126,21 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             }
                         },
                         if *global_trust.read() { "Trusting everything…" } else { "Trust all" }
+                    }
+                    button {
+                        class: if licence_status.read().unlimited() { "btn btn-ghost" } else { "btn btn-ghost btn-pro" },
+                        title: match *licence_status.read() {
+                            licence::Status::Pro(_) => "GitAgent Pro is active on this computer",
+                            licence::Status::Renew(_) => "Your Pro updates ended before this version: renew or paste a new key",
+                            _ => "Buy GitAgent Pro, paste your licence key, or choose the free version's repositories",
+                        },
+                        onclick: move |_| licence_open.set(Some(None)),
+                        match *licence_status.read() {
+                            licence::Status::Pro(_) => "Pro \u{2713}",
+                            licence::Status::Renew(_) => "Renew Pro\u{2026}",
+                            licence::Status::Unavailable => "Pro",
+                            licence::Status::Free => "Get Pro\u{2026}",
+                        }
                     }
                     button {
                         class: "btn btn-ghost",
@@ -1891,6 +1923,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some(wanted) = licence_open.read().clone() {
+            LicencePanel {
+                status: licence_status,
+                slots: free_slots,
+                repos: repos.read().clone(),
+                wanted,
+                on_close: move |_| licence_open.set(None),
             }
         }
 
