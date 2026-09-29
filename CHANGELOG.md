@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Without GitAgent Pro, GitAgent now works with 5 repositories in all, across
+  every folder and every window. The first repositories listed take the 5;
+  every other one is shown greyed out with a **🔒 Pro** tag, isn't checked,
+  and can't be selected, so no flow or branch action can reach it. Clicking a
+  locked repository opens the Pro window, where it can take the place of one
+  of your 5, or where you paste your licence key to unlock them all.
+
 ## [0.1.66] - 2026-09-29
 
 ### Changed

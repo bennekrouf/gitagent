@@ -13,9 +13,12 @@
 //! (the same format as Splitter's). A licence unlocks every release dated up
 //! to `updates_until`, and keeps unlocking those releases after that day.
 //!
-//! Without Pro, flows run in up to [`FREE_REPOS`] repositories. Every
-//! repository stays listed and probed; the first run in one takes a free slot,
-//! and a slot can be given back from the licence window.
+//! Without Pro, GitAgent works with [`FREE_REPOS`] repositories in all — across
+//! every folder and every window, since the slots live in one file. Free slots
+//! are taken by the repositories listed, in order, so the first folder opened
+//! gets them. Every other repository is listed but locked: not checked, not
+//! selectable, so no flow or branch action can reach it. Clicking a locked one
+//! opens the licence window, where it can take the place of one of the five.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -211,9 +214,44 @@ impl Slots {
         true
     }
 
-    pub fn release(&mut self, repo: &str) {
-        self.repos.retain(|r| r != repo);
+    /// No slot, and none free to take.
+    pub fn locks(&self, repo: &str) -> bool {
+        !self.has(repo) && self.full()
     }
+
+    /// Free slots go to `repos`, in order. Returns whether anything changed.
+    pub fn fill(&mut self, repos: &[String]) -> bool {
+        let before = self.repos.len();
+        for repo in repos {
+            if self.full() {
+                break;
+            }
+            self.claim(repo);
+        }
+        self.repos.len() != before
+    }
+
+    /// `wanted` takes `given`'s place.
+    pub fn swap(&mut self, given: &str, wanted: &str) {
+        if let Some(slot) = self.repos.iter_mut().find(|r| *r == given) {
+            *slot = wanted.to_string();
+        }
+    }
+}
+
+/// The slots as they are on disk now — shared by every window — with any
+/// free ones taken by `repos`.
+pub fn slots_for(status: &Status, repos: &[String]) -> Slots {
+    let mut slots = load_slots();
+    if !status.unlimited() && slots.fill(repos) {
+        save_slots(&slots);
+    }
+    slots
+}
+
+/// Whether `repo` is off limits: listed, but not checked or selectable.
+pub fn is_locked(status: &Status, slots: &Slots, repo: &str) -> bool {
+    !status.unlimited() && slots.locks(repo)
 }
 
 pub fn load_slots() -> Slots {
@@ -298,16 +336,49 @@ mod tests {
     }
 
     #[test]
-    fn five_repositories_take_the_free_slots_and_one_can_be_given_back() {
+    fn five_repositories_take_the_free_slots_and_a_sixth_can_take_ones_place() {
         let mut slots = Slots::default();
         for i in 0..FREE_REPOS {
             assert!(slots.claim(&format!("/code/r{i}")));
         }
         assert!(slots.claim("/code/r0"), "a repository keeps its slot");
         assert!(!slots.claim("/code/sixth"));
-        slots.release("/code/r2");
-        assert!(slots.claim("/code/sixth"));
+        slots.swap("/code/r2", "/code/sixth");
+        assert!(slots.has("/code/sixth"));
         assert!(!slots.has("/code/r2"));
+    }
+
+    #[test]
+    fn the_first_folder_fills_the_slots_and_everything_else_is_locked() {
+        let first: Vec<String> = (0..10).map(|i| format!("/a/r{i}")).collect();
+        let second: Vec<String> = (0..10).map(|i| format!("/b/r{i}")).collect();
+        let mut slots = Slots::default();
+        assert!(slots.fill(&first));
+        assert!(!slots.fill(&second), "a second folder takes nothing");
+        let free = Status::Free;
+        let usable = |list: &[String]| list.iter().filter(|r| !is_locked(&free, &slots, r)).count();
+        assert_eq!(usable(&first), FREE_REPOS);
+        assert_eq!(usable(&second), 0);
+        let pro_less_build = Status::Unavailable;
+        assert!(second.iter().all(|r| !is_locked(&pro_less_build, &slots, r)));
+
+        // A locked repository takes one's place.
+        slots.swap("/a/r0", "/b/r3");
+        assert!(!is_locked(&free, &slots, "/b/r3"));
+        assert!(is_locked(&free, &slots, "/a/r0"));
+        assert_eq!(slots.repos.len(), FREE_REPOS);
+    }
+
+    #[test]
+    fn slots_taken_before_are_topped_up_to_five() {
+        // 0.1.65 took a slot on the first run only: two used, three free.
+        let mut slots = Slots { repos: vec!["/a/mayorana".into(), "/a/gitagent".into()] };
+        let listed: Vec<String> = ["/a/api0", "/a/gitagent", "/a/splitter", "/a/cvenom", "/a/x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(slots.fill(&listed));
+        assert_eq!(slots.repos, ["/a/mayorana", "/a/gitagent", "/a/api0", "/a/splitter", "/a/cvenom"]);
     }
 
     #[test]

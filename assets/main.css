@@ -1167,3 +1167,5 @@ body {
 }
 .flow-scope .btn { padding: 2px 8px; font-size: 11px; }
 .flow-picker-hint { margin-left: 6px; font-size: 10px; color: var(--text3); white-space: nowrap; }
+.sidebar-row-locked { opacity: 0.55; }
+.sidebar-row-locked:hover { opacity: 0.8; }

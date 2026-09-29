@@ -78,56 +78,61 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                 div { class: "modal-body",
                     match &current {
                         Status::Pro(l) => rsx! {
-                            p { "Licensed to " strong { "{l.email}" } ". Flows run in every repository." }
+                            p { "Licensed to " strong { "{l.email}" } ". Every repository is unlocked." }
                             p { class: "field-note", "Includes every update released until {l.updates_until}." }
                         },
                         Status::Renew(l) => rsx! {
                             p { "Licensed to " strong { "{l.email}" } "." }
                             p { class: "field-note",
                                 "This version was released on {licence::release_date()}, after your updates ended on \
-                                 {l.updates_until}. Renew to use it with every repository, or keep using a version \
+                                 {l.updates_until}. Renew to unlock every repository in it, or keep using a version \
                                  released before that day."
                             }
                         },
                         Status::Unavailable => rsx! {
                             p { class: "field-note",
-                                "This build of GitAgent can't check licences, and runs flows in every repository. \
+                                "This build of GitAgent can't check licences, and works with every repository. \
                                  Download GitAgent from mayorana.ch to use a licence."
                             }
                         },
                         Status::Free => rsx! {
                             if let Some(name) = &wanted {
                                 p { class: "probe probe-bad",
-                                    "The free version runs flows in {FREE_REPOS} repositories, and they are all taken. \
-                                     Give one back below to use {name}, or get Pro."
+                                    "{name} is locked: the free version works with {FREE_REPOS} repositories, \
+                                     and they are all taken. Use it instead of one of them below, or get Pro."
                                 }
                             }
                             p {
-                                "The free version runs flows in {FREE_REPOS} repositories of your choice: \
-                                 the first run in a repository takes one. GitAgent Pro runs them in all of them."
+                                "The free version works with {FREE_REPOS} repositories in all, across every folder \
+                                 and window. The others are listed but locked: click one to use it instead of one \
+                                 of these. GitAgent Pro works with all of them."
                             }
                         },
                     }
 
                     if !current.unlimited() {
-                        div { class: "field-note", "Free repositories: {used.len()} of {FREE_REPOS} used" }
+                        div { class: "field-note", "Your {FREE_REPOS} repositories" }
                         div { class: "items",
                             for (path, name) in used {
                                 div { key: "{path}", class: "item",
                                     span { class: "item-label", title: "{path}", "{name}" }
-                                    button {
-                                        class: "btn btn-ghost",
-                                        title: "Free this slot for another repository",
-                                        onclick: {
-                                            // The row still shows `path`; the handler gets its own copy.
-                                            let path = path.clone();
-                                            move |_| {
-                                            let mut s = slots.write();
-                                            s.release(&path);
-                                            licence::save_slots(&s);
-                                            }
-                                        },
-                                        "Give back"
+                                    if let (Some(wanted_path), Some(wanted_name)) = (props.wanted.clone(), wanted.clone()) {
+                                        button {
+                                            class: "btn btn-ghost",
+                                            title: "{wanted_name} takes this repository's place; {name} becomes locked",
+                                            onclick: {
+                                                // The row still shows `path`; the handler gets its own copy.
+                                                let path = path.clone();
+                                                move |_| {
+                                                    let mut s = slots.write();
+                                                    s.swap(&path, &wanted_path);
+                                                    licence::save_slots(&s);
+                                                    drop(s);
+                                                    props.on_close.call(());
+                                                }
+                                            },
+                                            "Use {wanted_name} instead"
+                                        }
                                     }
                                 }
                             }

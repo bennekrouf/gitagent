@@ -151,9 +151,20 @@ pub struct RepoEntry {
     /// auth) — shown instead of the count badge, so a check that never
     /// happened never looks identical to a repository that is truly clean.
     pub prs_error: Option<String>,
-    /// The free version's five repositories are taken and this is not one of
-    /// them: listed and probed as usual, but a run asks for Pro.
+    /// The free version's repositories are taken and this is not one of them:
+    /// listed, but not checked, and selecting it opens the Pro window.
     pub locked: bool,
+}
+
+/// A locked row is never shown as selected: it can't be.
+fn row_class(locked: bool, selected: bool) -> &'static str {
+    if locked {
+        "sidebar-row sidebar-row-locked"
+    } else if selected {
+        "sidebar-row sidebar-row-on"
+    } else {
+        "sidebar-row"
+    }
 }
 
 /// The header's count, reduced to what it is allowed to claim.
@@ -291,11 +302,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                     for entry in props.entries.iter().cloned() {
                         div {
                             key: "{entry.path}",
-                            class: if selected.as_deref() == Some(entry.path.as_str()) {
-                                "sidebar-row sidebar-row-on"
-                            } else {
-                                "sidebar-row"
-                            },
+                            class: row_class(entry.locked, selected.as_deref() == Some(entry.path.as_str())),
                             title: "{entry.path}",
                             onclick: {
                                 let path = entry.path.clone();
@@ -315,13 +322,6 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             span { class: "sidebar-main",
                                 span { class: "sidebar-label-row",
                                     span { class: "sidebar-label", "{entry.label}" }
-                                    if entry.locked {
-                                        span {
-                                            class: "pro-lock",
-                                            title: "The free version's repositories are all taken \u{2014} a run here needs GitAgent Pro, or a free slot given back",
-                                            "Pro"
-                                        }
-                                    }
                                     if entry.phase.left_a_failure() {
                                         span {
                                             class: "run-failed-mark",
@@ -366,7 +366,13 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             span { class: "row-status",
                                 // A run in progress outranks anything the probe found:
                                 // it is more recent, and it is already yours.
-                                if entry.phase.is_live() {
+                                if entry.locked {
+                                    span {
+                                        class: "pro-lock",
+                                        title: "The free version works with 5 repositories and they are taken \u{2014} click for GitAgent Pro, or to give one back",
+                                        "\u{1f512} Pro"
+                                    }
+                                } else if entry.phase.is_live() {
                                     span { class: "sidebar-note status-{entry.phase.css()}",
                                         span { class: "note-icon", "{entry.phase.icon()}" }
                                         "{entry.phase.note()}"
@@ -389,6 +395,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 }
                             }
+                            if !entry.locked {
                             button {
                                 class: "row-reprobe",
                                 title: "Re-check this repository",
@@ -402,6 +409,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 },
                                 "\u{27f3}"
+                            }
                             }
                         }
                     }
