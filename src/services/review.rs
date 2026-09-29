@@ -648,30 +648,45 @@ fn merge_failure(number: &str, base: &str, message: String) -> StepFailure {
         };
     }
     let guide = format!(
-        "#{number} conflicts with {base}: both changed the same lines, so GitHub cannot \
-         merge it. Nothing has been merged or changed.\n\n\
-         To keep the change:\n\
-         1. Bring {base} in (below). It switches to #{number}'s branch and merges the \
-            latest {base} into it. Where both sides changed the same lines, git stops \
-            and marks them in the files with <<<<<<< and >>>>>>>.\n\
-         2. Fix those files in your editor.\n\
-         3. Start any flow: Preflight offers Finish the merge, which commits it.\n\
-         4. Run Commit → PR to push the branch — it finds #{number} rather than opening \
-            another — then Review → Merge again.\n\n\
+        "#{number} conflicts with {base}: GitHub cannot merge it as it stands. Nothing \
+         has been merged or changed.\n\n\
+         To keep the change, Bring {base} in (below). It switches to #{number}'s branch \
+         and merges the latest {base} into it.\n\
+         - If that merges cleanly, it pushes the branch, waits for GitHub to recheck \
+           #{number}, and tries the merge again.\n\
+         - If both sides changed the same lines, git stops and marks them in the files \
+           with <<<<<<< and >>>>>>>, and nothing is pushed. Fix those files, start any \
+           flow — Preflight offers Finish the merge — then run Commit → PR to push the \
+           branch (it finds #{number} rather than opening another), and Review → Merge \
+           again.\n\n\
          Otherwise, close #{number} without merging.\n\n{message}"
     );
     // Positional arguments rather than text spliced into the script: a branch
     // name may legally contain `;`, `$` or `&`.
-    let script =
-        r#"gh pr checkout "$1" && git fetch origin "$2" && git merge --no-edit "origin/$2""#;
-    let bring_in = Remedy::completes(
-        &format!("Bring {base} in — switch to #{number}'s branch and merge {base} into it"),
+    //
+    // GitHub works out mergeability after a push, not during it, and for a few
+    // seconds can still report the old conflict — merging again straight away
+    // would fail on stale news. So the script waits for a fresh answer.
+    let script = r#"gh pr checkout "$1" && git fetch origin "$2" && git merge --no-edit "origin/$2" && git push || exit 1
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  sleep 3
+  state=$(gh pr view "$1" --json mergeable -q .mergeable)
+  [ "$state" = MERGEABLE ] && exit 0
+  if [ "$state" = CONFLICTING ] && [ "$i" -gt 3 ]; then
+    echo "Pushed, but GitHub still reports #$1 as conflicting."; exit 1
+  fi
+done
+echo "Pushed. GitHub has not finished rechecking #$1; merging anyway."
+"#;
+    let bring_in = Remedy::new(
+        &format!("Bring {base} in — merge it into #{number}'s branch, push, and merge again"),
         "sh",
         &["-c", script, "sh", number, base],
     );
     let bring_in = Remedy {
         display: format!(
-            "gh pr checkout {number} && git fetch origin {base} && git merge origin/{base}"
+            "gh pr checkout {number} && git fetch origin {base} && git merge origin/{base} \
+             && git push   (then waits for GitHub to recheck #{number})"
         ),
         ..bring_in
     };
@@ -903,8 +918,12 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
             "on the PR's own branch"
         );
         assert!(
-            !update.retry_after,
-            "a conflicted merge leaves work to do; retrying the merge would be a trap"
+            update.retry_after,
+            "it only succeeds once the merge was clean and pushed, so merging again is next"
+        );
+        assert!(
+            update.args[1].find("git merge").unwrap() < update.args[1].find("git push").unwrap(),
+            "nothing is pushed unless the merge went through"
         );
         assert!(!update.abandons, "bringing the base in is not giving up");
         assert!(

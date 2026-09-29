@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- **Bring the base in**, offered when a pull request cannot be merged, now
+  finishes the job when the base merges in cleanly: it pushes the branch, waits
+  for GitHub to recheck the pull request, and asks to merge again. Before, a
+  clean merge ended the run without a word and without pushing, so the pull
+  request still showed as conflicting. A real conflict still stops before
+  anything is pushed, with the files to fix marked.
+
 ## [0.1.65] - 2026-09-29
 
 ### Changed
