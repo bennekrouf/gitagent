@@ -29,6 +29,14 @@ were never released.
   an existing one — which also covers repositories cloned later, unlike hiding
   it one repository at a time.
 
+### Fixed
+
+- When a pull request cannot be merged because it conflicts with the base
+  branch, **Bring the base in** now switches to the pull request's own branch
+  before merging the base into it. Before, it merged into whichever branch
+  happened to be checked out. The button no longer reads "Abandon", and the
+  message lists every step from there to a merged pull request.
+
 ## [0.1.63] - 2026-09-29
 
 ### Added

@@ -637,39 +637,61 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
 }
 
 /// "not mergeable: the merge commit cannot be cleanly created" means a real
-/// conflict against the base branch — nothing here can resolve that
-/// automatically, but closing the pull request is always an available way
-/// out, worth offering right where the failure is shown rather than sending
-/// the human to a terminal.
+/// conflict against the base branch. Nothing here can resolve a content
+/// conflict for a person, but it can take them to the point where only that
+/// is left — and say, right where the failure is, every step after it.
 fn merge_failure(number: &str, base: &str, message: String) -> StepFailure {
-    let mut remedies = vec![];
-    if message.contains("not mergeable") {
-        // The constructive option first. It cannot finish the job — a content
-        // conflict needs a person — but it is the step that person would take
-        // first, and it leaves the tree ready to resolve rather than sending
-        // them to a terminal to work out what to type.
-        //
-        // Not retryable afterwards: the merge stops mid-way on a conflict, and
-        // offering "retry the merge" against a half-merged tree would be a
-        // trap. Resolve, commit, push, then run the flow again.
-        remedies.push(Remedy::terminal(
-            &format!("Bring {base} in — you resolve any conflicts"),
-            "git",
-            &["merge", &format!("origin/{base}")],
-        ));
-        remedies.push(Remedy::terminal(
-            &format!("Abandon — close #{number} without merging"),
-            "gh",
-            &[
-                "pr",
-                "close",
-                number,
-                "--comment",
-                "Closing — conflicts with the base branch and this run is being abandoned rather than resolved.",
-            ],
-        ));
+    if !message.contains("not mergeable") {
+        return StepFailure {
+            message,
+            remedies: vec![],
+        };
     }
-    StepFailure { message, remedies }
+    let guide = format!(
+        "#{number} conflicts with {base}: both changed the same lines, so GitHub cannot \
+         merge it. Nothing has been merged or changed.\n\n\
+         To keep the change:\n\
+         1. Bring {base} in (below). It switches to #{number}'s branch and merges the \
+            latest {base} into it. Where both sides changed the same lines, git stops \
+            and marks them in the files with <<<<<<< and >>>>>>>.\n\
+         2. Fix those files in your editor.\n\
+         3. Start any flow: Preflight offers Finish the merge, which commits it.\n\
+         4. Run Commit → PR to push the branch — it finds #{number} rather than opening \
+            another — then Review → Merge again.\n\n\
+         Otherwise, close #{number} without merging.\n\n{message}"
+    );
+    // Positional arguments rather than text spliced into the script: a branch
+    // name may legally contain `;`, `$` or `&`.
+    let script =
+        r#"gh pr checkout "$1" && git fetch origin "$2" && git merge --no-edit "origin/$2""#;
+    let bring_in = Remedy::completes(
+        &format!("Bring {base} in — switch to #{number}'s branch and merge {base} into it"),
+        "sh",
+        &["-c", script, "sh", number, base],
+    );
+    let bring_in = Remedy {
+        display: format!(
+            "gh pr checkout {number} && git fetch origin {base} && git merge origin/{base}"
+        ),
+        ..bring_in
+    };
+    StepFailure {
+        message: guide,
+        remedies: vec![
+            bring_in,
+            Remedy::terminal(
+                &format!("Abandon — close #{number} without merging"),
+                "gh",
+                &[
+                    "pr",
+                    "close",
+                    number,
+                    "--comment",
+                    "Closing — conflicts with the base branch and this run is being abandoned rather than resolved.",
+                ],
+            ),
+        ],
+    }
 }
 
 async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
@@ -870,11 +892,24 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
         // Constructive first: closing the pull request should never be the
         // only thing on offer for a conflict.
         let update = &failure.remedies[0];
-        assert_eq!(update.program, "git");
-        assert_eq!(update.args, vec!["merge", "origin/master"]);
+        assert_eq!(update.program, "sh");
+        assert_eq!(
+            update.args[3..],
+            ["8", "master"],
+            "names travel as arguments"
+        );
+        assert!(
+            update.args[1].contains("gh pr checkout \"$1\""),
+            "on the PR's own branch"
+        );
         assert!(
             !update.retry_after,
             "a conflicted merge leaves work to do; retrying the merge would be a trap"
+        );
+        assert!(!update.abandons, "bringing the base in is not giving up");
+        assert!(
+            failure.message.contains("Finish the merge"),
+            "the steps after it are spelled out"
         );
 
         let abandon = &failure.remedies[1];
@@ -886,7 +921,7 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
     #[test]
     fn the_update_remedy_targets_the_pull_requests_own_base() {
         let failure = merge_failure("1", "develop", "not mergeable".to_string());
-        assert_eq!(failure.remedies[0].args, vec!["merge", "origin/develop"]);
+        assert_eq!(failure.remedies[0].args[4], "develop");
     }
 
     #[test]
