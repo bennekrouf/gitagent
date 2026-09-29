@@ -19,6 +19,12 @@ were never released.
 
 ## [Unreleased]
 
+### Changed
+
+- The refresh button at the top of the repository list is bigger and tinted
+  green, so the check you run most often is the easiest one to hit. Its icon
+  turns while the repositories are being re-checked.
+
 ### Fixed
 
 - **Bring the base in**, offered when a pull request cannot be merged, now

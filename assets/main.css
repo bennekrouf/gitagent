@@ -222,6 +222,28 @@ body {
 }
 .sidebar-switch:hover::after { opacity: 1; transform: translateY(0); }
 .sidebar-switch:disabled::after { content: none; }
+/* Refresh is the one of the three reached for all day, so it gets a bigger,
+   drawn icon and a tinted surface at rest instead of waiting for hover. */
+.sidebar-refresh {
+    width: 36px; height: 36px;
+    color: var(--green);
+    background: color-mix(in srgb, var(--green) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+    border-radius: 8px;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+}
+.sidebar-refresh:hover:not(:disabled) {
+    color: var(--green);
+    background: color-mix(in srgb, var(--green) 22%, transparent);
+    border-color: var(--green);
+}
+.sidebar-refresh:active:not(:disabled) { transform: scale(0.94); }
+.sidebar-refresh:disabled,
+.sidebar-refresh:disabled:hover {
+    color: var(--green);
+    background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.sidebar-refresh svg { display: block; transform-origin: 50% 50%; }
 .sidebar-path {
     padding: 0 12px 10px;
     font-size: 10px; color: var(--text3);
