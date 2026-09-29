@@ -245,11 +245,25 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                 }
                 div { class: "sidebar-actions",
                     button {
-                        class: if props.probing > 0 { "sidebar-switch spinning" } else { "sidebar-switch" },
+                        class: "sidebar-switch sidebar-refresh",
                         disabled: props.probing > 0,
                         title: "Re-check every repository",
                         onclick: move |_| props.on_refresh.call(()),
-                        "⟳"
+                        // Only the icon turns while probing: spinning the
+                        // whole button would spin its tinted background too.
+                        svg {
+                            class: if props.probing > 0 { "spinning" } else { "" },
+                            width: "20",
+                            height: "20",
+                            view_box: "0 0 24 24",
+                            fill: "none",
+                            stroke: "currentColor",
+                            stroke_width: "2.2",
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            path { d: "M20 12a8 8 0 1 1-2.34-5.66" }
+                            path { d: "M20 4v5h-5" }
+                        }
                     }
                     button {
                         class: "sidebar-switch",
