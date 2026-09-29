@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- With GitAgent Pro active, the top-right corner of the window shows a **✦ PRO**
+  badge instead of a plain "Pro ✓" button. Hovering it shows who the licence
+  is for and until when updates are included; clicking it still opens the
+  licence window. A licence whose updates have ended shows **✦ RENEW PRO**.
+
 ## [0.1.67] - 2026-09-29
 
 ### Changed

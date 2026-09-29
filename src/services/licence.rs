@@ -360,7 +360,9 @@ mod tests {
         assert_eq!(usable(&first), FREE_REPOS);
         assert_eq!(usable(&second), 0);
         let pro_less_build = Status::Unavailable;
-        assert!(second.iter().all(|r| !is_locked(&pro_less_build, &slots, r)));
+        assert!(second
+            .iter()
+            .all(|r| !is_locked(&pro_less_build, &slots, r)));
 
         // A locked repository takes one's place.
         slots.swap("/a/r0", "/b/r3");
@@ -372,13 +374,24 @@ mod tests {
     #[test]
     fn slots_taken_before_are_topped_up_to_five() {
         // 0.1.65 took a slot on the first run only: two used, three free.
-        let mut slots = Slots { repos: vec!["/a/mayorana".into(), "/a/gitagent".into()] };
+        let mut slots = Slots {
+            repos: vec!["/a/mayorana".into(), "/a/gitagent".into()],
+        };
         let listed: Vec<String> = ["/a/api0", "/a/gitagent", "/a/splitter", "/a/cvenom", "/a/x"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         assert!(slots.fill(&listed));
-        assert_eq!(slots.repos, ["/a/mayorana", "/a/gitagent", "/a/api0", "/a/splitter", "/a/cvenom"]);
+        assert_eq!(
+            slots.repos,
+            [
+                "/a/mayorana",
+                "/a/gitagent",
+                "/a/api0",
+                "/a/splitter",
+                "/a/cvenom"
+            ]
+        );
     }
 
     #[test]
