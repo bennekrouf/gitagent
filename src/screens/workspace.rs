@@ -16,10 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::components::branches_panel::BranchesPanel;
 use crate::components::detail_pane::DetailPane;
 use crate::components::forge_icon::ForgeIcon;
+use crate::components::licence_panel::LicencePanel;
 use crate::components::node_card::NodeCard;
 use crate::components::pr_card::PrCard;
 use crate::components::repo_sidebar::{phase_of, Phase, RepoEntry, RepoSidebar};
-use crate::components::licence_panel::LicencePanel;
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
@@ -967,7 +967,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 .read()
                 .get(&repo)
                 .and_then(|status| {
-                    trusted::next_flow(&book.read(), status, repo_flows.read().hidden_for(&repo))
+                    trusted::next_flow(&book.read(), status, &repo_flows.read().hidden_for(&repo))
                 })
                 .or_else(|| Some((selected_flow.read().clone(), selected_pr.read().clone())))
         } else {
@@ -982,7 +982,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         trusted::why_stopped(
                             &book.read(),
                             status,
-                            repo_flows.read().hidden_for(&repo),
+                            &repo_flows.read().hidden_for(&repo),
                         )
                         .unwrap_or_default(),
                     );
@@ -1093,9 +1093,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     if *setup_open.read() {
         return rsx! {
             Setup {
+                repo: selected_repo.read().clone(),
                 on_close: move |_| {
                     // Pick up whatever Setup wrote, without disturbing any run.
                     book.set(FlowBook::load());
+                    repo_flows.set(store::load_repo_flows());
                     setup_open.set(false);
                 },
             }
@@ -1225,7 +1227,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     .map(|s| s.prs.clone())
                                     .unwrap_or_default()
                                     .as_slice(),
-                                repo_flows.read().hidden_for(&path),
+                                &repo_flows.read().hidden_for(&path),
                             );
                         selected_repo.set(Some(path));
                         if !flow_id.is_empty() {
@@ -1326,10 +1328,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         // Counted against the book rather than the stored
                         // list: an id left behind by a flow deleted in Setup
                         // must not advertise "1 hidden" with nothing to show.
+                        // Flows made for other repositories are offers, not
+                        // something this one hid, so they are counted apart.
+                        let elsewhere: Vec<String> = listed
+                            .iter()
+                            .filter(|(id, _, _)| repo_flows.read().elsewhere_only(&repo, id))
+                            .map(|(id, _, _)| id.clone())
+                            .collect();
                         let hidden_count = listed
                             .iter()
-                            .filter(|(id, _, _)| hidden_here.contains(id))
+                            .filter(|(id, _, _)| hidden_here.contains(id) && !elsewhere.contains(id))
                             .count();
+                        let offered = elsewhere.len();
 
                         rsx! {
                             div { class: "graph-col", style: "width: {middle_w}px;",
@@ -1590,7 +1600,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                 picker_open.set(if open { None } else { Some(repo.clone()) });
                                             }
                                         },
-                                        if hidden_count > 0 {
+                                        if hidden_count > 0 && offered > 0 {
+                                            "{hidden_count} hidden · {offered} more"
+                                        } else if offered > 0 {
+                                            "{offered} more"
+                                        } else if hidden_count > 0 {
                                             "{hidden_count} hidden"
                                         } else {
                                             "\u{22ef}"
@@ -1640,6 +1654,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                                 span { class: "flow-tab-warn", "\u{26a0}" }
                                                             }
                                                             span { class: "flow-picker-label", "{flow_label}" }
+                                                            if elsewhere.contains(&id) {
+                                                                span {
+                                                                    class: "flow-picker-hint",
+                                                                    "only on other repositories — tick to add here"
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }

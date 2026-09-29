@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- A flow created in Setup is shown only on the repository you opened Setup
+  from, instead of on every repository. In the other repositories the flow
+  list button counts it as "1 more", and the list offers it as "only on other
+  repositories — tick to add here". Setup says where each flow is shown, with **Show on every
+  repository** for a flow meant for all of them, and **Only on** to restrict
+  an existing one — which also covers repositories cloned later, unlike hiding
+  it one repository at a time.
+
 ## [0.1.63] - 2026-09-29
 
 ### Added

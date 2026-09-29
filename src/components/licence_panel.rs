@@ -56,7 +56,12 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
             })
     };
     let current = status.read().clone();
-    let used: Vec<(String, String)> = slots.read().repos.iter().map(|p| (p.clone(), label_of(p))).collect();
+    let used: Vec<(String, String)> = slots
+        .read()
+        .repos
+        .iter()
+        .map(|p| (p.clone(), label_of(p)))
+        .collect();
     let wanted = props.wanted.as_deref().map(label_of);
 
     rsx! {
