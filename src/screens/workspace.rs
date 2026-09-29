@@ -1145,21 +1145,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         if *global_trust.read() { "Trusting everything…" } else { "Trust all" }
                     }
                     button {
-                        class: if licence_status.read().unlimited() { "btn btn-ghost" } else { "btn btn-ghost btn-pro" },
-                        title: match *licence_status.read() {
-                            licence::Status::Pro(_) => "GitAgent Pro is active on this computer",
-                            licence::Status::Renew(_) => "Your Pro updates ended before this version: renew or paste a new key",
-                            _ => "Buy GitAgent Pro, paste your licence key, or choose the free version's repositories",
-                        },
-                        onclick: move |_| licence_open.set(Some(None)),
-                        match *licence_status.read() {
-                            licence::Status::Pro(_) => "Pro \u{2713}",
-                            licence::Status::Renew(_) => "Renew Pro\u{2026}",
-                            licence::Status::Unavailable => "Pro",
-                            licence::Status::Free => "Get Pro\u{2026}",
-                        }
-                    }
-                    button {
                         class: "btn btn-ghost",
                         onclick: move |_| setup_open.set(true),
                         "Setup"
@@ -1177,6 +1162,44 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             is_light.set(!now);
                         },
                         if *props.is_light.read() { "Dark" } else { "Light" }
+                    }
+                    // Last, so it sits in the corner: the one element in
+                    // the bar that is about you rather than the work.
+                    match licence_status.read().clone() {
+                        licence::Status::Pro(l) => rsx! {
+                            button {
+                                class: "pro-badge",
+                                title: "GitAgent Pro · licensed to {l.email} · updates until {l.updates_until}",
+                                onclick: move |_| licence_open.set(Some(None)),
+                                span { class: "pro-badge-star", "\u{2726}" }
+                                span { class: "pro-badge-text", "PRO" }
+                            }
+                        },
+                        licence::Status::Renew(l) => rsx! {
+                            button {
+                                class: "pro-badge pro-badge-renew",
+                                title: "Your Pro updates ended on {l.updates_until}, before this version. Renew, or paste a new key.",
+                                onclick: move |_| licence_open.set(Some(None)),
+                                span { class: "pro-badge-star", "\u{2726}" }
+                                span { class: "pro-badge-text", "RENEW PRO" }
+                            }
+                        },
+                        licence::Status::Free => rsx! {
+                            button {
+                                class: "btn btn-ghost btn-pro",
+                                title: "Buy GitAgent Pro, paste your licence key, or choose the free version's repositories",
+                                onclick: move |_| licence_open.set(Some(None)),
+                                "Get Pro\u{2026}"
+                            }
+                        },
+                        licence::Status::Unavailable => rsx! {
+                            button {
+                                class: "btn btn-ghost",
+                                title: "A build that cannot check licences, such as one built from source: nothing is limited.",
+                                onclick: move |_| licence_open.set(Some(None)),
+                                "Pro"
+                            }
+                        },
                     }
                 }
             }
