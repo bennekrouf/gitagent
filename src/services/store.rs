@@ -230,6 +230,12 @@ pub fn save_settings(cfg: &LlmConfig) {
 pub struct RepoFlows {
     #[serde(default)]
     pub hidden: BTreeMap<String, Vec<String>>,
+    /// Flows shown only on the repositories listed, keyed by flow id. Opt-in
+    /// rather than hidden everywhere else: a deploy flow made for one
+    /// repository must not turn up on every other one, including those
+    /// cloned later, which a hidden list can never name in advance.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub only: BTreeMap<String, Vec<String>>,
 }
 
 impl RepoFlows {
@@ -237,9 +243,22 @@ impl RepoFlows {
         self.hidden
             .get(repo)
             .is_some_and(|ids| ids.iter().any(|id| id == flow_id))
+            || self.elsewhere_only(repo, flow_id)
+    }
+
+    /// Shown only on other repositories — what the flow picker offers here
+    /// as a suggestion rather than a flow someone chose to hide.
+    pub fn elsewhere_only(&self, repo: &str, flow_id: &str) -> bool {
+        self.only
+            .get(flow_id)
+            .is_some_and(|repos| !repos.iter().any(|r| r == repo))
     }
 
     pub fn hide(&mut self, repo: &str, flow_id: &str) {
+        if let Some(repos) = self.only.get_mut(flow_id) {
+            repos.retain(|r| r != repo);
+            return;
+        }
         let ids = self.hidden.entry(repo.to_string()).or_default();
         if !ids.iter().any(|id| id == flow_id) {
             ids.push(flow_id.to_string());
@@ -250,6 +269,11 @@ impl RepoFlows {
     /// hidden for it, so a repo that has restored everything looks exactly
     /// like one that never hid anything.
     pub fn show(&mut self, repo: &str, flow_id: &str) {
+        if let Some(repos) = self.only.get_mut(flow_id) {
+            if !repos.iter().any(|r| r == repo) {
+                repos.push(repo.to_string());
+            }
+        }
         let Some(ids) = self.hidden.get_mut(repo) else {
             return;
         };
@@ -259,8 +283,34 @@ impl RepoFlows {
         }
     }
 
-    pub fn hidden_for(&self, repo: &str) -> &[String] {
-        self.hidden.get(repo).map(Vec::as_slice).unwrap_or(&[])
+    /// Restricts a flow to one repository, replacing any hidden entries for
+    /// it — those were only ever a way of saying the same thing.
+    pub fn only_on(&mut self, flow_id: &str, repo: &str) {
+        self.only
+            .insert(flow_id.to_string(), vec![repo.to_string()]);
+        for ids in self.hidden.values_mut() {
+            ids.retain(|id| id != flow_id);
+        }
+        self.hidden.retain(|_, ids| !ids.is_empty());
+    }
+
+    pub fn everywhere(&mut self, flow_id: &str) {
+        self.only.remove(flow_id);
+    }
+
+    pub fn shown_only_on(&self, flow_id: &str) -> Option<&[String]> {
+        self.only.get(flow_id).map(Vec::as_slice)
+    }
+
+    /// Every flow not shown on `repo`, for whatever reason.
+    pub fn hidden_for(&self, repo: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self.hidden.get(repo).cloned().unwrap_or_default();
+        for flow_id in self.only.keys() {
+            if self.elsewhere_only(repo, flow_id) && !ids.contains(flow_id) {
+                ids.push(flow_id.clone());
+            }
+        }
+        ids
     }
 }
 
@@ -470,6 +520,39 @@ mod tests {
         std::fs::remove_dir_all(root.join("beta")).unwrap();
         assert_eq!(labels(&folder), ["alpha", "gamma"]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_flow_made_for_one_repository_stays_off_the_others_until_added() {
+        let mut f = RepoFlows::default();
+        f.hide("/other", "deploy_solanize");
+        f.only_on("deploy_solanize", "/solanize");
+        assert!(f.hidden.is_empty(), "the old hidden entries are folded in");
+
+        assert!(!f.is_hidden("/solanize", "deploy_solanize"));
+        assert!(f.is_hidden("/other", "deploy_solanize"));
+        assert!(f.is_hidden("/cloned-tomorrow", "deploy_solanize"));
+        assert!(f.elsewhere_only("/other", "deploy_solanize"));
+        assert_eq!(f.hidden_for("/other"), vec!["deploy_solanize".to_string()]);
+
+        f.show("/other", "deploy_solanize");
+        assert!(
+            !f.is_hidden("/other", "deploy_solanize"),
+            "ticking it adds the repository"
+        );
+        f.hide("/other", "deploy_solanize");
+        assert!(f.is_hidden("/other", "deploy_solanize"));
+        assert!(!f.is_hidden("/solanize", "deploy_solanize"));
+
+        f.everywhere("deploy_solanize");
+        assert!(!f.is_hidden("/cloned-tomorrow", "deploy_solanize"));
+    }
+
+    #[test]
+    fn an_existing_repo_flows_file_still_loads() {
+        let old = r#"{ "hidden": { "/a": ["x"] } }"#;
+        let f: RepoFlows = serde_json::from_str(old).unwrap();
+        assert!(f.is_hidden("/a", "x") && f.only.is_empty());
     }
 
     #[test]

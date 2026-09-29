@@ -72,7 +72,10 @@ pub enum LicenseError {
 impl std::fmt::Display for LicenseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Malformed => write!(f, "This isn't a complete licence key. Copy the whole key from the email."),
+            Self::Malformed => write!(
+                f,
+                "This isn't a complete licence key. Copy the whole key from the email."
+            ),
             Self::BadSignature => write!(f, "This licence key isn't valid."),
             Self::OtherProduct(p) => write!(f, "This is a licence for {p}, not GitAgent."),
         }
@@ -84,8 +87,12 @@ impl std::fmt::Display for LicenseError {
 pub fn verify(key: &str, public_key: &[u8; 32]) -> Result<License, LicenseError> {
     let key: String = key.chars().filter(|c| !c.is_whitespace()).collect();
     let (body, signature) = key.split_once('.').ok_or(LicenseError::Malformed)?;
-    let payload = URL_SAFE_NO_PAD.decode(body).map_err(|_| LicenseError::Malformed)?;
-    let signature = URL_SAFE_NO_PAD.decode(signature).map_err(|_| LicenseError::Malformed)?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(body)
+        .map_err(|_| LicenseError::Malformed)?;
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| LicenseError::Malformed)?;
     let signature = Signature::from_slice(&signature).map_err(|_| LicenseError::Malformed)?;
     let verifying = VerifyingKey::from_bytes(public_key).map_err(|_| LicenseError::BadSignature)?;
     verifying
@@ -139,8 +146,12 @@ fn status_of(license: License) -> Status {
 /// The licence saved on this computer, checked again every time: a key that
 /// no longer verifies counts as none.
 pub fn current() -> Status {
-    let Some(public) = public_key() else { return Status::Unavailable };
-    let Ok(key) = std::fs::read_to_string(licence_path()) else { return Status::Free };
+    let Some(public) = public_key() else {
+        return Status::Unavailable;
+    };
+    let Ok(key) = std::fs::read_to_string(licence_path()) else {
+        return Status::Free;
+    };
     match verify(&key, &public) {
         Ok(l) => status_of(l),
         Err(_) => Status::Free,
@@ -265,12 +276,24 @@ mod tests {
         let signer = SigningKey::from_bytes(&[7u8; 32]);
         let public = signer.verifying_key().to_bytes();
         let forger = SigningKey::from_bytes(&[8u8; 32]);
-        assert_eq!(verify(&sign(PAYLOAD, &forger), &public), Err(LicenseError::BadSignature));
-        let (_, sig) = sign(PAYLOAD, &signer).split_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap();
+        assert_eq!(
+            verify(&sign(PAYLOAD, &forger), &public),
+            Err(LicenseError::BadSignature)
+        );
+        let (_, sig) = sign(PAYLOAD, &signer)
+            .split_once('.')
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .unwrap();
         let edited = URL_SAFE_NO_PAD.encode(PAYLOAD.replace("2027", "2099"));
-        assert_eq!(verify(&format!("{edited}.{sig}"), &public), Err(LicenseError::BadSignature));
+        assert_eq!(
+            verify(&format!("{edited}.{sig}"), &public),
+            Err(LicenseError::BadSignature)
+        );
         let splitter = sign(&PAYLOAD.replace("gitagent", "splitter"), &signer);
-        assert_eq!(verify(&splitter, &public), Err(LicenseError::OtherProduct("splitter".into())));
+        assert_eq!(
+            verify(&splitter, &public),
+            Err(LicenseError::OtherProduct("splitter".into()))
+        );
         assert_eq!(verify("nonsense", &public), Err(LicenseError::Malformed));
     }
 

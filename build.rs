@@ -23,7 +23,10 @@ fn main() {
         .ok()
         .filter(|d| !d.is_empty())
         .or_else(commit_date);
-    println!("cargo:rustc-env=GITAGENT_RELEASE_DATE={}", date.unwrap_or_default());
+    println!(
+        "cargo:rustc-env=GITAGENT_RELEASE_DATE={}",
+        date.unwrap_or_default()
+    );
 
     #[cfg(target_os = "windows")]
     {

@@ -20,6 +20,10 @@ use crate::services::store::{self, Layout};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SetupProps {
+    /// The repository Setup was opened from. A flow created here is shown on
+    /// it alone until another repository adds it from its flow list.
+    #[props(default)]
+    pub repo: Option<String>,
     pub on_close: EventHandler<()>,
 }
 
@@ -30,6 +34,13 @@ pub fn Setup(props: SetupProps) -> Element {
     // there is anything to throw away, and so Save can tell an untouched
     // visit from an edited one.
     let on_disk = use_signal(FlowBook::load);
+    // Which repositories each flow is shown on: part of the same draft, so
+    // Cancel throws a change here away with everything else.
+    let mut scopes = use_signal(store::load_repo_flows);
+    let scopes_on_disk = use_signal(store::load_repo_flows);
+    // New flows the person asked to show everywhere rather than only on the
+    // repository Setup was opened from.
+    let mut everywhere = use_signal(std::collections::BTreeSet::<String>::new);
     let first = book
         .read()
         .flows
@@ -60,7 +71,14 @@ pub fn Setup(props: SetupProps) -> Element {
     // Whether the draft has moved away from what is on disk. Drives the Save
     // button's state and whether Cancel has to ask before throwing anything
     // away.
-    let dirty = snapshot != *on_disk.read();
+    let dirty = snapshot != *on_disk.read() || *scopes.read() != *scopes_on_disk.read();
+    let shipped = FlowBook::defaults();
+    let is_new = |id: &str| on_disk.read().get(id).is_none() && shipped.get(id).is_none();
+    let origin = props.repo.clone();
+    let origin_label = origin
+        .as_deref()
+        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+        .unwrap_or_default();
     let current_id = flow_id.read().clone();
     let current = snapshot.get(&current_id).cloned();
     let selected_node = node_id.read().clone();
@@ -109,9 +127,25 @@ pub fn Setup(props: SetupProps) -> Element {
                         } else {
                             "No changes to save"
                         },
-                        onclick: move |_| {
-                            book.read().save();
-                            props.on_close.call(());
+                        onclick: {
+                            let origin = props.repo.clone();
+                            move |_| {
+                                let book_now = book.read().clone();
+                                let mut scoped = scopes.read().clone();
+                                if let Some(repo) = origin.as_deref() {
+                                    let shipped = FlowBook::defaults();
+                                    for flow in &book_now.flows {
+                                        let new = on_disk.read().get(&flow.id).is_none()
+                                            && shipped.get(&flow.id).is_none();
+                                        if new && !everywhere.read().contains(&flow.id) {
+                                            scoped.only_on(&flow.id, repo);
+                                        }
+                                    }
+                                }
+                                book_now.save();
+                                store::save_repo_flows(&scoped);
+                                props.on_close.call(());
+                            }
                         },
                         "Save"
                     }
@@ -278,6 +312,66 @@ pub fn Setup(props: SetupProps) -> Element {
                                             node_id.set(String::new());
                                         },
                                         "Delete flow"
+                                    }
+                                }
+
+                                {
+                                    let id = flow.id.clone();
+                                    let new = is_new(&id);
+                                    let only = scopes.read().shown_only_on(&id).map(|r| r.to_vec());
+                                    let label_of = |p: &String| p.rsplit('/').next().unwrap_or(p).to_string();
+                                    let (text, action): (String, Option<(&str, bool)>) = match (&only, new, &origin) {
+                                        (Some(repos), _, _) if repos.is_empty() => (
+                                            "Shown on no repository. Add it from a repository's flow list.".into(),
+                                            Some(("Show on every repository", true)),
+                                        ),
+                                        (Some(repos), _, _) => (
+                                            format!(
+                                                "Shown only on {}. Other repositories can add it from their flow list.",
+                                                repos.iter().map(label_of).collect::<Vec<_>>().join(", ")
+                                            ),
+                                            Some(("Show on every repository", true)),
+                                        ),
+                                        (None, true, Some(_)) if !everywhere.read().contains(&id) => (
+                                            format!(
+                                                "New: will be shown only on {origin_label} once saved. Other repositories can add it from their flow list."
+                                            ),
+                                            Some(("Show on every repository", true)),
+                                        ),
+                                        (None, _, Some(_)) if shipped.get(&id).is_none() => (
+                                            "Shown on every repository.".into(),
+                                            Some(("Only on this repository", false)),
+                                        ),
+                                        _ => ("Shown on every repository.".into(), None),
+                                    };
+                                    rsx! {
+                                        div { class: "flow-scope",
+                                            span { class: "flow-scope-text", "{text}" }
+                                            if let Some((button, wide)) = action {
+                                                button {
+                                                    class: "btn btn-ghost",
+                                                    title: if wide {
+                                                        "Every repository shows this flow; any one of them can still hide it from its flow list."
+                                                    } else {
+                                                        "Only the repository Setup was opened from shows it; others can add it from their flow list."
+                                                    },
+                                                    onclick: {
+                                                        let id = id.clone();
+                                                        let origin = origin.clone();
+                                                        move |_| {
+                                                            if wide {
+                                                                everywhere.write().insert(id.clone());
+                                                                scopes.write().everywhere(&id);
+                                                            } else if let Some(repo) = origin.as_deref() {
+                                                                everywhere.write().remove(&id);
+                                                                scopes.write().only_on(&id, repo);
+                                                            }
+                                                        }
+                                                    },
+                                                    if wide { "{button}" } else { "Only on {origin_label}" }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 
