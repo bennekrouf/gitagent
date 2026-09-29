@@ -118,10 +118,14 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                                     button {
                                         class: "btn btn-ghost",
                                         title: "Free this slot for another repository",
-                                        onclick: move |_| {
+                                        onclick: {
+                                            // The row still shows `path`; the handler gets its own copy.
+                                            let path = path.clone();
+                                            move |_| {
                                             let mut s = slots.write();
                                             s.release(&path);
                                             licence::save_slots(&s);
+                                            }
                                         },
                                         "Give back"
                                     }
