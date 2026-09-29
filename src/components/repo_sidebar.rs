@@ -151,6 +151,9 @@ pub struct RepoEntry {
     /// auth) — shown instead of the count badge, so a check that never
     /// happened never looks identical to a repository that is truly clean.
     pub prs_error: Option<String>,
+    /// The free version's five repositories are taken and this is not one of
+    /// them: listed and probed as usual, but a run asks for Pro.
+    pub locked: bool,
 }
 
 /// The header's count, reduced to what it is allowed to claim.
@@ -298,6 +301,13 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             span { class: "sidebar-main",
                                 span { class: "sidebar-label-row",
                                     span { class: "sidebar-label", "{entry.label}" }
+                                    if entry.locked {
+                                        span {
+                                            class: "pro-lock",
+                                            title: "The free version's repositories are all taken \u{2014} a run here needs GitAgent Pro, or a free slot given back",
+                                            "Pro"
+                                        }
+                                    }
                                     if entry.phase.left_a_failure() {
                                         span {
                                             class: "run-failed-mark",
@@ -494,6 +504,7 @@ mod tests {
             behind: 0,
             open_pr_count: 0,
             prs_error: None,
+            locked: false,
         }
     }
 

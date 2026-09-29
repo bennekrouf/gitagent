@@ -17,6 +17,19 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent Pro. The free version now runs flows in 5 repositories of your
+  choice: the first run in a repository takes one of the 5, and **Get Pro…**
+  in the top bar shows which ones and lets you give one back. Every repository
+  stays listed and checked as before; once the 5 are taken, the others show a
+  **Pro** tag and a run there opens the Pro window instead of starting. Paste
+  the licence key from your purchase email in the same window to run flows in
+  every repository. The key is checked on your computer, with no account and
+  nothing sent anywhere.
+
 ## [0.1.62] - 2026-09-27
 
 ### Added

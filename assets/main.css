@@ -1124,3 +1124,16 @@ body {
     background: color-mix(in srgb, var(--yellow) 18%, transparent);
     color: var(--yellow);
 }
+
+/* GitAgent Pro */
+.btn-pro { color: var(--blue); border-color: var(--blue); }
+.pro-lock {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--blue);
+  border: 1px solid var(--blue);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-left: 6px;
+}
