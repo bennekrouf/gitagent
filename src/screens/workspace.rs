@@ -2014,6 +2014,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     let workspace = workspace.clone();
                     move |_| {
                         licence_open.set(None);
+                        crate::refresh_window_title();
                         // A licence activated, or a slot given back: re-read
                         // what is locked, and check what just opened up.
                         refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots);

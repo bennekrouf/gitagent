@@ -25,6 +25,34 @@ fn webview_data_dir() -> std::path::PathBuf {
         .join("GitAgent")
 }
 
+/// The native title bar: app, version, licence, and — for a window opened on
+/// another folder — which one. Text only: the bar belongs to the OS, so this is
+/// the one place Pro can be shown up there on every platform.
+pub fn window_title(name: Option<&str>) -> String {
+    let mut title = format!("GitAgent {}", env!("CARGO_PKG_VERSION"));
+    title.push_str(match services::licence::current() {
+        services::licence::Status::Pro(_) => " \u{b7} \u{2726} Pro",
+        services::licence::Status::Renew(_) => " \u{b7} Pro updates ended",
+        _ => "",
+    });
+    if let Some(name) = name {
+        title.push_str(" \u{2014} ");
+        title.push_str(name);
+    }
+    title
+}
+
+/// Re-reads the licence into this window's title, keeping the folder name a
+/// second window carries after the dash.
+pub fn refresh_window_title() {
+    let window = dioxus::desktop::window();
+    let current = window.title();
+    let name = current
+        .split_once(" \u{2014} ")
+        .map(|(_, name)| name.to_string());
+    window.set_title(&window_title(name.as_deref()));
+}
+
 fn window_config(title: &str) -> dioxus::desktop::Config {
     dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir())
@@ -76,14 +104,7 @@ pub fn open_in_new_window(path: String) {
             initial: Some(path),
         },
     );
-    dioxus::desktop::window().new_window(
-        dom,
-        window_config(&format!(
-            "GitAgent {} — {}",
-            env!("CARGO_PKG_VERSION"),
-            name
-        )),
-    );
+    dioxus::desktop::window().new_window(dom, window_config(&window_title(Some(&name))));
 }
 
 fn main() {
@@ -100,7 +121,7 @@ fn main() {
         std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
     }
 
-    let cfg = window_config(concat!("GitAgent ", env!("CARGO_PKG_VERSION")));
+    let cfg = window_config(&window_title(None));
     LaunchBuilder::desktop().with_cfg(cfg).launch(App);
 }
 
@@ -257,8 +278,7 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                     is_light,
                     theme_overridden,
                     on_change_workspace: move |_| {
-                        dioxus::desktop::window()
-                            .set_title(concat!("GitAgent ", env!("CARGO_PKG_VERSION")));
+                        dioxus::desktop::window().set_title(&window_title(None));
                         workspace.set(None);
                     },
                 }
