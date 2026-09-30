@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The window's title bar says when GitAgent Pro is active — "GitAgent ·
+  version · ✦ Pro" — and "Pro updates ended" for a licence whose updates have
+  run out.
+  It updates as soon as a licence is added or removed.
+
 ## [0.1.68] - 2026-09-29
 
 ### Changed
