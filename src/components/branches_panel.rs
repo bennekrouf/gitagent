@@ -20,11 +20,18 @@ pub struct BranchesPanelProps {
     /// looking like the click did nothing.
     #[props(default)]
     pub busy: Option<String>,
+    /// Set while a flow is running in this repository, saying which. Every
+    /// action here waits for it: deleting or pushing a branch underneath a
+    /// run is the same race as two runs in one working tree.
+    #[props(default)]
+    pub held_by: Option<String>,
     pub on_close: EventHandler<()>,
     pub on_refresh: EventHandler<()>,
     /// `(branch, force)` — force is set for a merged branch, whose commit is
     /// squashed into the base and so never looks locally merged.
     pub on_delete: EventHandler<(String, bool)>,
+    /// Deletes every merged branch named, one after another.
+    pub on_delete_merged: EventHandler<Vec<String>>,
     /// Pushes the branch and opens a pull request for it — the alternative
     /// to deleting, offered wherever a branch has real work and no live PR.
     pub on_create_pr: EventHandler<String>,
@@ -51,6 +58,10 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
     // merging, still open, no PR, unchecked) can lose real commits, so it
     // needs a second click naming what it's about to do.
     let mut confirming = use_signal(|| Option::<String>::None);
+    // One action at a time per repository: while a flow runs here, or while
+    // one branch is being worked on, every other row waits too.
+    let held = props.held_by.is_some() || props.busy.is_some();
+    let held_title = props.held_by.clone().unwrap_or_default();
 
     rsx! {
         div { class: "modal-backdrop", onclick: close,
@@ -70,6 +81,9 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                 div { class: "modal-body",
                     if let Some(err) = props.action_error.clone() {
                         div { class: "pr-list-error", "{err}" }
+                    }
+                    if let Some(note) = props.held_by.clone() {
+                        div { class: "branches-cleanup branches-worth-pr", "{note}" }
                     }
                     match props.branches.clone() {
                         None => rsx! { div { class: "branches-loading", "Checking branches…" } },
@@ -115,13 +129,11 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                         }
                                         button {
                                             class: "btn btn-danger",
+                                            disabled: held,
+                                            title: "{held_title}",
                                             onclick: {
                                                 let names: Vec<String> = cleanup.iter().map(|b| b.name.clone()).collect();
-                                                move |_| {
-                                                    for name in names.iter() {
-                                                        props.on_delete.call((name.clone(), true));
-                                                    }
-                                                }
+                                                move |_| props.on_delete_merged.call(names.clone())
                                             },
                                             "Delete all merged"
                                         }
@@ -175,7 +187,7 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                                     rsx! {
                                                         button {
                                                             class: if asking { "btn btn-danger branch-delete" } else { "btn branch-delete" },
-                                                            disabled: is_busy,
+                                                            disabled: held,
                                                             title: "{what}",
                                                             onclick: {
                                                                 let name = b.name.clone();
@@ -206,7 +218,7 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                                         if b.worth_a_pr() {
                                                             button {
                                                                 class: "btn btn-primary branch-create-pr",
-                                                                disabled: is_busy,
+                                                                disabled: held,
                                                                 title: if is_busy {
                                                                     "Pushing and opening the pull request…".to_string()
                                                                 } else {
@@ -227,7 +239,7 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                                         if b.pr_state.merged() {
                                                             button {
                                                                 class: "btn btn-danger branch-delete",
-                                                                disabled: is_busy,
+                                                                disabled: held,
                                                                 title: "Merged — safe to delete, its commit already lives on the base branch.",
                                                                 onclick: {
                                                                     let name = b.name.clone();
@@ -243,7 +255,7 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                                         } else if confirming.read().as_deref() == Some(b.name.as_str()) {
                                                             button {
                                                                 class: "btn btn-danger branch-delete",
-                                                                disabled: is_busy,
+                                                                disabled: held,
                                                                 title: "This discards any commits that exist only on this branch.",
                                                                 onclick: {
                                                                     let name = b.name.clone();
@@ -262,7 +274,7 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                                         } else {
                                                             button {
                                                                 class: "btn branch-delete",
-                                                                disabled: is_busy,
+                                                                disabled: held,
                                                                 title: "Not confirmed merged — deleting removes any commits that exist only here.",
                                                                 onclick: {
                                                                     let name = b.name.clone();
