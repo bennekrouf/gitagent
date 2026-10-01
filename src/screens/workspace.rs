@@ -31,7 +31,8 @@ use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
 use crate::services::store::Layout;
 use crate::services::trusted;
-use crate::services::{git, store};
+use crate::services::{forge, git, store};
+use crate::telemetry;
 
 /// One run per repository, per flow, per pull request — the third slot is
 /// empty for anything that isn't PR-scoped review. That is what lets you
@@ -316,6 +317,10 @@ async fn drive(
                 // on to the next ready node.
                 continue;
             };
+            telemetry::record(telemetry::Event::ApprovalDecided {
+                approved,
+                trusted: auto == Some(trusted::Verdict::Approve),
+            });
             if !approved {
                 let mut w = states.write();
                 let entry = w.entry(key.clone()).or_default();
@@ -491,6 +496,44 @@ async fn drive(
             }
         }
     }
+
+    report_finished(&graph, &key, cfg, &states).await;
+}
+
+/// Tells the usage statistics how this drive ended, if it ended — a run that
+/// stopped with work still pending (nothing ready, nothing finished) has not
+/// produced an outcome yet.
+///
+/// Gated on `telemetry::active()` before doing anything, including the git
+/// call that names the forge: with statistics off this costs nothing.
+async fn report_finished(
+    graph: &Graph,
+    key: &Key,
+    cfg: Signal<LlmConfig>,
+    states: &Signal<States>,
+) {
+    if !telemetry::active() {
+        return;
+    }
+    let state = snapshot(states, key);
+    if !state.is_finished(graph) {
+        return;
+    }
+    let statuses: Vec<NodeStatus> = graph.nodes.iter().map(|n| state.status(&n.id)).collect();
+    let forge = match git::remote_url(&key.0).await {
+        Some(url) => forge::detect(&url),
+        None => forge::Forge::None,
+    };
+    let provider = cfg.read().kind;
+    telemetry::record(telemetry::Event::flow_finished(
+        &key.1,
+        telemetry::outcome_of(&statuses),
+        &forge,
+        provider,
+    ));
+    // A finished run is the moment worth getting to the server promptly;
+    // detached so the run never waits on the network.
+    tokio::spawn(telemetry::flush());
 }
 
 fn set_remedy(
@@ -952,6 +995,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         // The free version's five repositories: the first run in one takes a
         // slot; with none left, say so instead of starting.
         if !licence::may_run(&licence_status.read(), &repo) {
+            telemetry::record(telemetry::Event::LicenceWallHit);
             licence_open.set(Some(Some(repo)));
             return;
         }

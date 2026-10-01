@@ -33,6 +33,13 @@ const INHERITED: &[&str] = &[
     "AZURE_DEVOPS_EXT_PAT",
     "GH_TOKEN",
     "GITHUB_TOKEN",
+    // Not credentials, but the same problem: an opt-out exported from a
+    // profile is invisible to a bundle launched from Finder unless it is
+    // carried across, so "I set DISABLE_UPDATE_CHECK" quietly did nothing
+    // outside a terminal. See telemetry.rs for what they switch off.
+    "DISABLE_UPDATE_CHECK",
+    "DO_NOT_TRACK",
+    "GITAGENT_NO_TELEMETRY",
 ];
 
 /// Directories worth having even if the shell tells us nothing.

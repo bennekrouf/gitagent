@@ -1112,6 +1112,26 @@ body {
     opacity: 0.7;
 }
 .update-banner-dismiss:hover { opacity: 1; }
+button.update-banner-link {
+    background: transparent;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+}
+/* Bottom, not top: the update and notice banners both claim the top edge. */
+.consent-banner {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 999;
+    background: var(--blue);
+    color: #fff;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    box-shadow: 0 -2px 6px rgba(0,0,0,0.25);
+}
 
 /* Why a trusted run stopped. Sits under the run buttons because that is where
    you are looking when nothing happened. */

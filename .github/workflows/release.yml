@@ -164,6 +164,10 @@ jobs:
           # Public half of the key mayorana.ch signs Pro licences with (repository
           # variable, not a secret). Without it the build can't check licences.
           GITAGENT_LICENSE_PUBLIC_KEY: ${{ vars.GITAGENT_LICENSE_PUBLIC_KEY }}
+          # Where anonymous usage statistics are sent (repository variable, not
+          # a secret). Unset or empty, the build has no way to send anything and
+          # never asks about it — which is also what a local build is.
+          GITAGENT_TELEMETRY_URL: ${{ vars.GITAGENT_TELEMETRY_URL }}
         run: cargo build --release --target aarch64-apple-darwin
 
       # ── Sign the CLI binary with hardened runtime ──────────────────────────
@@ -321,6 +325,10 @@ jobs:
           # Public half of the key mayorana.ch signs Pro licences with (repository
           # variable, not a secret). Without it the build can't check licences.
           GITAGENT_LICENSE_PUBLIC_KEY: ${{ vars.GITAGENT_LICENSE_PUBLIC_KEY }}
+          # Where anonymous usage statistics are sent (repository variable, not
+          # a secret). Unset or empty, the build has no way to send anything and
+          # never asks about it — which is also what a local build is.
+          GITAGENT_TELEMETRY_URL: ${{ vars.GITAGENT_TELEMETRY_URL }}
         run: cargo build --release
 
       - name: Copy WebView2Loader.dll
@@ -472,6 +480,10 @@ jobs:
           # Public half of the key mayorana.ch signs Pro licences with (repository
           # variable, not a secret). Without it the build can't check licences.
           GITAGENT_LICENSE_PUBLIC_KEY: ${{ vars.GITAGENT_LICENSE_PUBLIC_KEY }}
+          # Where anonymous usage statistics are sent (repository variable, not
+          # a secret). Unset or empty, the build has no way to send anything and
+          # never asks about it — which is also what a local build is.
+          GITAGENT_TELEMETRY_URL: ${{ vars.GITAGENT_TELEMETRY_URL }}
         run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Package tar.gz

@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 
 use crate::services::llm::{self, LlmConfig, ProviderKind, REMOTES};
 use crate::services::store;
+use crate::telemetry;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SettingsPanelProps {
@@ -17,6 +18,9 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     let mut cfg = props.llm_config;
     let mut probe_result = use_signal(|| Option::<Result<String, String>>::None);
     let mut probing = use_signal(|| false);
+    // Read once when the panel opens; the buttons below write straight through
+    // to disk, so this only has to follow what was just clicked.
+    let mut sharing = use_signal(telemetry::shared);
 
     let test = move |_| {
         let snapshot = cfg.read().clone();
@@ -176,6 +180,36 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                         Some(Ok(msg)) => rsx! { div { class: "probe probe-ok", "{msg}" } },
                         Some(Err(msg)) => rsx! { div { class: "probe probe-bad", "{msg}" } },
                         None => rsx! {},
+                    }
+
+                    // Only in a build that can send anything: a switch that
+                    // controls nothing would be a false promise either way.
+                    if telemetry::available() {
+                        div { class: "field-row",
+                            span { "Usage statistics" }
+                        }
+                        div { class: "field-row",
+                            for (on, label) in [(true, "Share"), (false, "Off")] {
+                                button {
+                                    key: "{label}",
+                                    class: if *sharing.read() == on { "seg seg-on" } else { "seg" },
+                                    onclick: move |_| {
+                                        telemetry::set_consent(on);
+                                        sharing.set(on);
+                                    },
+                                    "{label}"
+                                }
+                            }
+                        }
+                        p { class: "field-note",
+                            "Anonymous: which steps ran, whether they succeeded, your operating \
+                             system and GitAgent version, and GitHub or Azure DevOps. Never \
+                             repository names, paths, code, commit messages, branch names or \
+                             errors. It is identified only by a random number kept on this \
+                             computer, not by you. Turning it off deletes anything not yet sent. \
+                             Setting DISABLE_UPDATE_CHECK, DO_NOT_TRACK or GITAGENT_NO_TELEMETRY \
+                             turns it off regardless."
+                        }
                     }
                 }
             }

@@ -17,6 +17,26 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent now shares anonymous usage statistics, and it is on by default. A
+  note at the bottom of the window tells you once, and nothing is sent until
+  you have seen it. **Turn off** there, or **Settings** at any time, stops it
+  for good. What is shared: which steps ran and
+  whether they succeeded, your operating system, the GitAgent version, and
+  whether the repository is on GitHub or Azure DevOps. What is never shared:
+  repository names, folders, code, commit messages, branch names or error
+  text. It is tied to a random number kept on your computer, not to you, and
+  turning it off deletes anything that has not been sent yet. It also stays off
+  if `DISABLE_UPDATE_CHECK`, `DO_NOT_TRACK` or `GITAGENT_NO_TELEMETRY` is set.
+
+### Fixed
+
+- Setting `DISABLE_UPDATE_CHECK` in your shell profile now also applies when
+  GitAgent is opened from the Dock or Finder, not only from a terminal.
+
 ## [0.1.71] - 2026-09-30
 
 ### Changed

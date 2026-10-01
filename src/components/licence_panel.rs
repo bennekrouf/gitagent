@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 
 use crate::services::licence::{self, Slots, Status, BUY_URL, FREE_REPOS};
 use crate::services::store::Repo;
+use crate::telemetry;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct LicencePanelProps {
@@ -30,6 +31,7 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
         let pasted = key.peek().clone();
         match licence::activate(&pasted) {
             Ok(s) => {
+                telemetry::record(telemetry::Event::LicenceActivated);
                 status.set(s);
                 key.set(String::new());
                 problem.set(None);
