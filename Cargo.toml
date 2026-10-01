@@ -26,6 +26,9 @@ syntect = { version = "5", default-features = false, features = ["default-fancy"
 # signing key.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
+# The anonymous install identifier is 128 random bits. Already in the tree via
+# other crates, so this names a dependency rather than adding one.
+getrandom = "0.3"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

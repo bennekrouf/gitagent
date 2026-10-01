@@ -2097,6 +2097,7 @@ dependencies = [
  "dirs 5.0.1",
  "ed25519-dalek",
  "futures-util",
+ "getrandom 0.3.4",
  "image",
  "notify-rust",
  "reqwest",

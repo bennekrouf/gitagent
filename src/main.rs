@@ -8,6 +8,7 @@ mod components;
 mod notice;
 mod screens;
 mod services;
+mod telemetry;
 mod update_check;
 
 use dioxus::desktop::LogicalSize;
@@ -116,6 +117,9 @@ fn main() {
     // services::notify for why an unclaimed one is worse than silence.
     services::notify::init();
     services::env::adopt_login_env();
+    // After the environment is adopted: an opt-out exported from a shell
+    // profile only reaches a Finder-launched app through that step.
+    telemetry::record(telemetry::Event::AppStarted);
 
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
@@ -164,9 +168,22 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
     use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         if let Some(info) = update_check::check().await {
+            telemetry::record(telemetry::Event::UpdateOffered {
+                to: info.latest_version.clone(),
+            });
             update_info.set(Some(info));
         }
     });
+
+    // Sends whatever has been recorded, when statistics are on — a no-op
+    // otherwise. Delayed like the other startup network calls.
+    use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
+        telemetry::flush_forever().await;
+    });
+
+    // Unanswered, in a build that can send, and asked only after the first-run
+    // screen so a new install is not greeted by two questions at once.
+    let mut ask_consent = use_signal(telemetry::should_ask);
 
     use_effect(move || {
         let css = MAIN_CSS.replace('`', "\\`").replace("${", "\\${");
@@ -203,6 +220,16 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
     // wasted your time.
     let mut configured = use_signal(store::is_configured);
 
+    // Being on by default is only fair if the notice was put in front of the
+    // person first. Recorded while the banner is actually on screen — after the
+    // first-run screen, not before — so collection starts from the next event,
+    // never from one the person had no chance to read about.
+    use_effect(move || {
+        if *ask_consent.read() && *configured.read() {
+            telemetry::mark_informed();
+        }
+    });
+
     let open = workspace.read().clone();
 
     rsx! {
@@ -218,6 +245,10 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                     class: "update-banner-link",
                     href: "{info.release_url}",
                     target: "_blank",
+                    onclick: {
+                        let to = info.latest_version.clone();
+                        move |_| telemetry::record(telemetry::Event::UpdateClicked { to: to.clone() })
+                    },
                     "Download"
                 }
                 button {
@@ -253,6 +284,38 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                             "×"
                         }
                     }
+                }
+            }
+        }
+
+        // Shown once, at the bottom so it never sits under the update or
+        // notice banners. Statistics are on by default (telemetry's
+        // DEFAULT_CONSENT), so this is a notice with a way out, not a question:
+        // the wording below must change if that default does. Either button
+        // is remembered, and turning it off is one click.
+        if *ask_consent.read() && *configured.read() {
+            div { class: "consent-banner",
+                span { class: "update-banner-text",
+                    strong { "GitAgent shares anonymous usage statistics. " }
+                    "Which steps run and whether they succeed, never repositories, \
+                     file names, code or messages. You can turn it off here or any \
+                     time in Settings."
+                }
+                button {
+                    class: "update-banner-link",
+                    onclick: move |_| {
+                        telemetry::set_consent(true);
+                        ask_consent.set(false);
+                    },
+                    "OK"
+                }
+                button {
+                    class: "update-banner-link",
+                    onclick: move |_| {
+                        telemetry::set_consent(false);
+                        ask_consent.set(false);
+                    },
+                    "Turn off"
                 }
             }
         }
