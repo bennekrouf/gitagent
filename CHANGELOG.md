@@ -36,6 +36,25 @@ were never released.
 
 - Setting `DISABLE_UPDATE_CHECK` in your shell profile now also applies when
   GitAgent is opened from the Dock or Finder, not only from a terminal.
+- A release no longer runs on an out-of-date copy of the branch. If a pull
+  request was merged on GitHub and not yet pulled, the release used to see no
+  new commits and no notes, and offered to ship build-only, which would have
+  released that change with no notes. GitAgent now pulls those commits first,
+  before drafting notes or running your release script. If it can't pull them
+  safely, it stops and offers the pull on a button.
+- When a release is held up for missing notes while origin has commits this
+  copy lacks, GitAgent offers to pull them and release again, instead of
+  offering a build-only release.
+- When your release script commits and tags a version but its push is
+  rejected, GitAgent now explains that nothing reached origin and offers one
+  button that undoes the local release commit and tag, pulls, and releases
+  again. Before, only Retry, Skip and Cancel were offered, and retrying could
+  not succeed.
+- "Back to base" no longer stops with "cannot lock ref" when another program,
+  such as your editor's background fetch, updates the same branch at the same
+  moment. GitAgent tries again on its own. If the other program is still busy,
+  GitAgent explains that the repository is fine and offers to fetch again on a
+  button, instead of "No automatic fix for this".
 
 ## [0.1.71] - 2026-09-30
 

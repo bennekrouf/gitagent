@@ -36,6 +36,9 @@ pub fn proposal(notes: &str) -> String {
 }
 
 pub async fn draft(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
+    // Before reading anything: the notes, or the commits that need them, may
+    // be on origin and not here yet.
+    super::flow::catch_up(repo).await?;
     let path = std::path::Path::new(repo).join(CHANGELOG);
     let Ok(changelog) = std::fs::read_to_string(&path) else {
         return Ok(nothing_to_write(format!(
