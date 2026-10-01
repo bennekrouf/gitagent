@@ -313,11 +313,46 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 }
             } else if !run.log.is_empty() {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
-                pre {
-                    class: if run.status == NodeStatus::Failed { "log log-error" } else { "log" },
-                    "{run.log}"
+                div { class: "log-wrap",
+                    pre {
+                        class: if run.status == NodeStatus::Failed { "log log-error" } else { "log" },
+                        "{run.log}"
+                    }
+                    CopyButton { text: run.log.clone() }
                 }
             }
+        }
+    }
+}
+
+/// Copies a log to the clipboard from the corner of its box, and says so for a
+/// moment. `navigator.clipboard` is not granted in every webview, so the old
+/// select-and-copy route backs it up.
+#[component]
+fn CopyButton(text: String) -> Element {
+    let mut copied = use_signal(|| false);
+    rsx! {
+        button {
+            class: "btn log-copy",
+            title: "Copy to clipboard",
+            onclick: move |_| {
+                let literal = serde_json::to_string(&text).unwrap_or_default();
+                document::eval(&format!(
+                    "const t={literal};\
+                     const fallback=()=>{{const a=document.createElement('textarea');\
+                     a.value=t;a.style.position='fixed';a.style.opacity='0';\
+                     document.body.appendChild(a);a.select();\
+                     document.execCommand('copy');a.remove();}};\
+                     if(navigator.clipboard){{navigator.clipboard.writeText(t).catch(fallback);}}\
+                     else{{fallback();}}"
+                ));
+                copied.set(true);
+                spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    copied.set(false);
+                });
+            },
+            if copied() { "Copied" } else { "Copy" }
         }
     }
 }

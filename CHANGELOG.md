@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A **Copy** button in the top-right corner of a step's output or error log
+  puts the whole log on the clipboard, so you can paste it into an issue or a
+  chat without selecting it by hand.
+
 ## [0.1.73] - 2026-10-01
 
 ### Changed

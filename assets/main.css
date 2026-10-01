@@ -734,6 +734,14 @@ body {
     max-height: 420px; overflow-y: auto;
 }
 .log-error { border-color: var(--red); color: var(--red); }
+.log-wrap { position: relative; }
+.log-wrap .log { padding-right: 72px; }
+.log-copy {
+    position: absolute; top: 8px; right: 8px;
+    font-size: 10.5px; padding: 3px 9px;
+    opacity: 0.75;
+}
+.log-copy:hover { opacity: 1; }
 
 /* ── Diff view ────────────────────────────────────────────────────── */
 .diff-view {
