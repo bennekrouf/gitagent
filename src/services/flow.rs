@@ -548,12 +548,36 @@ async fn run_script(
         ));
     }
 
+    // A release cuts whatever this copy has, so this copy has to be current
+    // first — see `catch_up`.
+    let release = is_release(&command);
+    let caught_up = if release { catch_up(repo).await? } else { None };
+    if let Some(note) = &caught_up {
+        on_line(note);
+    }
+
     let (ok, output) =
         git::run_shell_streaming(repo, &command, node.setting("stdin"), on_line).await;
     if !ok {
-        return Err(script_failure(&command, output));
+        let found = if release {
+            ReleaseFindings {
+                upstream: git::upstream(repo).await,
+                unpushed_tag: if push_rejected(&output) {
+                    git::unpushed_release_tag(repo).await
+                } else {
+                    None
+                },
+            }
+        } else {
+            ReleaseFindings::default()
+        };
+        return Err(script_failure(&command, output, &found));
     }
 
+    let output = match caught_up {
+        Some(note) => format!("{note}\n\n{output}"),
+        None => output,
+    };
     Ok(StepOutcome {
         summary: format!("{command} — ok"),
         log: if output.trim().is_empty() {
@@ -570,16 +594,170 @@ async fn run_script(
     })
 }
 
-/// A script is opaque, but `release.sh` stopping for want of release notes is
-/// common enough, and its own output names the way round it, that the choice
-/// belongs on screen rather than in a terminal.
-fn script_failure(command: &str, output: String) -> StepFailure {
-    let wants_notes = command.contains("release.sh")
-        && output.contains("--no-notes")
-        && !command.contains("--no-notes");
+fn is_release(command: &str) -> bool {
+    command.contains("release.sh")
+}
+
+/// Brings the branch up to date with origin before a release reads it.
+///
+/// A release only ships what this copy has. A pull request merged on the
+/// forge's website never reaches it until something pulls — the review flow's
+/// `sync` does, but nothing else — so without this the release saw no new
+/// commits and no notes, and offered to ship build-only a version that held a
+/// real change.
+///
+/// A fast-forward is done without asking: it only adds commits origin already
+/// has, and loses nothing. Anything else — local changes in the way, or local
+/// commits origin lacks — stops the step with the fix on a button, because
+/// that one rewrites history and should be seen first.
+///
+/// `Ok(Some(note))` when it pulled, for the step's log.
+pub(crate) async fn catch_up(repo: &str) -> Result<Option<String>, StepFailure> {
+    let git::Upstream::Behind {
+        tracking,
+        behind,
+        ahead,
+    } = git::upstream(repo).await
+    else {
+        return Ok(None);
+    };
+    let commits = plural(behind, "commit");
+
+    if ahead == 0 {
+        return match git::run(repo, "git", &["merge", "--ff-only", "--quiet", "@{u}"]).await {
+            Ok(_) => Ok(Some(format!(
+                "Pulled {commits} from {tracking} first, so the release includes them."
+            ))),
+            Err(e) => Err(StepFailure::from(format!(
+                "{tracking} has {commits} this copy does not, and local changes are in \
+                 the way of pulling them. Commit or stash them, then retry this step — \
+                 a release cut from here would leave those commits out.\n\n{e}"
+            ))),
+        };
+    }
+
+    // A release commit from an earlier, rejected attempt is the most likely
+    // reason to be ahead here, and pulling on top of it is the wrong fix.
+    if let Some(tag) = git::unpushed_release_tag(repo).await {
+        return Err(StepFailure {
+            message: unpushed_release_message(&tag, &tracking, behind),
+            remedies: vec![undo_release_remedy(&tag)],
+        });
+    }
+    Err(StepFailure {
+        message: format!(
+            "{tracking} has {commits} this copy does not, and this copy has {} that \
+             {tracking} does not. Bring them together before releasing — a release \
+             cut from here would leave origin's commits out, and its push would be \
+             rejected anyway.",
+            plural(ahead, "commit")
+        ),
+        remedies: vec![Remedy::new(
+            "Pull, and replay your commits on top",
+            "git",
+            &["pull", "--rebase"],
+        )],
+    })
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+
+/// What a failed release script left behind, gathered after it stopped so the
+/// failure can name the actual fix rather than echo the script's best guess.
+#[derive(Clone, Debug, Default)]
+struct ReleaseFindings {
+    upstream: git::Upstream,
+    /// See `git::unpushed_release_tag`.
+    unpushed_tag: Option<String>,
+}
+
+fn unpushed_release_message(tag: &str, tracking: &str, behind: usize) -> String {
+    format!(
+        "The release committed and tagged {tag} here, but {tracking} has moved on — \
+         {} this copy did not have — so git refused the push. Nothing reached origin: \
+         {tag} exists only on this machine.\n\n\
+         Undo the local release commit and tag, pull, and the release runs again on \
+         top of what origin has, picking up any notes that came with it. Commits of \
+         your own before the release commit are kept and replayed on top.",
+        plural(behind, "commit")
+    )
+}
+
+/// Drops the release commit and its tag, then pulls.
+///
+/// `--keep`, not `--hard`: it refuses rather than discard a local change, and
+/// the only thing it should ever remove is the version bump the script made.
+fn undo_release_remedy(tag: &str) -> Remedy {
+    let script = format!("git tag -d {tag} && git reset --keep HEAD~1 && git pull --rebase");
+    Remedy::new(
+        &format!("Undo the local {tag}, pull, and release again"),
+        "sh",
+        &["-c", &script],
+    )
+}
+
+/// A script is opaque, but a release stopping is common enough, and its
+/// causes recognisable enough, that the choice belongs on screen rather than
+/// in a terminal.
+fn script_failure(command: &str, output: String, found: &ReleaseFindings) -> StepFailure {
+    if !is_release(command) {
+        return StepFailure::from(format!("`{command}` failed.\n\n{output}"));
+    }
+    let behind = match &found.upstream {
+        git::Upstream::Behind {
+            tracking, behind, ..
+        } => Some((tracking.as_str(), *behind)),
+        _ => None,
+    };
+
+    // The script got as far as committing and tagging, then lost the push.
+    if push_rejected(&output) {
+        if let Some(tag) = &found.unpushed_tag {
+            let (tracking, behind) = behind.unwrap_or(("origin", 0));
+            return StepFailure {
+                message: format!(
+                    "{}\n\n{output}",
+                    unpushed_release_message(tag, tracking, behind)
+                ),
+                remedies: vec![undo_release_remedy(tag)],
+            };
+        }
+        return StepFailure {
+            message: format!("`{command}` failed.\n\n{output}"),
+            remedies: pull_remedy(&output),
+        };
+    }
+
+    let wants_notes = output.contains("--no-notes") && !command.contains("--no-notes");
     if !wants_notes {
         return StepFailure::from(format!("`{command}` failed.\n\n{output}"));
     }
+
+    // No notes here may only mean they have not been pulled yet. Offering a
+    // build-only release then would ship a real change with no notes.
+    if let Some((tracking, behind)) = behind {
+        let commits = plural(behind, "commit");
+        return StepFailure {
+            message: format!(
+                "The release stopped because CHANGELOG.md has nothing under [Unreleased] \
+                 — but {tracking} has {commits} this copy does not, and the notes are \
+                 likely among them. Nothing was bumped, tagged or pushed.\n\n\
+                 Pull them and retry: the release then runs on what origin has.\n\n{output}"
+            ),
+            remedies: vec![Remedy::new(
+                &format!("Pull the {commits}, then release again"),
+                "git",
+                &["pull", "--rebase"],
+            )],
+        };
+    }
+
     let build_only = format!("{command} --no-notes");
     StepFailure {
         message: format!(
@@ -796,7 +974,7 @@ pub async fn diff_preview(node: &NodeSpec, repo: &str, state: &RunState) -> Opti
             if base.is_empty() || head.is_empty() {
                 return None;
             }
-            let _ = git::run(repo, "git", &["fetch", "origin", base, head]).await;
+            let _ = git::fetch(repo, &["origin", base, head]).await;
             let range = format!("origin/{base}...origin/{head}");
             let diff = git::run(repo, "git", &["diff", &range, "--unified=3"])
                 .await
@@ -1359,9 +1537,7 @@ async fn leftover_on_origin(repo: &str, state: &RunState, branch: &str) -> Optio
             ));
         }
     }
-    git::run(repo, "git", &["fetch", "origin", branch, base])
-        .await
-        .ok()?;
+    git::fetch(repo, &["origin", branch, base]).await.ok()?;
     git::run(
         repo,
         "git",
@@ -1504,7 +1680,11 @@ mod tests {
 
     #[test]
     fn a_release_missing_its_notes_offers_a_build_only_release() {
-        let failure = script_failure("./scripts/release.sh --patch", NO_NOTES_OUTPUT.into());
+        let failure = script_failure(
+            "./scripts/release.sh --patch",
+            NO_NOTES_OUTPUT.into(),
+            &ReleaseFindings::default(),
+        );
         assert!(failure.message.contains("Nothing was bumped"));
         assert_eq!(failure.remedies.len(), 1);
         let fix = &failure.remedies[0];
@@ -1518,20 +1698,183 @@ mod tests {
 
     #[test]
     fn any_other_script_failure_offers_nothing() {
+        assert!(script_failure(
+            "./scripts/release.sh",
+            "❌ Tag v1 already exists".into(),
+            &ReleaseFindings::default()
+        )
+        .remedies
+        .is_empty());
+        assert!(script_failure(
+            "make deploy",
+            NO_NOTES_OUTPUT.into(),
+            &ReleaseFindings::default()
+        )
+        .remedies
+        .is_empty());
         assert!(
-            script_failure("./scripts/release.sh", "❌ Tag v1 already exists".into())
-                .remedies
-                .is_empty()
-        );
-        assert!(script_failure("make deploy", NO_NOTES_OUTPUT.into())
+            script_failure(
+                "./scripts/release.sh --no-notes",
+                NO_NOTES_OUTPUT.into(),
+                &ReleaseFindings::default()
+            )
             .remedies
-            .is_empty());
-        assert!(
-            script_failure("./scripts/release.sh --no-notes", NO_NOTES_OUTPUT.into())
-                .remedies
-                .is_empty(),
+            .is_empty(),
             "already build-only: offering it again would loop"
         );
+    }
+
+    fn behind(n: usize) -> ReleaseFindings {
+        ReleaseFindings {
+            upstream: git::Upstream::Behind {
+                tracking: "origin/master".into(),
+                behind: n,
+                ahead: 0,
+            },
+            unpushed_tag: None,
+        }
+    }
+
+    const REJECTED_OUTPUT: &str = "[master 8b87904] chore: release v0.3.41
+To github.com:o/r.git
+ ! [rejected]        HEAD -> master (non-fast-forward)
+error: failed to push some refs to 'github.com:o/r.git'
+hint: Updates were rejected because the tip of your current branch is behind";
+
+    #[test]
+    fn missing_notes_on_a_stale_copy_offer_a_pull_not_a_build_only_release() {
+        // The incident: a pull request merged on GitHub carried the notes, the
+        // local copy had not pulled it, and the only button shipped without them.
+        let failure = script_failure("./scripts/release.sh", NO_NOTES_OUTPUT.into(), &behind(1));
+        assert!(failure.message.contains("origin/master has 1 commit"));
+        assert_eq!(failure.remedies.len(), 1);
+        let fix = &failure.remedies[0];
+        assert_eq!(fix.args, ["pull", "--rebase"]);
+        assert!(fix.retry_after, "the release runs again once pulled");
+        assert!(
+            !failure
+                .remedies
+                .iter()
+                .any(|r| r.display.contains("--no-notes")),
+            "build-only would ship the pulled change with no notes"
+        );
+    }
+
+    #[test]
+    fn a_release_whose_push_was_rejected_offers_to_undo_it_and_go_again() {
+        let found = ReleaseFindings {
+            unpushed_tag: Some("v0.3.41".into()),
+            ..behind(1)
+        };
+        let failure = script_failure("./scripts/release.sh", REJECTED_OUTPUT.into(), &found);
+        assert!(failure
+            .message
+            .contains("v0.3.41 exists only on this machine"));
+        assert_eq!(failure.remedies.len(), 1);
+        let fix = &failure.remedies[0];
+        assert_eq!(
+            fix.args,
+            [
+                "-c",
+                "git tag -d v0.3.41 && git reset --keep HEAD~1 && git pull --rebase"
+            ]
+        );
+        assert!(fix.retry_after);
+    }
+
+    #[test]
+    fn a_rejected_release_push_with_nothing_tagged_offers_the_plain_pull() {
+        let failure = script_failure("./scripts/release.sh", REJECTED_OUTPUT.into(), &behind(1));
+        assert_eq!(failure.remedies.len(), 1);
+        assert_eq!(failure.remedies[0].args, ["pull", "--rebase"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_release_catches_up_with_a_merge_made_on_the_forge() {
+        // Real git end to end: a bare origin, this copy, and a second clone
+        // standing in for the forge merging a pull request.
+        let root = std::env::temp_dir().join(format!("gitagent-catchup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |cmd: &str| {
+            let out = std::process::Command::new("sh")
+                .args(["-c", cmd])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{cmd}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let ident = "git config user.name t && git config user.email t@t";
+        sh("git init -q --bare -b master origin.git");
+        sh(&format!(
+            "git clone -q origin.git here && cd here && {ident} && \
+             git commit -q --allow-empty -m init && git push -q -u origin master"
+        ));
+        sh(&format!(
+            "git clone -q origin.git forge && cd forge && {ident}"
+        ));
+        let merge_on_forge = |msg: &str| {
+            sh(&format!(
+                "cd forge && git pull -q && git commit -q --allow-empty -m '{msg}' && git push -q"
+            ))
+        };
+        let here = root.join("here");
+        let repo = here.to_str().unwrap();
+        let head = || {
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD", "origin/master"])
+                .current_dir(&here)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap()
+        };
+
+        assert_eq!(git::upstream(repo).await, git::Upstream::UpToDate);
+
+        // Merged on the forge, never pulled here: the release must pull it.
+        merge_on_forge("feat: a change (#1)");
+        assert!(matches!(
+            git::upstream(repo).await,
+            git::Upstream::Behind {
+                behind: 1,
+                ahead: 0,
+                ..
+            }
+        ));
+        let note = catch_up(repo).await.expect("a fast-forward needs no fix");
+        assert!(note.unwrap().contains("Pulled 1 commit"));
+        let refs = head();
+        let mut lines = refs.lines();
+        assert_eq!(lines.next(), lines.next(), "HEAD is now origin/master");
+
+        // A release committed and tagged here while the forge moved on: the
+        // state a rejected `release.sh` push leaves behind.
+        sh("cd here && git commit -q --allow-empty -m 'chore: release v0.1.1' && git tag v0.1.1");
+        merge_on_forge("feat: another (#2)");
+        assert_eq!(
+            git::unpushed_release_tag(repo).await.as_deref(),
+            Some("v0.1.1")
+        );
+        let failure = catch_up(repo)
+            .await
+            .expect_err("diverged with a stray release");
+        let fix = &failure.remedies[0];
+        assert!(fix.label.contains("v0.1.1"));
+
+        // And the fix leaves this copy exactly where origin is, tag gone.
+        sh(&format!("cd here && {}", fix.args[1]));
+        let refs = head();
+        let mut lines = refs.lines();
+        assert_eq!(lines.next(), lines.next());
+        assert_eq!(git::unpushed_release_tag(repo).await, None);
+        assert_eq!(git::upstream(repo).await, git::Upstream::UpToDate);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

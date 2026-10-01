@@ -12,7 +12,9 @@
 //! Local refs only: no fetch happens here. The probe already makes one network
 //! call per repository and a fetch per repository on every refresh would be
 //! slower than it is worth. After merging through the review flow the `sync`
-//! step pulls, so the refs are fresh exactly when it matters.
+//! step pulls, and the release steps themselves fetch and catch up before they
+//! read anything (`flow::catch_up`), so a merge made on the forge's website is
+//! picked up there even when this count missed it.
 
 use super::git;
 

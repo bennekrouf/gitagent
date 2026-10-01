@@ -183,6 +183,134 @@ pub async fn head_sha(repo: &str) -> Result<String, String> {
         .to_string())
 }
 
+/// `git fetch <args>`, tried a second time when another git process moved a
+/// remote-tracking ref while this one was writing it.
+///
+/// That race is ordinary — an editor's background fetch, a terminal, a second
+/// GitAgent step — and git reports it as "cannot lock ref … is at X but
+/// expected Y". By the time it says so the other process has already written
+/// the ref, usually to the very commit this fetch wanted, so fetching again
+/// succeeds. Fetching is idempotent, which is what makes retrying it safe;
+/// nothing else in this module is retried.
+pub async fn fetch(repo: &str, args: &[&str]) -> Result<String, String> {
+    let mut full = vec!["fetch"];
+    full.extend_from_slice(args);
+    match run(repo, "git", &full).await {
+        Err(e) if ref_moved_underneath(&e) => {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            run(repo, "git", &full).await
+        }
+        done => done,
+    }
+}
+
+/// Whether a fetch failed only because another git process updated a
+/// remote-tracking ref at the same moment. See `fetch`.
+pub fn ref_moved_underneath(err: &str) -> bool {
+    err.contains("cannot lock ref") || err.contains("unable to update local ref")
+}
+
+/// Where the current branch stands against the branch it tracks on origin.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Upstream {
+    /// Nothing to compare against: no upstream, a detached HEAD, or a
+    /// repository git could not read.
+    #[default]
+    Unknown,
+    /// Origin has nothing this branch lacks. Local commits origin has yet to
+    /// receive are fine — pushing them is what the next step is for.
+    UpToDate,
+    /// Origin has `behind` commits this branch does not; `ahead` are local
+    /// commits origin does not have, so a non-zero `ahead` means the two have
+    /// diverged and only a rebase or merge brings them together.
+    Behind {
+        tracking: String,
+        behind: usize,
+        ahead: usize,
+    },
+}
+
+/// Fetches the branch this one tracks, then compares the two.
+///
+/// The fetch is the point: the remote-tracking ref is only as fresh as the
+/// last fetch, and a pull request merged on the forge's website leaves it
+/// stale until something fetches. A failed fetch (offline, say) is not fatal
+/// — the comparison then runs on what is already known, which is still the
+/// best answer available.
+pub async fn upstream(repo: &str) -> Upstream {
+    let Ok(tracking) = run(
+        repo,
+        "git",
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .await
+    else {
+        return Upstream::Unknown;
+    };
+    let tracking = tracking.trim().to_string();
+    if let Some((remote, branch)) = tracking.split_once('/') {
+        let _ = fetch(repo, &["--quiet", remote, branch]).await;
+    }
+    let Ok(counts) = run(
+        repo,
+        "git",
+        &["rev-list", "--left-right", "--count", "HEAD...@{u}"],
+    )
+    .await
+    else {
+        return Upstream::Unknown;
+    };
+    match parse_left_right(&counts) {
+        Some((_, 0)) => Upstream::UpToDate,
+        Some((ahead, behind)) => Upstream::Behind {
+            tracking,
+            behind,
+            ahead,
+        },
+        None => Upstream::Unknown,
+    }
+}
+
+/// `git rev-list --left-right --count A...B` prints `<only in A>\t<only in B>`.
+fn parse_left_right(out: &str) -> Option<(usize, usize)> {
+    let mut it = out.split_whitespace().map(|n| n.parse::<usize>().ok());
+    Some((it.next()??, it.next()??))
+}
+
+/// The tag of a release commit that was made here but never reached origin:
+/// HEAD is a release commit, a `v…` tag points at it, and origin has no such
+/// tag.
+///
+/// This is what `release.sh` leaves behind when its push is rejected — it
+/// commits and tags before it pushes. Retrying from there would tag the same
+/// version twice, and pulling would replay the bump onto newer work and leave
+/// the tag on the old commit.
+pub async fn unpushed_release_tag(repo: &str) -> Option<String> {
+    let subject = run(repo, "git", &["log", "-1", "--format=%s"]).await.ok()?;
+    if !subject.to_lowercase().contains("release") {
+        return None;
+    }
+    let tags = run(repo, "git", &["tag", "--points-at", "HEAD"])
+        .await
+        .ok()?;
+    let tag = tags
+        .lines()
+        .map(str::trim)
+        .find(|t| t.starts_with('v'))?
+        .to_string();
+    // Only a definite "origin has no such tag" counts: if origin cannot be
+    // reached, the tag may well be there, and undoing a published release
+    // locally would be the wrong fix.
+    let remote = run(
+        repo,
+        "git",
+        &["ls-remote", "--tags", "origin", &format!("refs/tags/{tag}")],
+    )
+    .await
+    .ok()?;
+    remote.trim().is_empty().then_some(tag)
+}
+
 /// Branch names that must never receive a direct commit, whatever the base
 /// detection below concludes. Belt and braces: base detection reads repository
 /// config, and repository config can be wrong or absent.
@@ -934,6 +1062,12 @@ mod tests {
         assert_eq!(staged_paths(&status(repo).await.unwrap()).len(), 3);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn left_right_counts_read_as_ahead_then_behind() {
+        assert_eq!(parse_left_right("2\t5\n"), Some((2, 5)));
+        assert_eq!(parse_left_right(""), None);
     }
 
     #[test]

@@ -444,7 +444,7 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
     // confusing way to learn the actual problem was "couldn't fetch base
     // or head from origin" (wrong remote, network, a base branch that no
     // longer exists). Surface the real reason instead.
-    git::run(repo, "git", &["fetch", "origin", base, head])
+    git::fetch(repo, &["origin", base, head])
         .await
         .map_err(|e| format!("could not fetch {base} and {head} from origin: {e}"))?;
 
@@ -765,7 +765,22 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
 async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let base = state.artifact("pr_base");
     let mut log = git::run(repo, "git", &["checkout", base]).await?;
-    log.push_str(&git::run(repo, "git", &["pull", "--ff-only"]).await?);
+    // Fetch only the base, then fast-forward, rather than `git pull`: a pull
+    // fetches every branch (and prunes, where configured), which widens the
+    // window for another git process to move a ref under it — and that race
+    // is the one failure here with a fix that is simply "do it again".
+    match git::fetch(repo, &["origin", base]).await {
+        Ok(out) => log.push_str(&out),
+        Err(e) => return Err(sync_fetch_failure(base, e)),
+    }
+    log.push_str(
+        &git::run(
+            repo,
+            "git",
+            &["merge", "--ff-only", &format!("origin/{base}")],
+        )
+        .await?,
+    );
     Ok(StepOutcome {
         summary: format!("on {base}, up to date"),
         log: log.trim().to_string(),
@@ -775,9 +790,57 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     })
 }
 
+/// The fetch has already been retried once by `git::fetch`. If it is still
+/// another process moving the ref, say so — the raw git message reads like
+/// corruption, and it is not — and put the retry on a button.
+fn sync_fetch_failure(base: &str, err: String) -> StepFailure {
+    if !git::ref_moved_underneath(&err) {
+        return StepFailure::from(err);
+    }
+    StepFailure {
+        message: format!(
+            "Another git program updated origin/{base} at the same moment GitAgent \
+             did — an editor's background fetch, usually. Nothing is wrong with the \
+             repository and the merge is done; fetching again picks up where it left \
+             off. If this keeps happening, close whatever else is fetching here.\n\n{err}"
+        ),
+        remedies: vec![Remedy::new(
+            "Fetch again and finish",
+            "git",
+            &["fetch", "origin", base],
+        )],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const REF_RACE: &str = "error: cannot lock ref 'refs/remotes/origin/master': is at \
+        841f7d89d678b65ba252d57fe179dd7b6162d07b but expected \
+        871b1b5141f913cce8194a1428b2ce4df0baa09f\n \
+        ! 871b1b5..841f7d8  master     -> origin/master  (unable to update local ref)";
+
+    #[test]
+    fn a_ref_moved_by_another_fetch_explains_itself_and_offers_a_retry() {
+        let failure = sync_fetch_failure("master", REF_RACE.into());
+        assert!(failure
+            .message
+            .contains("Nothing is wrong with the repository"));
+        assert_eq!(failure.remedies.len(), 1);
+        assert_eq!(failure.remedies[0].args, ["fetch", "origin", "master"]);
+        assert!(
+            failure.remedies[0].retry_after,
+            "the step finishes on retry"
+        );
+    }
+
+    #[test]
+    fn any_other_fetch_failure_is_passed_through_untouched() {
+        let failure = sync_fetch_failure("master", "fatal: could not read from remote".into());
+        assert!(failure.remedies.is_empty());
+        assert!(!git::ref_moved_underneath(&failure.message));
+    }
 
     #[test]
     fn a_job_id_is_read_out_of_the_details_url() {
