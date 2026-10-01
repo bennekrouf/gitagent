@@ -17,6 +17,22 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Only one flow runs in a repository at a time. While a commit is under way,
+  merging a pull request in the same repository waits until it is done, and the
+  other way round; before, both could start and step on each other's branch
+  switches and pulls in the same folder. The **Branches** panel follows the
+  same rule: deleting, cleaning up or opening a pull request for a branch waits
+  for a running flow, and no flow starts until that branch is done. Hover the
+  greyed-out button to see what is in the way. Other repositories are
+  unaffected.
+- **Delete all merged** in the **Branches** panel now deletes the branches one
+  after another instead of all at once, and lists every branch it could not
+  delete rather than only the last one.
+
 ## [0.1.72] - 2026-10-01
 
 ### Added

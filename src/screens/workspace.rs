@@ -42,6 +42,35 @@ use crate::telemetry;
 type Key = (String, String, String);
 type States = BTreeMap<Key, RunState>;
 
+/// The run already going in `repo`, other than `key` itself. A repository has
+/// one working tree, so it gets one run at a time: a commit switching to a new
+/// branch while a merge pulls the base underneath it leaves each one acting on
+/// a tree the other has just changed.
+fn other_run_in<'a>(running: &'a BTreeSet<Key>, repo: &str, key: &Key) -> Option<&'a Key> {
+    running.iter().find(|k| k.0 == repo && *k != key)
+}
+
+/// Why a start is refused while `other` runs, naming it so you know which tab
+/// to go and finish.
+/// Why a start is refused while the Branches panel is working in the same
+/// repository.
+fn branch_busy_note(branch: &str) -> String {
+    format!(
+        "The Branches panel is still working on {branch} in this repository \u{2014} wait for it to finish."
+    )
+}
+
+fn busy_note(book: &FlowBook, other: &Key) -> String {
+    let (_, flow, pr) = other;
+    let label = book.get(flow).map(|f| f.label.clone()).unwrap_or_else(|| flow.clone());
+    let what = if pr.is_empty() {
+        format!("\u{201c}{label}\u{201d}")
+    } else {
+        format!("\u{201c}{label}\u{201d} for pull request #{pr}")
+    };
+    format!("{what} is already running in this repository \u{2014} finish or cancel it first.")
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct WorkspaceProps {
     pub workspace: String,
@@ -845,10 +874,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         use_signal(|| Option::<Result<Vec<crate::services::branches::BranchInfo>, String>>::None);
     let mut repo_bases = use_signal(store::load_repo_bases);
     let mut branches_action_error = use_signal(|| Option::<String>::None);
-    // Which branch a delete or create-PR is currently running against, so the
-    // panel can disable that row's buttons and show it's doing something
-    // instead of looking like the click did nothing.
-    let mut branches_busy = use_signal(|| Option::<String>::None);
+    // Which repository and branch a delete, clean-up or create-PR is currently
+    // running against, so the panel can show that row working instead of
+    // looking like the click did nothing. It also holds the repository the
+    // way a run does: no flow starts there until it is done, and the other
+    // way round.
+    let mut branches_busy = use_signal(|| Option::<(String, String)>::None);
     let mut base_editor_open = use_signal(|| Option::<String>::None);
     let mut base_editor_value = use_signal(String::new);
     // Which repository's flow picker is open, rather than a single flag for
@@ -992,6 +1023,15 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let Some(repo) = selected_repo.read().clone() else {
             return;
         };
+        // The buttons are disabled while another run holds this repository,
+        // but a click can still land between that run starting and the
+        // re-render, so the rule is enforced here too. The disabled button's
+        // tooltip already says which run is in the way.
+        if running.read().iter().any(|k| k.0 == repo)
+            || branches_busy.read().as_ref().is_some_and(|(r, _)| r == &repo)
+        {
+            return;
+        }
         // The free version's five repositories: the first run in one takes a
         // slot; with none left, say so instead of starting.
         if !licence::may_run(&licence_status.read(), &repo) {
@@ -1065,7 +1105,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     break;
                 };
                 let key: Key = (repo.clone(), id.clone(), pr.clone());
-                if running.read().contains(&key) {
+                // Repository-wide, not just this key: the next leg of a chain
+                // must not start while something else holds the working tree.
+                if running.read().iter().any(|k| k.0 == repo)
+                    || branches_busy.read().as_ref().is_some_and(|(r, _)| r == &repo)
+                {
                     break;
                 }
 
@@ -1388,14 +1432,20 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let trusted_next = status_map
                             .get(&repo)
                             .and_then(|status| trusted::next_flow(&flows, status, &hidden_here));
-                        // A repo reviewing PR #7 shouldn't also be able to start
-                        // reviewing #5 — two runs racing each other's git state
-                        // (checkout, fetch) in the same working tree.
-                        let other_pr_running = flow_id == probe::REVIEW_FLOW
-                            && running
-                                .read()
-                                .iter()
-                                .any(|(r, f, p)| r == &repo && f == &flow_id && !p.is_empty() && p != &pr_id);
+                        // One run per repository: committing on one tab while
+                        // merging a pull request on another, or reviewing #7
+                        // while #5 is under way, would have two runs racing
+                        // each other's checkout and fetch in the same tree.
+                        let other_run = other_run_in(&running.read(), &repo, &key)
+                            .map(|other| busy_note(&flows, other))
+                            .or_else(|| {
+                                branches_busy
+                                    .read()
+                                    .as_ref()
+                                    .filter(|(r, _)| r == &repo)
+                                    .map(|(_, branch)| branch_busy_note(branch))
+                            });
+                        let other_running = other_run.is_some();
                         let can_run = probe::affordance(
                             &flow_id,
                             status_map.get(&repo),
@@ -1560,9 +1610,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     } else {
                                         button {
                                             class: "btn btn-trusted",
-                                            disabled: other_pr_running || trusted_start.is_none(),
-                                            title: match (&trusted_start, other_pr_running) {
-                                                (_, true) => "Another pull request review is already running in this repository.".to_string(),
+                                            disabled: other_running || trusted_start.is_none(),
+                                            title: match (&trusted_start, other_running) {
+                                                (_, true) => other_run.clone().unwrap_or_default(),
                                                 (None, _) => format!(
                                                     "Nothing here needs a run, and this flow cannot start — {}.",
                                                     if can_run.reason.is_empty() {
@@ -1589,9 +1639,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     }
                                     button {
                                         class: "btn btn-primary",
-                                        disabled: is_running || other_pr_running || !can_run.enabled,
-                                        title: if other_pr_running {
-                                            "Another pull request review is already running for this repository — finish or cancel it first.".to_string()
+                                        disabled: is_running || other_running || !can_run.enabled,
+                                        title: if let Some(note) = &other_run {
+                                            note.clone()
                                         } else {
                                             can_run.reason.clone()
                                         },
@@ -2098,12 +2148,33 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         });
                     }
                 };
+                // A flow running here holds the working tree; deleting or
+                // pushing a branch underneath it is the same race as two flows.
+                let held_by = running
+                    .read()
+                    .iter()
+                    .find(|k| k.0 == repo)
+                    .map(|k| busy_note(&book.read(), k));
+                // Checked again when a click lands, not just when the panel
+                // last rendered: the run may have started in between.
+                let holds = {
+                    let repo = repo.clone();
+                    move || {
+                        running.read().iter().any(|k| k.0 == repo)
+                            || branches_busy.read().as_ref().is_some_and(|(r, _)| r == &repo)
+                    }
+                };
                 rsx! {
                     BranchesPanel {
                         repo_label,
                         branches: branches_data.read().clone(),
                         action_error: branches_action_error.read().clone(),
-                        busy: branches_busy.read().clone(),
+                        busy: branches_busy
+                            .read()
+                            .as_ref()
+                            .filter(|(r, _)| r == &repo)
+                            .map(|(_, branch)| branch.clone()),
+                        held_by: held_by.clone(),
                         on_close: move |_| branches_open.set(None),
                         on_refresh: {
                             let mut reload = reload.clone();
@@ -2112,10 +2183,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         on_delete: {
                             let repo = repo.clone();
                             let reload = reload.clone();
+                            let holds = holds.clone();
                             move |(branch, force): (String, bool)| {
+                                if holds() {
+                                    return;
+                                }
                                 let repo = repo.clone();
                                 let mut reload = reload.clone();
-                                branches_busy.set(Some(branch.clone()));
+                                branches_busy.set(Some((repo.clone(), branch.clone())));
                                 spawn(async move {
                                     branches_action_error.set(None);
                                     if let Err(e) = crate::services::branches::delete(&repo, &branch, force).await {
@@ -2126,10 +2201,43 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 });
                             }
                         },
+                        on_delete_merged: {
+                            let repo = repo.clone();
+                            let reload = reload.clone();
+                            let holds = holds.clone();
+                            move |names: Vec<String>| {
+                                if holds() {
+                                    return;
+                                }
+                                let repo = repo.clone();
+                                let mut reload = reload.clone();
+                                // One after another, as a single action: the
+                                // repository stays held from the first delete
+                                // to the last, and git never has two of them
+                                // writing its refs at once.
+                                branches_busy.set(names.first().map(|b| (repo.clone(), b.clone())));
+                                spawn(async move {
+                                    branches_action_error.set(None);
+                                    let mut failed = vec![];
+                                    for branch in names {
+                                        branches_busy.set(Some((repo.clone(), branch.clone())));
+                                        if let Err(e) = crate::services::branches::delete(&repo, &branch, true).await {
+                                            failed.push(format!("{branch}: {e}"));
+                                        }
+                                    }
+                                    if !failed.is_empty() {
+                                        branches_action_error.set(Some(format!("Couldn't delete {}", failed.join("; "))));
+                                    }
+                                    branches_busy.set(None);
+                                    reload();
+                                });
+                            }
+                        },
                         on_clean_up: {
                             let repo = repo.clone();
                             let forge = forge.clone();
                             let reload = reload.clone();
+                            let holds = holds.clone();
                             move |branch: String| {
                                 let repo = repo.clone();
                                 let forge = forge.clone();
@@ -2140,7 +2248,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     .and_then(|r| r.as_ref().ok())
                                     .and_then(|list| list.iter().find(|b| b.name == branch).cloned());
                                 let Some(info) = found else { return };
-                                branches_busy.set(Some(branch.clone()));
+                                if holds() {
+                                    return;
+                                }
+                                branches_busy.set(Some((repo.clone(), branch.clone())));
                                 spawn(async move {
                                     branches_action_error.set(None);
                                     if let Err(e) = crate::services::branches::clean_up(&repo, &forge, &info).await {
@@ -2156,12 +2267,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             let forge = forge.clone();
                             let override_base = override_base.clone();
                             let reload = reload.clone();
+                            let holds = holds.clone();
                             move |branch: String| {
+                                if holds() {
+                                    return;
+                                }
                                 let repo = repo.clone();
                                 let forge = forge.clone();
                                 let override_base = override_base.clone();
                                 let mut reload = reload.clone();
-                                branches_busy.set(Some(branch.clone()));
+                                branches_busy.set(Some((repo.clone(), branch.clone())));
                                 spawn(async move {
                                     branches_action_error.set(None);
                                     let base = resolved_base(&repo, override_base).await;
@@ -2331,6 +2446,19 @@ mod tests {
             default_selection(&book, &states, "/repo", Some(Wants::Merge), &prs, &[]);
         assert_eq!(flow_id, "review_and_merge");
         assert_eq!(pr_id, "7", "the first one, matching the order shown");
+    }
+
+    #[test]
+    fn a_run_in_a_repository_holds_every_other_flow_there() {
+        let key = |r: &str, f: &str, p: &str| (r.to_string(), f.to_string(), p.to_string());
+        let running: BTreeSet<Key> = [key("/a", "commit_and_pr", "")].into();
+        // Merging a pull request while a commit is under way is refused…
+        let merge = key("/a", probe::REVIEW_FLOW, "7");
+        assert_eq!(other_run_in(&running, "/a", &merge), Some(&key("/a", "commit_and_pr", "")));
+        // …the run itself is not in its own way…
+        assert_eq!(other_run_in(&running, "/a", &key("/a", "commit_and_pr", "")), None);
+        // …and another repository is unaffected.
+        assert_eq!(other_run_in(&running, "/b", &key("/b", probe::REVIEW_FLOW, "7")), None);
     }
 
     #[test]
