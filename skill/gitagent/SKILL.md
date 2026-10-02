@@ -111,7 +111,10 @@ from a state that no longer exists. Cancel the run first, or let it finish.
 ## Reporting a problem to the author
 
 When the problem looks like a GitAgent bug, or the user wants to send
-feedback, help them write a report they can send. The user sends it, not you:
+feedback, help them write a report they can send. Go through "When a step
+fails" first, even when the user asks straight for a report: a report about a
+cause on their side wastes their time and the author's, and finding that cause
+is more useful to them than a report. The user sends it, not you:
 never create an issue, send an email or submit a form on their behalf.
 
 Step logs from client repositories can contain repository and branch names,
