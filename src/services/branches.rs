@@ -61,6 +61,10 @@ pub struct BranchInfo {
     /// the base another way (a squash merge) — the count above is real, but
     /// there is nothing in it to ship.
     pub changes_nothing: bool,
+    /// The branch still points at exactly the commit its merged pull request
+    /// merged — nothing has been added since. Squash merges leave such a
+    /// branch looking ahead of the base forever.
+    pub merged_as_is: bool,
     pub is_base: bool,
 }
 
@@ -74,10 +78,24 @@ impl BranchInfo {
             && matches!(self.pr_state, PrState::None | PrState::Closed)
     }
 
-    /// Commits ahead that add nothing: safe to clean up, pull request and
-    /// all. Never the base itself, whatever it is called.
+    /// Nothing here that the base does not already have, so cleaning it up
+    /// loses nothing. Never the base itself, whatever it is called, and never
+    /// a branch whose pull request is still open — that one is for merging.
     pub fn leftover(&self) -> bool {
-        self.ahead > 0 && self.changes_nothing && !self.is_base
+        !self.is_base
+            && self.pr_state != PrState::Open
+            && (self.ahead == 0 || self.changes_nothing || self.merged_as_is)
+    }
+
+    /// Why `leftover` said so, for the row's tooltip.
+    pub fn leftover_reason(&self) -> &'static str {
+        if self.ahead == 0 {
+            "No commits that the base branch does not already have."
+        } else if self.merged_as_is {
+            "Still exactly what its pull request merged; nothing has been added since."
+        } else {
+            "Its commits would change no file if merged."
+        }
     }
 }
 
@@ -93,7 +111,7 @@ pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInf
         .filter(|l| !l.is_empty())
         .collect();
 
-    let prs: Vec<(String, String, String, PrState)> = match forge {
+    let prs: Vec<PrRow> = match forge {
         Forge::GitHub => {
             let out = git::run(
                 repo,
@@ -106,7 +124,7 @@ pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInf
                     "--limit",
                     "200",
                     "--json",
-                    "number,title,state,headRefName",
+                    "number,title,state,headRefName,headRefOid",
                 ],
             )
             .await?;
@@ -125,11 +143,19 @@ pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInf
 
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        let found = prs.iter().find(|(head, ..)| head == &name);
+        let found = prs.iter().find(|row| row.head == name);
         let (pr_number, pr_title, pr_state) = match found {
-            Some((_, number, title, state)) => (Some(number.clone()), title.clone(), *state),
+            Some(row) => (Some(row.number.clone()), row.title.clone(), row.state),
             None if unchecked => (None, String::new(), PrState::Unchecked),
             None => (None, String::new(), PrState::None),
+        };
+        let merged_as_is = match found {
+            Some(row) if row.state == PrState::Merged && !row.head_oid.is_empty() => {
+                git::run(repo, "git", &["rev-parse", &format!("refs/heads/{name}")])
+                    .await
+                    .is_ok_and(|tip| tip.trim() == row.head_oid)
+            }
+            _ => false,
         };
         let ahead = if name == base {
             0
@@ -139,6 +165,7 @@ pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInf
         let changes_nothing = ahead > 0 && merges_to_nothing(repo, &base_ref, &name).await;
         out.push(BranchInfo {
             changes_nothing,
+            merged_as_is,
             is_base: name == base,
             is_current: name == current,
             protected: git::is_protected(&name),
@@ -200,8 +227,19 @@ async fn ahead_count(repo: &str, base_ref: &str, branch: &str) -> usize {
     .unwrap_or(0)
 }
 
-fn github_pr_row(pr: &serde_json::Value) -> Option<(String, String, String, PrState)> {
+struct PrRow {
+    head: String,
+    number: String,
+    title: String,
+    state: PrState,
+    /// The commit the pull request pointed at — for a merged one, what was
+    /// merged.
+    head_oid: String,
+}
+
+fn github_pr_row(pr: &serde_json::Value) -> Option<PrRow> {
     let head = pr["headRefName"].as_str()?.to_string();
+    let head_oid = pr["headRefOid"].as_str().unwrap_or_default().to_string();
     let number = pr["number"].as_i64().unwrap_or_default().to_string();
     let title = pr["title"].as_str().unwrap_or_default().to_string();
     let state = match pr["state"].as_str().unwrap_or_default() {
@@ -210,7 +248,13 @@ fn github_pr_row(pr: &serde_json::Value) -> Option<(String, String, String, PrSt
         "OPEN" => PrState::Open,
         _ => PrState::None,
     };
-    Some((head, number, title, state))
+    Some(PrRow {
+        head,
+        number,
+        title,
+        state,
+        head_oid,
+    })
 }
 
 /// Pushes a branch and opens a pull request for it — the other option
@@ -326,7 +370,7 @@ mod tests {
     #[test]
     fn a_pull_request_row_with_no_head_branch_is_skipped_rather_than_panicking() {
         let row = serde_json::json!({"number": 3, "title": "x", "state": "MERGED"});
-        assert_eq!(github_pr_row(&row), None);
+        assert!(github_pr_row(&row).is_none());
     }
 
     #[test]
@@ -334,7 +378,8 @@ mod tests {
         let row = serde_json::json!({
             "number": 7, "title": "Add diff view", "state": "MERGED", "headRefName": "feat/diff-view"
         });
-        let (head, number, title, state) = github_pr_row(&row).unwrap();
+        let row = github_pr_row(&row).unwrap();
+        let (head, number, title, state) = (row.head, row.number, row.title, row.state);
         assert_eq!(head, "feat/diff-view");
         assert_eq!(number, "7");
         assert_eq!(title, "Add diff view");
@@ -351,8 +396,33 @@ mod tests {
             pr_state,
             ahead,
             changes_nothing: false,
+            merged_as_is: false,
             is_base: false,
         }
+    }
+
+    #[test]
+    fn nothing_ahead_or_merged_as_is_is_a_leftover_but_an_open_pr_never_is() {
+        assert!(
+            branch(0, PrState::None).leftover(),
+            "nothing the base lacks"
+        );
+        let mut merged = branch(1, PrState::Merged);
+        assert!(
+            !merged.leftover(),
+            "a commit added after the merge is new work"
+        );
+        merged.merged_as_is = true;
+        assert!(
+            merged.leftover(),
+            "still exactly what the pull request merged"
+        );
+        let mut open = branch(0, PrState::Open);
+        open.changes_nothing = true;
+        assert!(
+            !open.leftover(),
+            "an open pull request is for merging, not cleaning up"
+        );
     }
 
     #[test]

@@ -62,7 +62,10 @@ fn branch_busy_note(branch: &str) -> String {
 
 fn busy_note(book: &FlowBook, other: &Key) -> String {
     let (_, flow, pr) = other;
-    let label = book.get(flow).map(|f| f.label.clone()).unwrap_or_else(|| flow.clone());
+    let label = book
+        .get(flow)
+        .map(|f| f.label.clone())
+        .unwrap_or_else(|| flow.clone());
     let what = if pr.is_empty() {
         format!("\u{201c}{label}\u{201d}")
     } else {
@@ -1028,7 +1031,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         // re-render, so the rule is enforced here too. The disabled button's
         // tooltip already says which run is in the way.
         if running.read().iter().any(|k| k.0 == repo)
-            || branches_busy.read().as_ref().is_some_and(|(r, _)| r == &repo)
+            || branches_busy
+                .read()
+                .as_ref()
+                .is_some_and(|(r, _)| r == &repo)
         {
             return;
         }
@@ -1108,7 +1114,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 // Repository-wide, not just this key: the next leg of a chain
                 // must not start while something else holds the working tree.
                 if running.read().iter().any(|k| k.0 == repo)
-                    || branches_busy.read().as_ref().is_some_and(|(r, _)| r == &repo)
+                    || branches_busy
+                        .read()
+                        .as_ref()
+                        .is_some_and(|(r, _)| r == &repo)
                 {
                     break;
                 }
@@ -2233,6 +2242,33 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 });
                             }
                         },
+                        on_review: {
+                            let repo = repo.clone();
+                            move |number: String| {
+                                // Whichever flow says it handles an open pull
+                                // request here, whatever it is called.
+                                let hidden = repo_flows.read().hidden_for(&repo);
+                                let flow = book
+                                    .read()
+                                    .runnable_for(&hidden)
+                                    .iter()
+                                    .find(|f| f.answers(Need::OpenPullRequest))
+                                    .map(|f| f.id.clone());
+                                let Some(flow) = flow else {
+                                    branches_action_error.set(Some(
+                                        "No flow shown on this repository handles an open pull request. \
+                                         In Setup, tick \u{201c}an open pull request\u{201d} on the review flow."
+                                            .into(),
+                                    ));
+                                    return;
+                                };
+                                branches_open.set(None);
+                                selected_repo.set(Some(repo.clone()));
+                                selected_flow.set(flow);
+                                selected_pr.set(number);
+                                selected_node.set(String::new());
+                            }
+                        },
                         on_clean_up: {
                             let repo = repo.clone();
                             let forge = forge.clone();
@@ -2454,11 +2490,20 @@ mod tests {
         let running: BTreeSet<Key> = [key("/a", "commit_and_pr", "")].into();
         // Merging a pull request while a commit is under way is refused…
         let merge = key("/a", probe::REVIEW_FLOW, "7");
-        assert_eq!(other_run_in(&running, "/a", &merge), Some(&key("/a", "commit_and_pr", "")));
+        assert_eq!(
+            other_run_in(&running, "/a", &merge),
+            Some(&key("/a", "commit_and_pr", ""))
+        );
         // …the run itself is not in its own way…
-        assert_eq!(other_run_in(&running, "/a", &key("/a", "commit_and_pr", "")), None);
+        assert_eq!(
+            other_run_in(&running, "/a", &key("/a", "commit_and_pr", "")),
+            None
+        );
         // …and another repository is unaffected.
-        assert_eq!(other_run_in(&running, "/b", &key("/b", probe::REVIEW_FLOW, "7")), None);
+        assert_eq!(
+            other_run_in(&running, "/b", &key("/b", probe::REVIEW_FLOW, "7")),
+            None
+        );
     }
 
     #[test]

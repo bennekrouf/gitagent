@@ -17,6 +17,21 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- In the Branches panel, a branch with an open pull request has a **Review &
+  merge** button that opens Review → Merge on that pull request.
+
+### Changed
+
+- More finished-with branches are marked "nothing new" with **Clean up**: a
+  branch with no commits the base branch lacks, and one still exactly at what
+  its merged pull request merged — including one named `main` in a repository
+  whose base is `master`. A branch with an open pull request is never offered
+  for clean-up.
+
 ## [0.1.75] - 2026-10-02
 
 ### Changed
