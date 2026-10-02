@@ -38,6 +38,8 @@ pub struct BranchesPanelProps {
     /// Closes the branch's open pull request, deletes it on origin and here —
     /// offered only for a branch that changes nothing.
     pub on_clean_up: EventHandler<String>,
+    /// Opens Review → Merge on this pull request number.
+    pub on_review: EventHandler<String>,
 }
 
 fn state_class(state: PrState) -> &'static str {
@@ -105,10 +107,9 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                     div { class: "branches-cleanup branches-worth-pr",
                                         span {
                                             "{leftovers} branch" if leftovers != 1 { "es" }
-                                            " marked \u{201c}nothing new\u{201d} would change no file if merged \
-                                             — their commits are old merges, or work the base branch \
-                                             already has. Clean up closes any open pull request and \
-                                             deletes the branch on GitHub and here."
+                                            " marked \u{201c}nothing new\u{201d} hold nothing the base branch \
+                                             lacks — already merged, or commits that would change no \
+                                             file. Clean up deletes the branch on GitHub and here."
                                         }
                                     }
                                 }
@@ -167,8 +168,16 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                             if b.leftover() {
                                                 span {
                                                     class: "branch-pr branch-pr-none",
-                                                    title: "{b.ahead} commit(s) ahead, but merging them would change no file.",
+                                                    title: "{b.leftover_reason()}",
                                                     "nothing new"
+                                                }
+                                            }
+                                            if let (PrState::Open, Some(number)) = (b.pr_state, b.pr_number.clone()) {
+                                                button {
+                                                    class: "btn btn-primary branch-create-pr",
+                                                    title: "Open Review \u{2192} Merge on #{number}: CI and the model's read side by side, then merge.",
+                                                    onclick: move |_| props.on_review.call(number.clone()),
+                                                    "Review & merge"
                                                 }
                                             }
                                             if b.leftover() && !b.is_current {

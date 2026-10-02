@@ -324,12 +324,7 @@ fn env_blocks() -> bool {
 /// An explicit answer always wins. An unanswered question means
 /// `DEFAULT_CONSENT` — but only once the person has been shown the notice, so
 /// that "on by default" never means "on before you were told".
-fn gate(
-    endpoint: Option<&str>,
-    consent: Option<bool>,
-    informed: bool,
-    env_blocked: bool,
-) -> bool {
+fn gate(endpoint: Option<&str>, consent: Option<bool>, informed: bool, env_blocked: bool) -> bool {
     endpoint.is_some()
         && !env_blocked
         && match consent {
@@ -785,7 +780,11 @@ mod tests {
 
         set_consent_in(&dir, false);
         mark_informed_in(&dir);
-        assert_eq!(load_state(&dir).consent, Some(false), "and never flips an answer");
+        assert_eq!(
+            load_state(&dir).consent,
+            Some(false),
+            "and never flips an answer"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
