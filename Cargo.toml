@@ -1,6 +1,6 @@
 [package]
 name = "gitagent"
-version = "0.1.76"
+version = "0.1.77"
 edition = "2021"
 license-file = "LICENSE"
 description = "Agentic graph for commit and deploy workflows"
