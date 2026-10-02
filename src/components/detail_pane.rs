@@ -298,34 +298,58 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                 }
                             }
                         }
-                        DiffView {
-                            diff,
-                            is_light: props.is_light,
-                            excluded,
-                            on_toggle: selectable.then(|| {
-                                let on_toggle = props.on_toggle;
-                                EventHandler::new(move |path: String| {
-                                    on_toggle.call((node.clone(), path))
-                                })
-                            }),
+                        div { class: "log-wrap log-wrap-diff",
+                            DiffView {
+                                diff: diff.clone(),
+                                is_light: props.is_light,
+                                excluded,
+                                on_toggle: selectable.then(|| {
+                                    let on_toggle = props.on_toggle;
+                                    EventHandler::new(move |path: String| {
+                                        on_toggle.call((node.clone(), path))
+                                    })
+                                }),
+                            }
+                            CopyButton { text: diff }
                         }
                     }
                 }
             } else if !run.log.is_empty() {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
-                div { class: "log-wrap",
-                    pre {
-                        class: if run.status == NodeStatus::Failed { "log log-error" } else { "log" },
-                        "{run.log}"
-                    }
-                    CopyButton { text: run.log.clone() }
-                }
+                LogBox { log: run.log.clone(), failed: run.status == NodeStatus::Failed }
             }
         }
     }
 }
 
-/// Copies a log to the clipboard from the corner of its box, and says so for a
+/// A step's output, following its tail as lines stream in — unless you have
+/// scrolled up to read something, in which case it stays put until you scroll
+/// back to the bottom.
+#[component]
+fn LogBox(log: String, failed: bool) -> Element {
+    use_effect(use_reactive!(|log| {
+        let _ = log;
+        document::eval(
+            "const el=document.getElementById('node-log');\
+             if(el){if(!el._gaStick){el._gaStick=true;\
+             el.addEventListener('scroll',()=>{\
+             el.dataset.stick=(el.scrollHeight-el.scrollTop-el.clientHeight<24)?'1':'0';});}\
+             if(el.dataset.stick!=='0'){el.scrollTop=el.scrollHeight;}}",
+        );
+    }));
+    rsx! {
+        div { class: "log-wrap",
+            pre {
+                id: "node-log",
+                class: if failed { "log log-error" } else { "log" },
+                "{log}"
+            }
+            CopyButton { text: log.clone() }
+        }
+    }
+}
+
+/// Copies a log or diff to the clipboard from the corner of its box, and says so for a
 /// moment. `navigator.clipboard` is not granted in every webview, so the old
 /// select-and-copy route backs it up.
 #[component]

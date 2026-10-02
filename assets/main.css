@@ -735,13 +735,16 @@ body {
 }
 .log-error { border-color: var(--red); color: var(--red); }
 .log-wrap { position: relative; }
-.log-wrap .log { padding-right: 72px; }
+.log-wrap .log { padding-right: 72px; max-height: 70vh; }
 .log-copy {
     position: absolute; top: 8px; right: 8px;
     font-size: 10.5px; padding: 3px 9px;
     opacity: 0.75;
 }
 .log-copy:hover { opacity: 1; }
+/* Sits inside the first file's header strip, clear of the scrollbar. */
+.log-wrap-diff .log-copy { top: 3px; right: 16px; padding: 2px 8px; }
+.log-wrap-diff .diff-file:first-child .diff-file-head { padding-right: 80px; }
 
 /* ── Diff view ────────────────────────────────────────────────────── */
 .diff-view {

@@ -17,6 +17,19 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The diff a step shows has the same **Copy** button in its top-right corner,
+  so the whole diff can go on the clipboard in one click.
+
+### Changed
+
+- A step's output log is taller and follows new lines as they arrive, so a
+  long-running command no longer needs scrolling to watch. Scroll up to read
+  something and it stays where you left it until you scroll back down.
+
 ## [0.1.76] - 2026-10-02
 
 ### Added
