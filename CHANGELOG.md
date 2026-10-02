@@ -89,6 +89,18 @@ were never released.
   run out.
   It updates as soon as a licence is added or removed.
 
+## [0.1.70] - 2026-09-29
+
+### Changed
+
+- Packaging only — no user-visible change.
+
+## [0.1.69] - 2026-09-29
+
+### Changed
+
+- Packaging only — no user-visible change.
+
 ## [0.1.68] - 2026-09-29
 
 ### Changed
@@ -195,6 +207,12 @@ were never released.
 
 - The update check now considers preferred formats for each operating system,
   ensuring a more tailored download experience.
+
+## [0.1.59] - 2026-09-27
+
+### Changed
+
+- Packaging only — no user-visible change.
 
 ## [0.1.58] - 2026-09-27
 
