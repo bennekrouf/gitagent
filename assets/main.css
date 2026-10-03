@@ -118,6 +118,9 @@ body {
 .repo-main { flex: 1; min-width: 0; }
 .repo-label { font-size: 13px; color: var(--text1); font-weight: 600; }
 .repo-path { font-size: 11px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-tasks { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; }
+.repo-tasks:empty { display: none; }
+.repo-tasks-quiet { font-size: 10px; color: var(--text3); }
 .repo-open {
     font-size: 11px;
     color: var(--text3);

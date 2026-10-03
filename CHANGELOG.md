@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The home screen checks the repositories in each recent folder and says what
+  is waiting before you open it — uncommitted work, a pull request ready to
+  merge or failing its checks, a release due — with a count for each. Hover a
+  label to see which repositories it means.
+
 ## [0.1.77] - 2026-10-02
 
 ### Added
