@@ -3,11 +3,15 @@
 //! Individual repositories are not registered anywhere. They are rediscovered
 //! every time a folder opens, so cloning something new needs no bookkeeping.
 
+use std::collections::BTreeMap;
+
 use dioxus::prelude::*;
 
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
+use crate::services::licence;
 use crate::services::llm::LlmConfig;
+use crate::services::probe::{self, Wants};
 use crate::services::store::{self, Registry};
 
 #[derive(Props, Clone, PartialEq)]
@@ -26,6 +30,49 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
     let mut is_light = props.is_light;
     let mut theme_overridden = props.theme_overridden;
+
+    // What each recent folder's repositories want, so the list says which
+    // folder has work waiting before you open it. Keyed by repository rather
+    // than folder: `~/code` and `~/code/api0` can both be on the list, and the
+    // repository between them is checked once.
+    let mut folder_repos = use_signal(BTreeMap::<String, Vec<String>>::new);
+    let mut repo_wants = use_signal(BTreeMap::<String, Wants>::new);
+
+    use_effect(move || {
+        let recent = registry.read().recent.clone();
+        spawn(async move {
+            use futures_util::stream::StreamExt;
+
+            // Read, not filled: the home screen must not hand out a free
+            // slot just by looking. A locked repository is not checked here
+            // any more than it is in the workspace.
+            let licence_now = licence::current();
+            let slots = licence::load_slots();
+            let mut todo: Vec<String> = vec![];
+            for folder in recent {
+                if folder_repos.peek().contains_key(&folder) {
+                    continue;
+                }
+                let repos: Vec<String> = store::discover_repos(&folder)
+                    .into_iter()
+                    .map(|r| r.path)
+                    .filter(|p| !licence::is_locked(&licence_now, &slots, p))
+                    .collect();
+                todo.extend(repos.iter().cloned());
+                folder_repos.write().insert(folder, repos);
+            }
+            todo.sort();
+            todo.dedup();
+            todo.retain(|p| !repo_wants.peek().contains_key(p));
+
+            futures_util::stream::iter(todo)
+                .for_each_concurrent(6, |path| async move {
+                    let wants = probe::probe(&path).await.wants();
+                    repo_wants.write().insert(path, wants);
+                })
+                .await;
+        });
+    });
 
     // Opening always lands in a new window and leaves this one on the list —
     // the welcome screen is a launcher, not a workspace you leave.
@@ -80,6 +127,30 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     div { class: "repo-main",
                                         div { class: "repo-label", "{folder_name(&path)}" }
                                         div { class: "repo-path", "{path}" }
+                                        {
+                                            let tasks = folder_tasks(
+                                                folder_repos.read().get(&path),
+                                                &repo_wants.read(),
+                                            );
+                                            rsx! {
+                                                div { class: "repo-tasks",
+                                                    for (wants , names) in tasks.counts.iter() {
+                                                        span {
+                                                            key: "{wants.note()}",
+                                                            class: "sidebar-note status-{wants.css()}",
+                                                            title: "{names.join(\", \")}",
+                                                            span { class: "note-icon", "{wants.icon()}" }
+                                                            "{names.len()} {wants.note()}"
+                                                        }
+                                                    }
+                                                    if tasks.checking {
+                                                        span { class: "repo-tasks-quiet", "checking…" }
+                                                    } else if tasks.counts.is_empty() && tasks.total > 0 {
+                                                        span { class: "repo-tasks-quiet", "nothing to do" }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                     span { class: "repo-open", "Open ›" }
                                     button {
@@ -151,9 +222,75 @@ fn open_folder(path: String, mut registry: Signal<Registry>, mut error: Signal<S
     crate::open_in_new_window(path);
 }
 
+/// One folder's waiting work, most urgent first, with the repositories behind
+/// each count.
+#[derive(Debug, PartialEq)]
+struct FolderTasks {
+    counts: Vec<(Wants, Vec<String>)>,
+    total: usize,
+    /// Some repositories (or the folder itself) have not been read yet.
+    checking: bool,
+}
+
+fn folder_tasks(repos: Option<&Vec<String>>, wants: &BTreeMap<String, Wants>) -> FolderTasks {
+    let Some(repos) = repos else {
+        return FolderTasks {
+            counts: vec![],
+            total: 0,
+            checking: true,
+        };
+    };
+    let mut by_want: BTreeMap<Wants, Vec<String>> = BTreeMap::new();
+    let mut checking = false;
+    for repo in repos {
+        match wants.get(repo) {
+            Some(w) if w.needs_a_person() => by_want.entry(*w).or_default().push(folder_name(repo)),
+            Some(_) => {}
+            None => checking = true,
+        }
+    }
+    FolderTasks {
+        counts: by_want.into_iter().collect(),
+        total: repos.len(),
+        checking,
+    }
+}
+
 fn folder_name(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_tasks_counts_only_work_most_urgent_first() {
+        let repos = vec!["/c/a".to_string(), "/c/b".to_string(), "/c/d".to_string()];
+        let wants = BTreeMap::from([
+            ("/c/a".to_string(), Wants::Release),
+            ("/c/b".to_string(), Wants::Commit),
+            ("/c/d".to_string(), Wants::Nothing),
+        ]);
+        let tasks = folder_tasks(Some(&repos), &wants);
+        assert_eq!(
+            tasks.counts,
+            vec![
+                (Wants::Commit, vec!["b".to_string()]),
+                (Wants::Release, vec!["a".to_string()]),
+            ]
+        );
+        assert!(!tasks.checking);
+    }
+
+    #[test]
+    fn folder_tasks_is_checking_until_every_repo_is_read() {
+        let repos = vec!["/c/a".to_string(), "/c/b".to_string()];
+        let wants = BTreeMap::from([("/c/a".to_string(), Wants::Nothing)]);
+        assert!(folder_tasks(Some(&repos), &wants).checking);
+        assert!(folder_tasks(None, &wants).checking);
+    }
 }
