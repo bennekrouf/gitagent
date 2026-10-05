@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A **Refresh** button next to "Recent" on the first screen checks every
+  repository in your folders again — including ones cloned since — so the
+  waiting work shown for each folder is current without restarting GitAgent.
+
 ## [0.1.78] - 2026-10-03
 
 ### Added

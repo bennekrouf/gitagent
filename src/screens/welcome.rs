@@ -37,10 +37,15 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     // repository between them is checked once.
     let mut folder_repos = use_signal(BTreeMap::<String, Vec<String>>::new);
     let mut repo_wants = use_signal(BTreeMap::<String, Wants>::new);
+    // Bumped by Refresh, which is what makes the check below run again.
+    let mut rechecks = use_signal(|| 0u32);
+    let mut checking = use_signal(|| false);
 
     use_effect(move || {
         let recent = registry.read().recent.clone();
+        let _ = rechecks.read();
         spawn(async move {
+            checking.set(true);
             use futures_util::stream::StreamExt;
 
             // Read, not filled: the home screen must not hand out a free
@@ -71,8 +76,20 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                     repo_wants.write().insert(path, wants);
                 })
                 .await;
+            checking.set(false);
         });
     });
+
+    // Forgets every result, so the folders are listed again — a repository
+    // cloned since shows up — and every repository is read afresh.
+    let refresh = move |_| {
+        if *checking.peek() {
+            return;
+        }
+        folder_repos.write().clear();
+        repo_wants.write().clear();
+        *rechecks.write() += 1;
+    };
 
     // Opening always lands in a new window and leaves this one on the list —
     // the welcome screen is a launcher, not a workspace you leave.
@@ -114,7 +131,16 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                     }
 
                     if !recent.is_empty() {
-                        div { class: "repo-hint", "Recent" }
+                        div { class: "repo-hint repo-hint-row",
+                            span { "Recent" }
+                            button {
+                                class: "btn btn-ghost repo-refresh",
+                                disabled: *checking.read(),
+                                title: "Check every repository in these folders again, including ones cloned since",
+                                onclick: refresh,
+                                if *checking.read() { "Checking\u{2026}" } else { "\u{21bb} Refresh" }
+                            }
+                        }
                         div { class: "repo-list",
                             for path in recent.iter().cloned() {
                                 div {
