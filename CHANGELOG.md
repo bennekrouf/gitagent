@@ -17,6 +17,27 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A model step such as **Draft commit message** could sit at "running" with
+  an empty log until GitAgent was restarted, when an earlier step had kept the
+  local model without ever finishing. Such a step is now passed over after a
+  minute, and the step that was waiting goes ahead.
+- **Cancel run** now really stops the run. Before, a cancelled run carried on
+  out of sight, still calling the model and still able to change the run you
+  started next.
+- Commit messages, pull request descriptions and reviews no longer assume
+  every repository is a Rust desktop application.
+
+### Changed
+
+- While a step waits on the model, its log says so: which step in which
+  repository has the model and for how long, then that the request was sent
+  and how long the answer is taking. A slow answer no longer looks like a hung
+  step.
+
 ## [0.1.79] - 2026-10-05
 
 ### Added

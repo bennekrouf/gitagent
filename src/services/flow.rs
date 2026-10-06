@@ -23,7 +23,7 @@ use serde_json::json;
 use super::forge::{self, Forge};
 use super::git;
 use super::graph::{NodeSpec, ProposalItem, Remedy, RunState, Step};
-use super::llm::{self, complete_json, LlmConfig};
+use super::llm::{self, complete_json, Asker, LlmConfig};
 use super::remote;
 use super::testsuite;
 
@@ -395,27 +395,41 @@ pub async fn execute(
     state: &RunState,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<StepOutcome, StepFailure> {
+    // What a model step is called to any other step waiting for the model
+    // behind it — likely in another repository, so the repository is named.
+    let mut asker = Asker {
+        what: format!(
+            "{} in {}",
+            node.title,
+            std::path::Path::new(repo)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| repo.to_string())
+        ),
+        on_line,
+    };
+    let asker = &mut asker;
     match node.step {
         Step::Preflight => preflight(repo, cfg).await,
         Step::ScanChanges => scan(repo, state).await,
-        Step::DraftCommit => draft_commit(cfg, state).await,
+        Step::DraftCommit => draft_commit(cfg, state, asker).await,
         Step::Commit => commit(&node.id, repo, state).await,
-        Step::DraftPr => draft_pr(cfg, state).await,
+        Step::DraftPr => draft_pr(cfg, state, asker).await,
         Step::Push => push(repo, state).await,
         Step::OpenPr => open_pr(repo, state).await,
         // The review steps live in their own module but share one entry point:
         // a step means the same thing wherever a flow places it.
         Step::FindPr | Step::PrStatus | Step::PrDiff | Step::Analyse | Step::Merge | Step::Sync => {
-            super::review::execute(node.step, repo, cfg, state).await
+            super::review::execute(node.step, repo, cfg, state, asker).await
         }
         // Only these two shell out to a process that can run long enough for
         // live output to matter — everything else above finishes fast enough
         // that a final log is all "streaming" would ever show anyway.
-        Step::DraftNotes => super::notes::draft(repo, cfg).await,
+        Step::DraftNotes => super::notes::draft(repo, cfg, asker).await,
         Step::WriteNotes => super::notes::write(repo, state.artifact("release_notes")).await,
-        Step::RunTests => run_tests(node, repo, on_line).await,
-        Step::RunScript => run_script(node, repo, on_line).await,
-        Step::RunRemote => run_remote(node, on_line).await,
+        Step::RunTests => run_tests(node, repo, asker.on_line).await,
+        Step::RunScript => run_script(node, repo, asker.on_line).await,
+        Step::RunRemote => run_remote(node, asker.on_line).await,
     }
 }
 
@@ -1135,8 +1149,12 @@ async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     })
 }
 
-async fn draft_commit(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepFailure> {
-    let system = "You write git commit messages for a Rust desktop application.\n\
+async fn draft_commit(
+    cfg: &LlmConfig,
+    state: &RunState,
+    asker: &mut Asker<'_>,
+) -> Result<StepOutcome, StepFailure> {
+    let system = "You write git commit messages.\n\
         Rules:\n\
         - `subject`: Conventional Commits (feat/fix/chore/docs/refactor/test/perf), \
           imperative mood, at most 72 characters, no trailing period.\n\
@@ -1163,7 +1181,7 @@ async fn draft_commit(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, 
         "required": ["branch", "subject", "body"]
     });
 
-    let value = complete_json(cfg, system, &user, &schema).await?;
+    let value = complete_json(cfg, system, &user, &schema, asker).await?;
 
     let subject = value["subject"]
         .as_str()
@@ -1418,8 +1436,12 @@ async fn commit_on(
     })
 }
 
-async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepFailure> {
-    let system = "You write pull request descriptions for a Rust desktop application.\n\
+async fn draft_pr(
+    cfg: &LlmConfig,
+    state: &RunState,
+    asker: &mut Asker<'_>,
+) -> Result<StepOutcome, StepFailure> {
+    let system = "You write pull request descriptions.\n\
         Rules:\n\
         - `title`: one line, at most 72 characters, plain language, no type prefix.\n\
         - `body`: GitHub markdown with exactly three sections: `## What changed`, \
@@ -1448,7 +1470,7 @@ async fn draft_pr(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, Step
         "required": ["title", "body"]
     });
 
-    let value = complete_json(cfg, system, &user, &schema).await?;
+    let value = complete_json(cfg, system, &user, &schema, asker).await?;
     let title = value["title"]
         .as_str()
         .unwrap_or_default()

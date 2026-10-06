@@ -119,7 +119,14 @@ with a local model.**
 The diff was larger than the model's context window and the instructions got
 lost. From 0.1.57 what's sent is sized to the context window; lower
 **Context window** in Settings for faster answers, or use a bigger model. With
-Ollama, steps queue for the model one at a time and show as queued (0.1.50).
+Ollama, steps queue for the model one at a time; the step's log names the
+step holding the model and says how long each wait has lasted (0.1.80).
+
+**A model step stays "running" with an empty log.**
+Before 0.1.80 an earlier step could keep the local model without finishing,
+and every model step after it waited until GitAgent was restarted. Restart, or
+update: such a step is now passed over after a minute. **Cancel run** also
+stops a run for real from 0.1.80.
 
 **The step log says some files weren't shown to the model.**
 They didn't fit in the context window. Lock files go first, then docs and CI,

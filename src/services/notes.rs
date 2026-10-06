@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::flow::{StepFailure, StepOutcome};
 use super::git;
-use super::llm::{complete_json, LlmConfig};
+use super::llm::{complete_json, Asker, LlmConfig};
 
 const CHANGELOG: &str = "CHANGELOG.md";
 const COMMIT_MESSAGE: &str = "docs: add release notes";
@@ -35,7 +35,11 @@ pub fn proposal(notes: &str) -> String {
     )
 }
 
-pub async fn draft(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailure> {
+pub async fn draft(
+    repo: &str,
+    cfg: &LlmConfig,
+    asker: &mut Asker<'_>,
+) -> Result<StepOutcome, StepFailure> {
     // Before reading anything: the notes, or the commits that need them, may
     // be on origin and not here yet.
     super::flow::catch_up(repo).await?;
@@ -104,7 +108,7 @@ pub async fn draft(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
     let groups: Vec<(&str, Vec<String>)> = if app.is_empty() {
         vec![]
     } else {
-        let (entries, note) = ask_model(repo, cfg, &range, since, &changelog, &app).await?;
+        let (entries, note) = ask_model(repo, cfg, &range, since, &changelog, &app, asker).await?;
         left_out = note;
         for e in &entries {
             verdicts.push(format!(
@@ -158,6 +162,7 @@ async fn ask_model(
     since: &str,
     changelog: &str,
     commits: &[&Commit],
+    asker: &mut Asker<'_>,
 ) -> Result<(Vec<serde_json::Value>, String), StepFailure> {
     let listed: Vec<String> = commits
         .iter()
@@ -241,7 +246,7 @@ async fn ask_model(
         },
         "required": ["commits"]
     });
-    let value = complete_json(cfg, system, &user, &schema).await?;
+    let value = complete_json(cfg, system, &user, &schema, asker).await?;
     Ok((
         value["commits"].as_array().cloned().unwrap_or_default(),
         fitted.note(),
