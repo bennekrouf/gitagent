@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "gitagent"
-version = "0.1.81"
+version = "0.1.82"
 dependencies = [
  "base64 0.22.1",
  "chrono",
