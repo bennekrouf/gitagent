@@ -201,6 +201,10 @@ const MOST_FLOWS_IN_A_TRUSTED_RUN: usize = 6;
 
 /// Walks one flow, for one repository, to completion.
 ///
+/// Returns `false` when the run was cancelled under it — or cancelled and
+/// started afresh — so the caller knows the run, and the `running` entry,
+/// belong to someone else now.
+///
 /// One node at a time, in dependency order. The graph already permits running
 /// the whole ready set together — `next_ready` returns the first of a set, not
 /// the next link in a chain — so making this concurrent is a change to this
@@ -217,10 +221,22 @@ async fn drive(
     selected_flow: Signal<String>,
     selected_pr: Signal<String>,
     mut trusted: Signal<BTreeSet<Key>>,
-) {
+) -> bool {
     let repo = key.0.clone();
+    // Cancel run drops the run's state; a new Start puts a fresh one in its
+    // place. Either way the run this call was driving is gone, and carrying
+    // on would run its steps — model calls included — for nobody, or worse,
+    // into the new run.
+    let run = snapshot(&states, &key).run;
+    let gone = {
+        let key = key.clone();
+        move || states.read().get(&key).map(|s| s.run) != Some(run)
+    };
 
     loop {
+        if gone() {
+            return false;
+        }
         let state = snapshot(&states, &key);
         let Some(node) = state.next_ready(&graph) else {
             break;
@@ -292,6 +308,9 @@ async fn drive(
                 };
                 if bypassed {
                     break None;
+                }
+                if gone() {
+                    return false;
                 }
                 if let Some(decision) = decision {
                     break Some(decision);
@@ -415,7 +434,12 @@ async fn drive(
         const LIVE_LOG_CAP: usize = 200_000;
 
         let mut pending = String::new();
-        let mut last_flush = std::time::Instant::now();
+        // Starts "due", so a step's first line shows at once. A model step
+        // says what it is waiting on and then nothing for a while; held back
+        // until a second line, that one line is the one you never saw.
+        let mut last_flush = std::time::Instant::now()
+            .checked_sub(FLUSH_EVERY)
+            .unwrap_or_else(std::time::Instant::now);
         let mut push_line = {
             let mut states = states;
             let key = key.clone();
@@ -472,13 +496,16 @@ async fn drive(
                             .get(&key)
                             .map(|s| s.status(&node.id))
                             == Some(NodeStatus::Bypassed);
-                        if bypassed {
+                        if bypassed || gone() {
                             break None;
                         }
                     }
                 }
             }
         };
+        if gone() {
+            return false;
+        }
         let Some(result) = result else {
             // Skipped mid-flight. `bypass` has already set the status and freed
             // whatever was blocked behind it, and the log it wrote so far is
@@ -530,6 +557,7 @@ async fn drive(
     }
 
     report_finished(&graph, &key, cfg, &states).await;
+    true
 }
 
 /// Tells the usage statistics how this drive ended, if it ended — a run that
@@ -612,7 +640,7 @@ fn retry_node(
     }
     running.write().insert(key.clone());
     spawn(async move {
-        drive(
+        if !drive(
             graph,
             key.clone(),
             cfg,
@@ -623,7 +651,10 @@ fn retry_node(
             selected_pr,
             trusted,
         )
-        .await;
+        .await
+        {
+            return;
+        }
         running.write().remove(&key);
         reprobe(key.0.clone(), statuses);
     });
@@ -668,7 +699,7 @@ fn skip_node(
     }
     running.write().insert(key.clone());
     spawn(async move {
-        drive(
+        if !drive(
             graph,
             key.clone(),
             cfg,
@@ -679,7 +710,10 @@ fn skip_node(
             selected_pr,
             trusted,
         )
-        .await;
+        .await
+        {
+            return;
+        }
         running.write().remove(&key);
         reprobe(key.0.clone(), statuses);
     });
@@ -1149,7 +1183,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     selected_node.set(def.first_node());
                 }
 
-                drive(
+                if !drive(
                     graph.clone(),
                     key.clone(),
                     llm_config,
@@ -1160,7 +1194,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     selected_pr,
                     trusted,
                 )
-                .await;
+                .await
+                {
+                    // Cancelled: the run is over, and nothing chains from it.
+                    return;
+                }
                 running.write().remove(&key);
 
                 // `drive` takes the key back out when it stopped at something
@@ -2096,6 +2134,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         move |_| {
                                             states.write().remove(&key);
                                             running.write().remove(&key);
+                                            // A run parked at an approval
+                                            // hears about it now, not on its
+                                            // next timeout.
+                                            approvals().notify_waiters();
                                             reprobe(key.0.clone(), statuses);
                                         }
                                     },

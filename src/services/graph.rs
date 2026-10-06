@@ -316,6 +316,10 @@ pub struct RunState {
     pub started: bool,
     /// Approval decisions keyed by node: `true` approved, `false` rejected.
     pub decisions: BTreeMap<NodeId, bool>,
+    /// Which run this is. Every fresh run gets its own, kept through retries
+    /// and skips, so whatever is driving a run can tell that it was cancelled
+    /// — or cancelled and started again — and stop rather than carry on.
+    pub run: u64,
 }
 
 impl RunState {
@@ -329,6 +333,10 @@ impl RunState {
             artifacts: BTreeMap::new(),
             started: false,
             decisions: BTreeMap::new(),
+            run: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
         }
     }
 

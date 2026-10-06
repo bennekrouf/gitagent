@@ -19,18 +19,203 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::OnceLock;
-use tokio::sync::Semaphore;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 
 /// Ollama serializes generations on one model by default (`OLLAMA_NUM_PARALLEL=1`),
 /// so firing several draft steps at once doesn't run them in parallel — it just
 /// queues them on the server, each still burning its own client-side timeout while
 /// it waits its turn. Gate calls here instead: only one request is in flight at a
-/// time, and the ones behind it wait on this permit rather than on a socket, so a
-/// slow model shows as "queued" instead of every step looking equally hung.
-fn ollama_gate() -> &'static Semaphore {
-    static GATE: OnceLock<Semaphore> = OnceLock::new();
-    GATE.get_or_init(|| Semaphore::new(1))
+/// time, and the ones behind it wait their turn rather than a socket, and say
+/// whose turn it is.
+///
+/// The gate is shared by every window, and a turn is only given back when the
+/// step holding it finishes or is dropped. A step that is neither — parked in a
+/// task nothing polls any more — used to keep it for good, and every model step
+/// after it sat at "running" with an empty log until GitAgent was restarted. So
+/// a holder has to keep checking in while it waits for its answer, and one that
+/// stops is passed over: whatever it is doing, it is no longer waiting on ollama.
+struct Gate {
+    holder: Mutex<Option<Holder>>,
+    freed: Notify,
+}
+
+struct Holder {
+    id: u64,
+    what: String,
+    since: Instant,
+    beat: Instant,
+}
+
+fn gate() -> &'static Gate {
+    static GATE: OnceLock<Gate> = OnceLock::new();
+    GATE.get_or_init(|| Gate {
+        holder: Mutex::new(None),
+        freed: Notify::new(),
+    })
+}
+
+/// How often a step waiting on the model checks in, and says how long it has
+/// been. Also how often a step waiting for its turn looks again.
+const HEARTBEAT: Duration = Duration::from_secs(10);
+
+/// A holder silent for this long is not waiting on an answer any more: the
+/// request it sent checks in every `HEARTBEAT`.
+const ABANDONED_AFTER: Duration = Duration::from_secs(60);
+
+/// How often a long wait repeats itself in the step's log.
+const REMIND_EVERY: Duration = Duration::from_secs(30);
+
+/// One step's turn at the local model. Given back when dropped, which is also
+/// what happens to a step that is skipped or cancelled mid-request.
+struct Turn {
+    id: u64,
+}
+
+impl Turn {
+    fn beat(&self) {
+        let mut holder = gate().holder.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = holder.as_mut().filter(|h| h.id == self.id) {
+            h.beat = Instant::now();
+        }
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let mut holder = gate().holder.lock().unwrap_or_else(|e| e.into_inner());
+        // Not ours any more if it was taken over: leave the new holder alone.
+        if holder.as_ref().is_some_and(|h| h.id == self.id) {
+            *holder = None;
+        }
+        drop(holder);
+        gate().freed.notify_waiters();
+    }
+}
+
+async fn take_turn(what: &str, on_line: &mut dyn FnMut(&str)) -> Turn {
+    take_turn_unless_abandoned(what, on_line, ABANDONED_AFTER).await
+}
+
+async fn take_turn_unless_abandoned(
+    what: &str,
+    on_line: &mut dyn FnMut(&str),
+    abandoned_after: Duration,
+) -> Turn {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    // Whose turn was last reported, and when, so the log says it once and
+    // then only every so often — not once a heartbeat.
+    let mut reported: Option<(u64, Instant)> = None;
+
+    loop {
+        // Registered before the holder is read, so a turn given back between
+        // the read and the wait below still wakes this one.
+        let freed = gate().freed.notified();
+        tokio::pin!(freed);
+        freed.as_mut().enable();
+
+        let note = {
+            let mut holder = gate().holder.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            let mut taking_over = None;
+            match holder.as_ref() {
+                Some(h) if h.beat.elapsed() < abandoned_after => {
+                    let due = match reported {
+                        Some((other, at)) => other != h.id || at.elapsed() >= REMIND_EVERY,
+                        None => true,
+                    };
+                    if due {
+                        reported = Some((h.id, now));
+                        Some(format!(
+                            "Waiting for the model: {} has had it for {}.",
+                            h.what,
+                            took(h.since.elapsed())
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                gone => {
+                    if let Some(h) = gone {
+                        taking_over = Some(format!(
+                            "{} took the model {} ago and has not been heard from \
+                             since, so it is no longer waiting for an answer. Going \
+                             ahead without it.",
+                            h.what,
+                            took(h.since.elapsed())
+                        ));
+                    }
+                    *holder = Some(Holder {
+                        id,
+                        what: what.to_string(),
+                        since: now,
+                        beat: now,
+                    });
+                    drop(holder);
+                    if let Some(line) = taking_over {
+                        on_line(&line);
+                    }
+                    return Turn { id };
+                }
+            }
+        };
+        if let Some(line) = note {
+            on_line(&line);
+        }
+        let _ = tokio::time::timeout(HEARTBEAT, freed).await;
+    }
+}
+
+/// "45s", "2m 05s".
+fn took(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    }
+}
+
+/// Waits for `request`, checking in with the gate and saying in the step's
+/// log how long it has been, so a slow answer never looks like a hung step.
+async fn awaiting_answer<T>(
+    request: impl std::future::Future<Output = T>,
+    turn: Option<&Turn>,
+    model: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> T {
+    tokio::pin!(request);
+    let sent = Instant::now();
+    let mut reminded = Instant::now();
+    loop {
+        tokio::select! {
+            biased;
+            done = &mut request => return done,
+            _ = tokio::time::sleep(HEARTBEAT) => {
+                if let Some(turn) = turn {
+                    turn.beat();
+                }
+                if reminded.elapsed() >= REMIND_EVERY {
+                    reminded = Instant::now();
+                    on_line(&format!(
+                        "Still waiting for {model}: {} so far.",
+                        took(sent.elapsed())
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Which step is asking the model, and where to tell it how the wait is
+/// going. Both end up in that step's log while it runs.
+pub struct Asker<'a> {
+    /// Names the step to any other step waiting for the model behind it.
+    pub what: String,
+    pub on_line: &'a mut dyn FnMut(&str),
 }
 
 /// A remote provider that speaks the OpenAI wire format.
@@ -308,6 +493,7 @@ pub async fn complete_json(
     system: &str,
     user: &str,
     schema: &Value,
+    asker: &mut Asker<'_>,
 ) -> Result<Value, String> {
     let system = format!(
         "{system}\n\nReply with a single JSON object matching this schema, and \
@@ -316,8 +502,8 @@ pub async fn complete_json(
     );
 
     let raw = match cfg.kind {
-        ProviderKind::Ollama => call_ollama(cfg, &system, user, schema).await?,
-        ProviderKind::Remote => call_openai_compatible(cfg, &system, user).await?,
+        ProviderKind::Ollama => call_ollama(cfg, &system, user, schema, asker).await?,
+        ProviderKind::Remote => call_openai_compatible(cfg, &system, user, asker).await?,
         // Reaching here means a model step ran with no model configured, which
         // the executor is supposed to have headed off. Say which of the two is
         // broken rather than pretending the provider is unreachable.
@@ -357,6 +543,7 @@ async fn call_ollama(
     system: &str,
     user: &str,
     schema: &Value,
+    asker: &mut Asker<'_>,
 ) -> Result<String, String> {
     let url = format!("{}/api/chat", cfg.ollama_url.trim_end_matches('/'));
     let body = json!({
@@ -377,41 +564,49 @@ async fn call_ollama(
         ],
     });
 
-    // Wait for exclusive access to the (serialized) local model before spending
-    // any of the generation timeout — the permit never expires, so queued
-    // callers wait here rather than racing a clock they can't win.
-    let _permit = ollama_gate()
-        .acquire()
-        .await
-        .expect("ollama_gate semaphore is never closed");
+    // Wait for our turn at the (serialized) local model before spending any
+    // of the generation timeout, so queued steps wait here rather than racing
+    // a clock they can't win.
+    let turn = take_turn(&asker.what, asker.on_line).await;
+    (asker.on_line)(&format!(
+        "Sent to {} ({} KB). Waiting for its answer…",
+        cfg.ollama_model,
+        (system.len() + user.len()).div_ceil(1024)
+    ));
 
-    let resp = client(OLLAMA_TIMEOUT)?
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            // A timeout is not a missing server, and saying so sent people to
-            // check `ollama serve` — which was running the whole time — while
-            // the actual problem was a prompt this model cannot answer inside
-            // the wait. Name which of the two happened, and what to do.
-            if e.is_timeout() {
-                format!(
-                    "{} did not answer within {}s. That is the model being too slow for this \
-                     prompt, not ollama being down. Skip this step, lower the context window \
-                     in Settings so it is sent less (it gets {} characters now), or use a \
-                     smaller model.",
-                    cfg.ollama_model,
-                    OLLAMA_TIMEOUT.as_secs(),
-                    cfg.input_budget(),
-                )
-            } else {
-                format!("ollama unreachable at {url} — is `ollama serve` running? ({e})")
-            }
-        })?;
+    let request = async {
+        let resp = client(OLLAMA_TIMEOUT)?
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                // A timeout is not a missing server, and saying so sent people
+                // to check `ollama serve` — which was running the whole time —
+                // while the actual problem was a prompt this model cannot
+                // answer inside the wait. Name which of the two happened, and
+                // what to do.
+                if e.is_timeout() {
+                    format!(
+                        "{} did not answer within {}s. That is the model being too slow for \
+                         this prompt, not ollama being down. Skip this step, lower the context \
+                         window in Settings so it is sent less (it gets {} characters now), or \
+                         use a smaller model.",
+                        cfg.ollama_model,
+                        OLLAMA_TIMEOUT.as_secs(),
+                        cfg.input_budget(),
+                    )
+                } else {
+                    format!("ollama unreachable at {url} — is `ollama serve` running? ({e})")
+                }
+            })?;
+        let status = resp.status();
+        Ok::<_, String>((status, resp.text().await.unwrap_or_default()))
+    };
+    let (status, text) =
+        awaiting_answer(request, Some(&turn), &cfg.ollama_model, asker.on_line).await?;
+    drop(turn);
 
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
         return Err(format!("ollama returned {status}: {text}"));
     }
@@ -430,6 +625,7 @@ async fn call_openai_compatible(
     cfg: &LlmConfig,
     system: &str,
     user: &str,
+    asker: &mut Asker<'_>,
 ) -> Result<String, String> {
     let preset = cfg.preset();
     if !cfg.endpoint_carries_key_safely() {
@@ -460,16 +656,24 @@ async fn call_openai_compatible(
         ],
     });
 
-    let resp = client(REMOTE_TIMEOUT)?
-        .post(&url)
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("{} unreachable at {url}: {e}", preset.label))?;
-
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
+    (asker.on_line)(&format!(
+        "Sent to {} on {}. Waiting for its answer…",
+        cfg.remote_model_name(),
+        preset.label
+    ));
+    let request = async {
+        let resp = client(REMOTE_TIMEOUT)?
+            .post(&url)
+            .bearer_auth(key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("{} unreachable at {url}: {e}", preset.label))?;
+        let status = resp.status();
+        Ok::<_, String>((status, resp.text().await.unwrap_or_default()))
+    };
+    let (status, text) =
+        awaiting_answer(request, None, cfg.remote_model_name(), asker.on_line).await?;
     if !status.is_success() {
         return Err(format!("{} returned {status}: {text}", preset.label));
     }
@@ -593,6 +797,64 @@ mod tests {
             };
             assert!(cfg.endpoint_carries_key_safely(), "{}", preset.key);
         }
+    }
+
+    #[tokio::test]
+    async fn a_turn_nobody_is_waiting_on_does_not_block_the_model_for_good() {
+        // One test rather than several: the gate is process-wide, and tests
+        // run in parallel.
+        let mut lines: Vec<String> = vec![];
+
+        let first = take_turn("Draft commit message in other", &mut |l| {
+            lines.push(l.to_string())
+        })
+        .await;
+
+        // Still checking in: whoever comes next waits, and says for whom.
+        let waited = tokio::time::timeout(
+            Duration::from_millis(200),
+            take_turn_unless_abandoned(
+                "Draft PR description in mayorana",
+                &mut |_| {},
+                ABANDONED_AFTER,
+            ),
+        )
+        .await;
+        assert!(waited.is_err(), "a live holder keeps its turn");
+
+        // Silent past the limit: passed over, and the log says why.
+        let second = take_turn_unless_abandoned(
+            "Draft commit message in mayorana",
+            &mut |l| lines.push(l.to_string()),
+            Duration::ZERO,
+        )
+        .await;
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("Draft commit message in other") && l.contains("Going ahead")));
+
+        // The abandoned holder finishing late must not free the new turn.
+        drop(first);
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(200),
+            take_turn_unless_abandoned("Review in api0", &mut |_| {}, ABANDONED_AFTER),
+        )
+        .await;
+        assert!(blocked.is_err(), "the takeover's turn is still held");
+
+        drop(second);
+        let third = tokio::time::timeout(
+            Duration::from_secs(1),
+            take_turn_unless_abandoned("Review in api0", &mut |_| {}, ABANDONED_AFTER),
+        )
+        .await;
+        assert!(third.is_ok(), "a turn given back frees the model");
+    }
+
+    #[test]
+    fn waits_read_as_minutes_and_seconds() {
+        assert_eq!(took(Duration::from_secs(45)), "45s");
+        assert_eq!(took(Duration::from_secs(125)), "2m 05s");
     }
 
     #[test]

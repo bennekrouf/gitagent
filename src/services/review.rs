@@ -23,7 +23,7 @@ use super::flow::{StepFailure, StepOutcome};
 use super::forge::Forge;
 use super::git;
 use super::graph::{Remedy, RunState, Step};
-use super::llm::{complete_json, LlmConfig};
+use super::llm::{complete_json, Asker, LlmConfig};
 
 /// The merge approval is the whole point of this flow: both signals, stated
 /// plainly, with the disagreement visible when there is one.
@@ -50,12 +50,13 @@ pub async fn execute(
     repo: &str,
     cfg: &LlmConfig,
     state: &RunState,
+    asker: &mut Asker<'_>,
 ) -> Result<StepOutcome, StepFailure> {
     match step {
         Step::FindPr => find_pr(repo, state).await,
         Step::PrStatus => pr_status(repo, state).await,
         Step::PrDiff => pr_diff(repo, state).await,
-        Step::Analyse => analyse(cfg, state).await,
+        Step::Analyse => analyse(cfg, state, asker).await,
         Step::Merge => merge(repo, state).await,
         Step::Sync => sync(repo, state).await,
         _ => Err(StepFailure::from("step does not belong to this flow")),
@@ -535,8 +536,12 @@ fn empty_pr(forge: &Forge, number: &str, base: &str, head: &str, ahead: usize) -
     StepFailure { message, remedies }
 }
 
-async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepFailure> {
-    let system = "You review a pull request diff for regressions in a Rust desktop application.\n\
+async fn analyse(
+    cfg: &LlmConfig,
+    state: &RunState,
+    asker: &mut Asker<'_>,
+) -> Result<StepOutcome, StepFailure> {
+    let system = "You review a pull request diff for regressions.\n\
         Report only what the diff itself shows. Rules:\n\
         - `verdict`: `looks_safe` if you found nothing concrete, `worth_a_look` for \
           plausible problems, `risky` for a specific likely break.\n\
@@ -581,7 +586,7 @@ async fn analyse(cfg: &LlmConfig, state: &RunState) -> Result<StepOutcome, StepF
         "required": ["verdict", "summary", "findings"]
     });
 
-    let value = complete_json(cfg, system, &user, &schema).await?;
+    let value = complete_json(cfg, system, &user, &schema, asker).await?;
     let verdict = value["verdict"]
         .as_str()
         .unwrap_or("worth_a_look")
