@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- **Back to base** no longer fails with "already used by worktree" after a
+  merge done from a second worktree of a repository. The base branch is
+  brought up to date in the worktree that has it checked out, and the one you
+  merged from stays on its branch.
+
 ## [0.1.80] - 2026-10-06
 
 ### Fixed

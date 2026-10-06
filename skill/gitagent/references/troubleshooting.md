@@ -144,6 +144,13 @@ model to get drafted messages.
 
 ## Repositories and branches
 
+**"Back to base" failed with "'master' is already used by worktree".**
+The merge ran in a second worktree, and the base branch is checked out in
+another one; git won't check a branch out twice. From 0.1.82 the step updates
+the base where it is checked out and leaves this worktree on its branch.
+Before that, run `git pull` in the worktree that has the base, then **Skip
+this step**.
+
 **A repository cloned into the folder doesn't appear** (or a deleted one is
 still listed).
 Press **Refresh** at the top of the list (0.1.61 and later re-read the

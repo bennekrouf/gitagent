@@ -262,7 +262,9 @@ pub const CATALOGUE: &[StepInfo] = &[
         key: "sync",
         title: "Back to base",
         subtitle: "Checkout the base branch and pull",
-        about: "Returns to the base branch and fast-forwards it.",
+        about: "Returns to the base branch and fast-forwards it. When the base is \
+                checked out in another worktree, it is updated there instead and \
+                this worktree stays where it is.",
         kind: NodeKind::Deterministic,
         reads: &["pr_base"],
         writes: &["sync_output"],
