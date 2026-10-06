@@ -192,6 +192,31 @@ pub async fn head_sha(repo: &str) -> Result<String, String> {
 /// the ref, usually to the very commit this fetch wanted, so fetching again
 /// succeeds. Fetching is idempotent, which is what makes retrying it safe;
 /// nothing else in this module is retried.
+/// The other worktree of this repository that has `branch` checked out, if
+/// one does. Git lets a branch be checked out in only one worktree at a time,
+/// so `git checkout <branch>` here fails while that one holds it.
+pub async fn worktree_holding(repo: &str, branch: &str) -> Option<String> {
+    let list = run(repo, "git", &["worktree", "list", "--porcelain"])
+        .await
+        .ok()?;
+    let here = run(repo, "git", &["rev-parse", "--show-toplevel"])
+        .await
+        .ok()?;
+    holder_in(&list, branch, here.trim())
+}
+
+fn holder_in(porcelain: &str, branch: &str, here: &str) -> Option<String> {
+    let wanted = format!("branch refs/heads/{branch}");
+    let same = |a: &str, b: &str| {
+        let canon = |p: &str| std::fs::canonicalize(p).unwrap_or_else(|_| p.into());
+        a == b || canon(a) == canon(b)
+    };
+    porcelain.split("\n\n").find_map(|block| {
+        let path = block.lines().find_map(|l| l.strip_prefix("worktree "))?;
+        (block.lines().any(|l| l == wanted) && !same(path, here)).then(|| path.to_string())
+    })
+}
+
 pub async fn fetch(repo: &str, args: &[&str]) -> Result<String, String> {
     let mut full = vec!["fetch"];
     full.extend_from_slice(args);
@@ -1450,5 +1475,20 @@ mod tests {
         let long = "é".repeat(DIFF_CAP);
         let out = cap(&long);
         assert!(out.contains("truncated"));
+    }
+
+    #[test]
+    fn the_worktree_holding_a_branch_is_found_but_never_this_one() {
+        let list = "worktree /code/mayorana\nHEAD 94318ce\nbranch refs/heads/master\n\n\
+                    worktree /code/mayorana-funnel\nHEAD 68dc94b\nbranch refs/heads/feat/per-app-funnel\n";
+        assert_eq!(
+            holder_in(list, "master", "/code/mayorana-funnel").as_deref(),
+            Some("/code/mayorana")
+        );
+        assert_eq!(holder_in(list, "master", "/code/mayorana"), None);
+        assert_eq!(holder_in(list, "main", "/code/mayorana-funnel"), None);
+        // `master` must not match a branch that merely starts with it.
+        let list = "worktree /code/a\nHEAD 1\nbranch refs/heads/master-old\n";
+        assert_eq!(holder_in(list, "master", "/code/b"), None);
     }
 }

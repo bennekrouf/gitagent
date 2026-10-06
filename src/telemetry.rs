@@ -149,6 +149,11 @@ pub fn outcome_of(statuses: &[NodeStatus]) -> Outcome {
 pub enum Event {
     /// The process started. The denominator for everything else.
     AppStarted,
+    /// Emitted once per install, by [`record`] itself, when the install's
+    /// identity is first created — the first event recorded after the person
+    /// has seen the notice. The "installed" step of the funnel: a download in
+    /// the web server's log is not an install, and only the app can tell.
+    AppInstalled,
     /// One drive of one flow ended.
     FlowFinished {
         flow: &'static str,
@@ -201,6 +206,7 @@ impl Event {
         };
         let name = match self {
             Event::AppStarted => "app_started",
+            Event::AppInstalled => "app_installed",
             Event::FlowFinished {
                 flow,
                 outcome,
@@ -532,7 +538,8 @@ fn record_in(dir: &Path, on: bool, event: &Event, now: u64) {
     let _io = IO.lock().unwrap_or_else(|e| e.into_inner());
 
     let mut state = load_state(dir);
-    if state.install_id.is_empty() {
+    let new_install = state.install_id.is_empty();
+    if new_install {
         state.install_id = random_hex();
         if state.install_id.is_empty() {
             return;
@@ -544,7 +551,13 @@ fn record_in(dir: &Path, on: bool, event: &Event, now: u64) {
         return;
     }
 
-    let mut lines = vec![make_line(event, now)];
+    // Ahead of whatever triggered it, so "installed" always precedes the first
+    // thing the install did. Tied to creating the id, so it cannot repeat.
+    let mut lines = Vec::new();
+    if new_install {
+        lines.push(make_line(&Event::AppInstalled, now));
+    }
+    lines.push(make_line(event, now));
 
     // The first run that actually completes is the moment a download became a
     // user. Emitted here, from the same state that holds the install id, so it
@@ -837,6 +850,26 @@ mod tests {
     }
 
     #[test]
+    fn installed_is_reported_once_ahead_of_the_first_event() {
+        let dir = scratch();
+        record_in(&dir, true, &Event::AppStarted, NOW);
+        record_in(&dir, true, &Event::AppStarted, NOW + 60);
+        record_in(&dir, true, &finished(Outcome::Done), NOW + 120);
+        let names: Vec<String> = queued(&dir)
+            .iter()
+            .map(|e| e["n"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names[0], "app_installed", "first, before what triggered it");
+        assert_eq!(names.iter().filter(|n| *n == "app_installed").count(), 1);
+
+        // Off means no identity, so no install is reported either.
+        let off = scratch();
+        record_in(&off, false, &Event::AppStarted, NOW);
+        assert!(queued(&off).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn activation_fires_once_and_only_for_a_run_that_worked() {
         let dir = scratch();
         record_in(&dir, true, &finished(Outcome::Failed), NOW);
@@ -962,8 +995,10 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    /// Exactly `events` queued lines: the first record of an install also
+    /// queues its one `app_installed`, so one fewer `app_started` is needed.
     fn backlog(dir: &Path, events: usize) {
-        for i in 0..events {
+        for i in 0..events - 1 {
             record_in(dir, true, &Event::AppStarted, NOW + i as u64);
         }
         assert_eq!(queued(dir).len(), events);
@@ -976,8 +1011,8 @@ mod tests {
         record_in(&dir, true, &finished(Outcome::Done), NOW + 1);
         assert_eq!(
             queued(&dir).len(),
-            3,
-            "app_started, flow_finished, first_flow_completed"
+            4,
+            "app_installed, app_started, flow_finished, first_flow_completed"
         );
 
         let (url, seen, server) = serve(vec!["204 No Content"]).await;
@@ -996,7 +1031,7 @@ mod tests {
         );
         assert_eq!(body["app"], "gitagent");
         assert_eq!(body["v"], 1);
-        assert_eq!(body["events"].as_array().unwrap().len(), 3);
+        assert_eq!(body["events"].as_array().unwrap().len(), 4);
         assert_eq!(body["install_id"].as_str().unwrap().len(), 32);
         assert!(!dir.join(QUEUE_FILE).exists(), "sent events are forgotten");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1010,11 +1045,11 @@ mod tests {
         let (url, _seen, server) = serve(vec!["500 Internal Server Error"]).await;
         assert!(!flush_to(&dir, &url, NOW + 1).await);
         server.abort();
-        assert_eq!(queued(&dir).len(), 1);
+        assert_eq!(queued(&dir).len(), 2, "app_installed, app_started");
 
         // Nothing listening at all.
         assert!(!flush_to(&dir, "http://127.0.0.1:1/x", NOW + 1).await);
-        assert_eq!(queued(&dir).len(), 1);
+        assert_eq!(queued(&dir).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1070,9 +1105,11 @@ mod tests {
             "only the acknowledged chunk is gone"
         );
         assert!(left.len() >= second, "the refused chunk is still queued");
+        // The queue starts app_installed@NOW, app_started@NOW, @NOW+1, … so
+        // line k (k ≥ 1) is stamped NOW + k - 1.
         assert_eq!(
             left[0]["t"],
-            NOW + first as u64,
+            NOW + first as u64 - 1,
             "oldest unsent comes first"
         );
         let _ = std::fs::remove_dir_all(&dir);

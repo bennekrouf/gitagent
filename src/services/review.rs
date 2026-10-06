@@ -769,6 +769,9 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
 
 async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let base = state.artifact("pr_base");
+    if let Some(there) = git::worktree_holding(repo, base).await {
+        return sync_elsewhere(repo, base, &there).await;
+    }
     let mut log = git::run(repo, "git", &["checkout", base]).await?;
     // Fetch only the base, then fast-forward, rather than `git pull`: a pull
     // fetches every branch (and prunes, where configured), which widens the
@@ -789,6 +792,55 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     Ok(StepOutcome {
         summary: format!("on {base}, up to date"),
         log: log.trim().to_string(),
+        artifacts: vec![("sync_output".into(), log)],
+        nothing_to_do: false,
+        items: vec![],
+    })
+}
+
+/// Run from a second worktree whose base branch is checked out in another
+/// one. Git refuses to check a branch out twice, and there is nothing the
+/// person could do about that here short of removing a worktree. So the base
+/// is brought up to date where it lives, and this worktree is left on its
+/// branch — which is merged now, and theirs to remove when they are done.
+async fn sync_elsewhere(repo: &str, base: &str, there: &str) -> Result<StepOutcome, StepFailure> {
+    let mut log = match git::fetch(repo, &["origin", base]).await {
+        Ok(out) => out,
+        Err(e) => return Err(sync_fetch_failure(base, e)),
+    };
+    let stays = git::current_branch(repo).await.unwrap_or_default();
+    let (summary, note) = match git::run(
+        there,
+        "git",
+        &["merge", "--ff-only", &format!("origin/{base}")],
+    )
+    .await
+    {
+        Ok(out) => {
+            log.push_str(&out);
+            (
+                format!("{base} up to date in {there}"),
+                format!(
+                    "{base} is checked out in {there}, so it was updated there. This \
+                     worktree stays on {stays}."
+                ),
+            )
+        }
+        // Not a failure of this run: the merge is done and origin/{base} is
+        // fetched. Git refused to move a working tree with changes in the way,
+        // which is exactly what it should do, and pulling there later finishes it.
+        Err(e) => (
+            format!("fetched {base}; {there} not updated"),
+            format!(
+                "{base} is checked out in {there}, and git would not fast-forward it \
+                 there:\n\n{e}\n\nThe merge is done. Run `git pull` in {there} once \
+                 its changes are committed or put away. This worktree stays on {stays}."
+            ),
+        ),
+    };
+    Ok(StepOutcome {
+        summary,
+        log: format!("{note}\n\n{}", log.trim()).trim().to_string(),
         artifacts: vec![("sync_output".into(), log)],
         nothing_to_do: false,
         items: vec![],
