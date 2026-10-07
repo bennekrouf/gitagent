@@ -121,13 +121,13 @@ pub async fn in_progress(repo: &str) -> Option<InProgress> {
 
 /// Runs a command in `repo` and returns stdout, or stderr as the error.
 pub async fn run(repo: &str, program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
+    let output = Command::new(super::env::resolve_program(program))
         .args(args)
         .current_dir(repo)
         .stdin(Stdio::null())
         .output()
         .await
-        .map_err(|e| format!("could not run `{program}`: {e}"))?;
+        .map_err(|e| spawn_error(program, &e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -145,6 +145,64 @@ pub async fn run(repo: &str, program: &str, args: &[&str]) -> Result<String, Str
             detail.trim(),
             short_command(args)
         ))
+    }
+}
+
+/// Why `program` could not be started, in words that say what to do next.
+///
+/// "program not found" was all a missing tool used to produce: true, but it
+/// reads like a fault in GitAgent rather than a CLI to install.
+pub fn spawn_error(program: &str, e: &std::io::Error) -> String {
+    if e.kind() != std::io::ErrorKind::NotFound {
+        return format!("could not run `{program}`: {e}");
+    }
+    let name = match program {
+        "az" => "the Azure CLI (`az`)".to_string(),
+        "gh" => "the GitHub CLI (`gh`)".to_string(),
+        other => format!("`{other}`"),
+    };
+    let hint = match install_command(program) {
+        Some((cmd, args)) => format!(" Install it with `{cmd} {}`, then refresh.", args.join(" ")),
+        None => String::new(),
+    };
+    format!("{name} is not installed, or not on the PATH GitAgent can see.{hint}")
+}
+
+/// The usual one-line install for a CLI the app depends on, on this platform.
+///
+/// None on Linux, where the package manager depends on the distribution and
+/// guessing wrong is worse than saying nothing.
+pub fn install_command(program: &str) -> Option<(&'static str, Vec<&'static str>)> {
+    if cfg!(windows) {
+        let id = match program {
+            "az" => "Microsoft.AzureCLI",
+            "gh" => "GitHub.cli",
+            "git" => "Git.Git",
+            _ => return None,
+        };
+        // winget asks to accept the source and package agreements on first
+        // use, and there is no terminal here to answer it in.
+        Some((
+            "winget",
+            vec![
+                "install",
+                "--exact",
+                "--id",
+                id,
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+            ],
+        ))
+    } else if cfg!(target_os = "macos") {
+        let formula = match program {
+            "az" => "azure-cli",
+            "gh" => "gh",
+            "git" => "git",
+            _ => return None,
+        };
+        Some(("brew", vec!["install", formula]))
+    } else {
+        None
     }
 }
 
@@ -781,7 +839,7 @@ pub async fn run_streaming(
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::sync::mpsc;
 
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(super::env::resolve_program(program));
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
@@ -800,7 +858,7 @@ pub async fn run_streaming(
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) => return (false, format!("could not run `{program}`: {e}")),
+        Err(e) => return (false, spawn_error(program, &e)),
     };
 
     // Written from its own task rather than inline. A child that does not
@@ -930,7 +988,7 @@ pub async fn run_shell_streaming(
 }
 
 pub async fn has_gh() -> bool {
-    Command::new("gh")
+    Command::new(super::env::resolve_program("gh"))
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -965,6 +1023,30 @@ pub async fn gh_pr_create(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_cli_is_named_rather_than_reported_as_a_fault() {
+        let e = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let msg = spawn_error("az", &e);
+        assert!(
+            msg.starts_with("the Azure CLI (`az`) is not installed"),
+            "got {msg}"
+        );
+        assert!(!msg.contains("program not found"));
+    }
+
+    #[test]
+    fn other_spawn_failures_keep_the_os_reason() {
+        let e = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(spawn_error("az", &e).starts_with("could not run `az`:"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_program_that_does_not_exist_says_so_plainly() {
+        let err = run(".", "gitagent-no-such-tool", &[]).await.unwrap_err();
+        assert!(err.contains("is not installed"), "got {err}");
+    }
 
     #[cfg(unix)]
     #[tokio::test]

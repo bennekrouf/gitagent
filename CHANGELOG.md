@@ -17,6 +17,26 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- When open pull requests can't be listed because the `az` or `gh` CLI is
+  missing, you're signed out of Azure, or the azure-devops extension isn't
+  installed, the Review panel now offers a button that fixes it: install the
+  CLI, sign in with `az login`, or add the extension. Preflight offers the
+  same install and `az login` fixes.
+
+### Fixed
+
+- On Windows, GitAgent now finds the Azure CLI. It reported "program not
+  found" for `az` even when it worked in every terminal, because it only
+  looked for `.exe` programs and the Azure CLI installs as `az.cmd`.
+- On Windows, a CLI installed while GitAgent is open is found without
+  restarting the app.
+- A missing CLI is now reported as "not installed", with the command that
+  installs it, instead of a bare "program not found".
+
 ## [0.1.83] - 2026-10-07
 
 ### Changed

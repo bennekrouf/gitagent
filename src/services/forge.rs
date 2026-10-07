@@ -123,17 +123,65 @@ impl Check {
     }
 }
 
+/// A forge CLI that could not be started, with an install button where the
+/// platform has a standard one-line install.
+fn missing_cli(name: &str, program: &str) -> Check {
+    let detail = "not installed, or not on the PATH GitAgent can see — install it, then refresh";
+    match install_remedy(program) {
+        Some(fix) => Check::fixable(name, detail, fix),
+        None => Check::fail(name, detail),
+    }
+}
+
+fn install_remedy(program: &str) -> Option<Remedy> {
+    let (cmd, args) = git::install_command(program)?;
+    Some(Remedy::new(&format!("Install {program}"), cmd, &args))
+}
+
+/// `az login` opens the browser to sign in and returns once that is done, so
+/// unlike `gh auth login` (which has to show a code and take an answer) it
+/// can run from a button. Without a browser it prints a device-code link
+/// instead, which the remedy's output shows.
+fn az_login_remedy() -> Remedy {
+    Remedy::new("Sign in with az login", "az", &["login"])
+}
+
+/// A fix for why the open pull requests could not be listed, when the app
+/// has one: installing the CLI, signing in to Azure, or adding the
+/// azure-devops extension. Matched on the error text, since that is all a
+/// failed CLI call leaves.
+pub fn pr_list_remedy(forge: &Forge, err: &str) -> Option<Remedy> {
+    let program = match forge {
+        Forge::GitHub => "gh",
+        Forge::AzureDevOps => "az",
+        _ => return None,
+    };
+    if err.contains("not on the PATH GitAgent can see") {
+        return install_remedy(program);
+    }
+    if program != "az" {
+        return None;
+    }
+    let lower = err.to_lowercase();
+    if lower.contains("az login") || lower.contains("login command") || lower.contains("aadsts") {
+        return Some(az_login_remedy());
+    }
+    if lower.contains("'repos' is misspelled") || lower.contains("azure-devops") {
+        return Some(Remedy::new(
+            "Add the azure-devops extension",
+            "az",
+            &["extension", "add", "--name", "azure-devops"],
+        ));
+    }
+    None
+}
+
 /// Everything that must be true before a run can reach `open_pr`.
 pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
     match forge {
         Forge::GitHub => {
             if !git::has_gh().await {
-                return vec![Check::fixable(
-                    "gh CLI",
-                    "not found on PATH — install it, or check it is on the PATH \
-                     this app inherits",
-                    Remedy::new("Install gh", "brew", &["install", "gh"]),
-                )];
+                return vec![missing_cli("gh CLI", "gh")];
             }
             match git::run(".", "gh", &["auth", "status"]).await {
                 Ok(out) => vec![Check::pass(
@@ -156,11 +204,7 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
             match git::run(".", "az", &["version"]).await {
                 Ok(_) => checks.push(Check::pass("az CLI", "installed")),
                 Err(_) => {
-                    checks.push(Check::fail(
-                        "az CLI",
-                        "not found on PATH — install it, or check it is on the PATH \
-                         this app inherits",
-                    ));
+                    checks.push(missing_cli("az CLI", "az"));
                     return checks;
                 }
             }
@@ -184,9 +228,10 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
             .await
             {
                 Ok(user) => checks.push(Check::pass("az login", user.trim())),
-                Err(_) => checks.push(Check::fail(
+                Err(_) => checks.push(Check::fixable(
                     "az login",
-                    "not signed in — run `az login`, or set AZURE_DEVOPS_EXT_PAT",
+                    "not signed in — sign in with `az login`, or set AZURE_DEVOPS_EXT_PAT",
+                    az_login_remedy(),
                 )),
             }
 
@@ -198,11 +243,11 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
             match git::run(repo, "az", &["repos", "list", "--output", "none"]).await {
                 Ok(_) => checks.push(Check::pass("azure devops auth", "can reach the project")),
                 Err(e) if e.contains("you need to run the login command") => {
-                    checks.push(Check::fail(
+                    checks.push(Check::fixable(
                         "azure devops auth",
-                        "not signed in to Azure DevOps — run `az login` again, or \
-                         `az devops login` with a PAT. Neither can be done from here: \
-                         both need a terminal.",
+                        "not signed in to Azure DevOps — sign in again with `az login`, \
+                         or run `az devops login` with a PAT in a terminal",
+                        az_login_remedy(),
                     ))
                 }
                 Err(e) => checks.push(Check::fail(
@@ -353,6 +398,40 @@ fn azure_pr_url(json: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_out_of_azure_offers_az_login() {
+        let err =
+            "ERROR: Please run 'az login' to setup account.\n\nwhile running: `az repos pr list`";
+        let fix = pr_list_remedy(&Forge::AzureDevOps, err).unwrap();
+        assert_eq!(fix.display, "az login");
+    }
+
+    #[test]
+    fn a_missing_azure_devops_extension_offers_to_add_it() {
+        let err = "ERROR: 'repos' is misspelled or not recognized by the system.";
+        let fix = pr_list_remedy(&Forge::AzureDevOps, err).unwrap();
+        assert_eq!(fix.display, "az extension add --name azure-devops");
+    }
+
+    #[test]
+    fn a_missing_cli_offers_its_install_where_the_platform_has_one() {
+        let err = "the Azure CLI (`az`) is not installed, or not on the PATH GitAgent can see.";
+        let fix = pr_list_remedy(&Forge::AzureDevOps, err);
+        assert_eq!(fix.is_some(), git::install_command("az").is_some());
+    }
+
+    /// `gh auth login` needs a terminal to show its code, so no button.
+    #[test]
+    fn signed_out_of_github_stays_an_instruction() {
+        let err = "To get started with GitHub CLI, please run:  gh auth login";
+        assert!(pr_list_remedy(&Forge::GitHub, err).is_none());
+    }
+
+    #[test]
+    fn an_unrecognised_failure_offers_nothing() {
+        assert!(pr_list_remedy(&Forge::AzureDevOps, "TF401019: not found").is_none());
+    }
 
     #[test]
     fn github_ssh_and_https_are_both_recognised() {

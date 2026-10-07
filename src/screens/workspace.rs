@@ -879,6 +879,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut selected_pr = use_signal(String::new);
     let mut selected_node = use_signal(String::new);
     let mut running = use_signal(BTreeSet::<Key>::new);
+    // A fix being run for "couldn't list pull requests", by repository:
+    // whether it is still running, and what it printed.
+    let mut pr_fix = use_signal(BTreeMap::<String, (bool, String)>::new);
     // Runs whose approvals are being clicked through for us. A key is in here
     // only while that is wanted: taking it out mid-run hands the next approval
     // straight back to the person, without disturbing the run itself.
@@ -1903,9 +1906,54 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         let prs = status_map.get(&repo).map(|s| s.prs.clone()).unwrap_or_default();
                                         let prs_error = status_map.get(&repo).and_then(|s| s.prs_error.clone());
                                         if let Some(err) = prs_error {
+                                            // A CLI that is missing or signed out has a known
+                                            // fix; offer it here rather than only naming it.
+                                            let fix = status_map
+                                                .get(&repo)
+                                                .and_then(|s| forge::pr_list_remedy(&s.forge, &err));
+                                            let (fixing, fix_output) =
+                                                pr_fix.read().get(&repo).cloned().unwrap_or_default();
                                             rsx! {
                                                 div { class: "pr-list-error",
                                                     "Couldn't check for open pull requests: {err}"
+                                                    if let Some(fix) = fix {
+                                                        div { class: "remedy pr-list-fix",
+                                                            div { class: "remedy-main",
+                                                                div { class: "remedy-label", "{fix.label}" }
+                                                                code { class: "remedy-cmd", "{fix.display}" }
+                                                            }
+                                                            button {
+                                                                class: "btn btn-primary",
+                                                                disabled: fixing,
+                                                                onclick: {
+                                                                    let repo = repo.clone();
+                                                                    move |_| {
+                                                                        let repo = repo.clone();
+                                                                        let fix = fix.clone();
+                                                                        pr_fix.write().insert(repo.clone(), (true, String::new()));
+                                                                        spawn(async move {
+                                                                            let (ok, output) = git::run_streaming(
+                                                                                &fix.program,
+                                                                                &fix.args,
+                                                                                Some(&repo),
+                                                                                "",
+                                                                                &mut |_| {},
+                                                                            )
+                                                                            .await;
+                                                                            pr_fix.write().insert(repo.clone(), (false, output));
+                                                                            if ok {
+                                                                                reprobe(repo, statuses);
+                                                                            }
+                                                                        });
+                                                                    }
+                                                                },
+                                                                if fixing { "Running…" } else { "Run" }
+                                                            }
+                                                        }
+                                                    }
+                                                    if !fix_output.is_empty() {
+                                                        pre { class: "remedy-out pr-list-fix-out", "{fix_output}" }
+                                                    }
                                                 }
                                             }
                                         } else if prs.is_empty() {

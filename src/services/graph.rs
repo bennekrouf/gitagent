@@ -188,8 +188,9 @@ pub struct ProposalItem {
 /// A known fix for a specific failure, runnable from the app.
 ///
 /// Only ever populated for causes with an exact, idempotent remedy — installing
-/// a missing CLI extension, pulling a model that is not on disk. Anything
-/// interactive (`gh auth login`, `az login`) stays an instruction, because a
+/// a missing CLI extension, pulling a model that is not on disk, `az login`
+/// (which finishes in the browser). Anything that needs a terminal to answer
+/// (`gh auth login`, `az devops login`) stays an instruction, because a
 /// subprocess with no terminal cannot complete it.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Remedy {
