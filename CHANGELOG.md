@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The copyright and branding information have been updated to reflect new
+  ownership. The application now displays 'Mayorana' as the company name and
+  includes the new copyright year.
+
 ## [0.1.82] - 2026-10-06
 
 ### Fixed
