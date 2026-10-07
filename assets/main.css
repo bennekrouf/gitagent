@@ -1029,6 +1029,8 @@ body {
     color: var(--red); font-size: 11.5px; line-height: 1.6;
     flex-shrink: 0;
 }
+.pr-list-fix { margin: 8px 0 0; }
+.pr-list-fix-out { margin: 7px 0 0; }
 .pr-list-head {
     padding: 8px 12px 2px;
     font-size: 10px; color: var(--text3);
