@@ -102,11 +102,12 @@ Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 - **Free** for personal use, learning, research and hobby projects, and for
   charities, schools, universities and government institutions.
 - **Commercial use requires a licence** — including a solo consultant using it
-  on client work, and an employee using it at their job.
-  [Get in touch](https://mayorana.ch/en/contact).
+  on client work, and an employee using it at their job. That licence is
+  [GitAgent Pro](https://mayorana.ch/en/apps/gitagent), bought on GitAgent's
+  page; it also lifts the free version's limit of 5 repositories.
 
 This is deliberately not an OSI-approved open source licence: the source is
-public and readable, but companies using it for work buy a licence.
+public and readable, but companies using it for work buy GitAgent Pro.
 
 The name, logo and icons are trademarks and are not covered by that licence —
 fork it and rebrand it. See [TRADEMARK.md](TRADEMARK.md).
