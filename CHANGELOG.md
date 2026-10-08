@@ -17,6 +17,20 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The Run view shows the pull request you are validating, as the list view
+  does: under the flow tabs, the review flow lists every open pull request as
+  a card along one row, with its size and checks, to pick which one to review;
+  other flows show the checked-out branch's pull request. A flow that cannot
+  run says why there too.
+- A **Diff** button under that pull request's card opens its diff in the
+  panel beside the map, with which branch it merges into which and how much
+  it changes — fetched with git, so reading it costs none of your GitHub API
+  budget, and it works the same for Azure DevOps.
+
 ## [0.1.87] - 2026-10-08
 
 ### Added

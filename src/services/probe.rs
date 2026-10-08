@@ -38,6 +38,10 @@ pub struct PrBrief {
     pub additions: usize,
     pub deletions: usize,
     pub commits: usize,
+    /// The branch it merges into, and the branch it brings — what its diff is
+    /// worked out between, locally, without asking the forge for it.
+    pub base: String,
+    pub head: String,
 }
 
 impl PrBrief {
@@ -606,6 +610,12 @@ fn parse_ahead_behind(out: &str) -> (usize, usize) {
     (ahead, behind)
 }
 
+/// `refs/heads/feature/x` as Azure DevOps names a branch, as `feature/x`.
+fn azure_branch(value: &serde_json::Value) -> String {
+    let full = value.as_str().unwrap_or_default();
+    full.strip_prefix("refs/heads/").unwrap_or(full).to_string()
+}
+
 /// One GitHub PR JSON object (from either `pr view` or `pr list`, same
 /// field names either way) into a `PrBrief`.
 fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> {
@@ -618,6 +628,14 @@ fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> {
         additions: value["additions"].as_u64().unwrap_or(0) as usize,
         deletions: value["deletions"].as_u64().unwrap_or(0) as usize,
         commits: value["commits"].as_array().map(|a| a.len()).unwrap_or(0),
+        base: value["baseRefName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        head: value["headRefName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -632,7 +650,8 @@ fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> {
 /// that failed with "API rate limit already exceeded" — for this app and
 /// anything else on the account. The commit count it bought was one line on
 /// a pull request card.
-const PR_FIELDS: &str = "number,title,url,state,statusCheckRollup,changedFiles,additions,deletions";
+const PR_FIELDS: &str =
+    "number,title,url,state,statusCheckRollup,changedFiles,additions,deletions,baseRefName,headRefName";
 
 /// Every open pull request on the repository — not scoped to the checked-out
 /// branch, unlike `open_pr` below. What lets the sidebar offer a choice of
@@ -685,6 +704,8 @@ async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBrief>, String
                                 additions: 0,
                                 deletions: 0,
                                 commits: 0,
+                                base: azure_branch(&pr["targetRefName"]),
+                                head: azure_branch(&pr["sourceRefName"]),
                             })
                         })
                         .collect()
@@ -745,6 +766,8 @@ async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
                 additions: 0,
                 deletions: 0,
                 commits: 0,
+                base: azure_branch(&pr["targetRefName"]),
+                head: azure_branch(&pr["sourceRefName"]),
             })
         }
         _ => None,
@@ -799,6 +822,8 @@ mod default_pr_tests {
             additions: 1,
             deletions: 0,
             commits: 1,
+            base: String::new(),
+            head: String::new(),
         }
     }
 
@@ -875,6 +900,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_pull_request_knows_the_branches_its_diff_is_between() {
+        let pr = github_pr_from_json(&json!({
+            "number": 104, "title": "t", "url": "u",
+            "baseRefName": "main", "headRefName": "feat/run-diff",
+        }))
+        .unwrap();
+        assert_eq!(
+            (pr.base.as_str(), pr.head.as_str()),
+            ("main", "feat/run-diff")
+        );
+        assert!(PR_FIELDS.contains("baseRefName") && PR_FIELDS.contains("headRefName"));
+    }
+
+    #[test]
+    fn azure_names_its_branches_as_refs() {
+        assert_eq!(azure_branch(&json!("refs/heads/feature/x")), "feature/x");
+        assert_eq!(azure_branch(&json!("main")), "main");
+    }
+
+    #[test]
     fn a_check_is_reused_for_two_minutes_and_not_after() {
         let then = Instant::now();
         assert!(still_recent(then, then + Duration::from_secs(5)));
@@ -911,6 +956,8 @@ mod tests {
                 additions: 10,
                 deletions: 4,
                 commits: 1,
+                base: String::new(),
+                head: String::new(),
             }),
             prs: vec![],
             prs_error: None,
@@ -1299,6 +1346,8 @@ mod tests {
             additions: 2,
             deletions: 0,
             commits: 1,
+            base: String::new(),
+            head: String::new(),
         };
         assert_eq!(pr.size(), "1 file  +2  −0");
         pr.files = 115;
