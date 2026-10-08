@@ -8,6 +8,10 @@
 //!
 //! Every query here is read-only.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use super::forge::{self, Forge};
 use super::git;
 use super::release::{self, ReleaseState};
@@ -472,6 +476,48 @@ pub async fn stored_base_branch(repo: &str) -> (String, String) {
     base_branch(repo, override_base).await
 }
 
+/// How long a repository's check is good enough to show again without asking
+/// git and GitHub a second time — long enough to cover the home screen
+/// checking every repository at launch and the folder opened from it straight
+/// after, short enough that nothing shown is stale in a way that matters.
+pub const RECENT: Duration = Duration::from_secs(120);
+
+/// The last check of each repository, from any window: they share a process.
+fn recent() -> &'static Mutex<HashMap<String, (Instant, RepoStatus)>> {
+    static RECENT_CHECKS: OnceLock<Mutex<HashMap<String, (Instant, RepoStatus)>>> = OnceLock::new();
+    RECENT_CHECKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn still_recent(checked: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(checked) < RECENT
+}
+
+/// Checks a repository now, and keeps the answer for `probe_recent`. What a
+/// Refresh, a finished run or a fix calls: those are asking for news.
+pub async fn probe(repo: &str) -> RepoStatus {
+    let status = probe_now(repo).await;
+    if let Ok(mut map) = recent().lock() {
+        map.insert(repo.to_string(), (Instant::now(), status.clone()));
+    }
+    status
+}
+
+/// A check from the last two minutes if there is one, else a fresh one. For
+/// opening a list of repositories — the home screen at launch, a folder
+/// opened from it — so the same few dozen repositories are not asked about
+/// twice within seconds, at a cost to the hourly GitHub budget each time.
+pub async fn probe_recent(repo: &str) -> RepoStatus {
+    let kept = recent().lock().ok().and_then(|map| {
+        map.get(repo)
+            .filter(|(at, _)| still_recent(*at, Instant::now()))
+            .map(|(_, status)| status.clone())
+    });
+    match kept {
+        Some(status) => status,
+        None => probe(repo).await,
+    }
+}
+
 /// Everything the sidebar needs to know about one repository.
 ///
 /// Run in two waves rather than as ten sequential awaits. Each of these
@@ -481,7 +527,7 @@ pub async fn stored_base_branch(repo: &str) -> (String, String) {
 /// limiter. Only two things are genuine dependencies: the forge has to be
 /// known before the pull requests can be listed, and the base branch before
 /// the release and unmerged-commit counts. Everything else goes at once.
-pub async fn probe(repo: &str) -> RepoStatus {
+async fn probe_now(repo: &str) -> RepoStatus {
     let (branch, changes, url, (ahead, behind), (base, _), in_progress) = tokio::join!(
         async { git::current_branch(repo).await.unwrap_or_default() },
         async { git::status(repo).await.map(|c| c.len()).unwrap_or(0) },
@@ -575,8 +621,18 @@ fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> {
     })
 }
 
-const PR_FIELDS: &str =
-    "number,title,url,state,statusCheckRollup,changedFiles,additions,deletions,commits";
+/// What every repository check asks GitHub for, per pull request.
+///
+/// Not `commits`. `gh` answers it with up to 100 commits per pull request and
+/// up to 100 authors on each, and GitHub prices a query by what it could
+/// return rather than what it does: about 30 of GraphQL's 5,000 points an
+/// hour for every repository checked, open pull requests or not, against
+/// about 2 without it. Checking a few dozen repositories at launch spent the
+/// whole hour's budget in a handful of launches, and every `gh` call after
+/// that failed with "API rate limit already exceeded" — for this app and
+/// anything else on the account. The commit count it bought was one line on
+/// a pull request card.
+const PR_FIELDS: &str = "number,title,url,state,statusCheckRollup,changedFiles,additions,deletions";
 
 /// Every open pull request on the repository — not scoped to the checked-out
 /// branch, unlike `open_pr` below. What lets the sidebar offer a choice of
@@ -817,6 +873,26 @@ mod default_pr_tests {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_check_is_reused_for_two_minutes_and_not_after() {
+        let then = Instant::now();
+        assert!(still_recent(then, then + Duration::from_secs(5)));
+        assert!(still_recent(then, then + RECENT - Duration::from_secs(1)));
+        assert!(!still_recent(then, then + RECENT));
+    }
+
+    #[test]
+    fn the_repository_check_never_asks_github_for_every_commit() {
+        // One field here priced each check at ~30 of the hour's 5,000
+        // GraphQL points, and ran the account out within a few launches.
+        assert!(!PR_FIELDS.split(',').any(|f| f == "commits"));
+        // Everything a pull request card and the sidebar do show is still
+        // asked for.
+        for field in ["number", "title", "url", "state", "statusCheckRollup"] {
+            assert!(PR_FIELDS.split(',').any(|f| f == field), "{field}");
+        }
+    }
 
     fn status(changes: usize, pr: Option<Checks>) -> RepoStatus {
         RepoStatus {

@@ -43,7 +43,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
     use_effect(move || {
         let recent = registry.read().recent.clone();
-        let _ = rechecks.read();
+        // Before any Refresh, a check from the last two minutes will do —
+        // reopening the home screen soon after a workspace, say. After one,
+        // every repository is asked again: that is what Refresh is for.
+        let fresh = *rechecks.read() > 0;
         spawn(async move {
             checking.set(true);
             use futures_util::stream::StreamExt;
@@ -72,7 +75,12 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
             futures_util::stream::iter(todo)
                 .for_each_concurrent(6, |path| async move {
-                    let wants = probe::probe(&path).await.wants();
+                    let status = if fresh {
+                        probe::probe(&path).await
+                    } else {
+                        probe::probe_recent(&path).await
+                    };
+                    let wants = status.wants();
                     repo_wants.write().insert(path, wants);
                 })
                 .await;

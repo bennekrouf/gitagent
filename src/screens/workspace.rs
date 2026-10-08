@@ -776,6 +776,10 @@ fn refresh_all(
     mut selected_flow: Signal<String>,
     book: Signal<FlowBook>,
     mut free_slots: Signal<licence::Slots>,
+    // False when opening the folder: a check from the last two minutes — the
+    // home screen's, made a moment ago — is shown rather than asked for
+    // again. True for Refresh, which is asking for news.
+    fresh: bool,
 ) {
     if *probing.read() > 0 {
         return;
@@ -839,7 +843,11 @@ fn refresh_all(
             .for_each_concurrent(AT_ONCE, |repo| {
                 let mut statuses = statuses;
                 async move {
-                    let status = probe::probe(&repo.path).await;
+                    let status = if fresh {
+                        probe::probe(&repo.path).await
+                    } else {
+                        probe::probe_recent(&repo.path).await
+                    };
                     statuses.write().insert(repo.path.clone(), status);
                 }
             })
@@ -1077,6 +1085,23 @@ fn step_detail(
     }
 }
 
+/// Whether `step`, waiting for approval, is about to be answered without a
+/// person: its run is still trusted and has not held it back. A held step is
+/// taken out of the trusted run and given a reason, and is a person's to
+/// answer — whether or not Trust all is on. A failed step never answers
+/// itself: a trusted run stops at a failure like any other.
+fn answers_itself(state: &RunState, step: &str, trusted: bool) -> bool {
+    trusted
+        && state.status(step) == NodeStatus::AwaitingApproval
+        && state.runs.get(step).is_none_or(|run| run.held.is_empty())
+}
+
+/// Whether a step is one only a person can move on: waiting for approval, or
+/// failed. The step panel opens on these by itself.
+fn needs_a_person(status: NodeStatus) -> bool {
+    matches!(status, NodeStatus::AwaitingApproval | NodeStatus::Failed)
+}
+
 /// The repository to open on: the first in the list, top to bottom as the
 /// sidebar shows it, that has something left to do. Not the most urgent one
 /// further down — the list is the order you read in, and opening halfway down
@@ -1148,6 +1173,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut run_view = use_signal(|| true);
     // The step whose panel is open over the run map, if any.
     let mut drawer = use_signal(|| Option::<String>::None);
+    // The step the panel last showed, kept after it closes so the panel can
+    // slide out with its content still in it instead of going blank first.
+    let mut panel_step = use_signal(|| Option::<String>::None);
+    use_effect(move || {
+        if let Some(step) = drawer.read().clone() {
+            panel_step.set(Some(step));
+        }
+    });
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     // GitAgent Pro. `licence_open` holds the repository a refused run was
@@ -1178,11 +1211,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // next one you selected, which reads as a panel that will not close.
     let mut picker_open = use_signal(|| Option::<String>::None);
 
-    // A step that stops to ask for approval opens its panel over the run map
-    // on its own, once per approval: close it while the step still waits and
-    // it stays closed. Not for a trusted run, which answers on its own a beat
-    // later — the panel would only flash open. Not away from another step
-    // that is waiting too, which would have two approvals fight for it.
+    // A step that stops for you — to ask for approval, or because it failed —
+    // opens its panel over the run map on its own, once each time: close it
+    // while the step still waits and it stays closed. Not for a step a
+    // trusted run is about to answer — the panel would only flash open — but
+    // yes for one it held back for you, such as a merge the reviews were
+    // unhappy about, even with Trust all on, and yes for any failure. Not
+    // away from another step that needs you too, which would have the two
+    // fight for it.
     let mut auto_opened = use_signal(|| Option::<(u64, String, usize)>::None);
     use_effect(move || {
         if !*run_view.read() {
@@ -1200,21 +1236,24 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let Some(state) = states.get(&key) else {
             return;
         };
-        let Some((step, at)) = state.newest_approval() else {
+        let Some((step, at)) = state.newest_for_a_person() else {
             return;
         };
         let this = (state.run, step.clone(), at);
         if auto_opened.peek().as_ref() == Some(&this) {
             return;
         }
-        if *global_trust.read() || trusted.read().contains(&key) {
+        // Read, not peeked: a trusted run that holds the step takes itself out
+        // of `trusted`, and that is the moment to open.
+        if answers_itself(state, &step, trusted.read().contains(&key)) {
             return;
         }
         auto_opened.set(Some(this));
-        let showing_another_approval = drawer.peek().as_ref().is_some_and(|open| {
-            open != &step && state.status(open) == NodeStatus::AwaitingApproval
-        });
-        if !showing_another_approval {
+        let showing_another = drawer
+            .peek()
+            .as_ref()
+            .is_some_and(|open| open != &step && needs_a_person(state.status(open)));
+        if !showing_another {
             selected_node.set(step.clone());
             drawer.set(Some(step));
         }
@@ -1300,6 +1339,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 selected_flow,
                 book,
                 free_slots,
+                false,
             );
         }
     });
@@ -1922,7 +1962,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     on_refresh: {
                         let workspace = workspace.clone();
                         move |_| {
-                            refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots);
+                            refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots, true);
                         }
                     },
                     on_reprobe: move |path: String| {
@@ -2027,6 +2067,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         // The step whose panel is open, if it is still a step
                         // of the flow on screen.
                         let open_step = drawer.read().clone().filter(|id| graph.get(id).is_some());
+                        // What the panel holds: the open step, or while it
+                        // slides away, the one it was showing.
+                        let shown_step = open_step
+                            .clone()
+                            .or_else(|| panel_step.read().clone())
+                            .filter(|id| graph.get(id).is_some());
                         rsx! {
                             RunView {
                                 can_start,
@@ -2058,14 +2104,20 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 },
                                 panel_open: open_step.is_some(),
                                 flows: flow_strip,
-                                if let Some(node_id) = open_step {
-                                    div { class: "run-drawer", key: "{node_id}",
-                                        button {
-                                            class: "run-drawer-close",
-                                            title: "Close (Esc)",
-                                            onclick: move |_| drawer.set(None),
-                                            "\u{2715}"
-                                        }
+                                // Always there, open or not: a panel that is
+                                // only removed cannot slide away, and one that
+                                // is only added cannot slide in from where it
+                                // last was.
+                                div {
+                                    class: if open_step.is_some() { "run-drawer run-drawer-open" } else { "run-drawer" },
+                                    "aria-hidden": "{open_step.is_none()}",
+                                    button {
+                                        class: "run-drawer-close",
+                                        title: "Close (Esc)",
+                                        onclick: move |_| drawer.set(None),
+                                        "\u{2715}"
+                                    }
+                                    if let Some(node_id) = shown_step {
                                         {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(drawer))}
                                     }
                                 }
@@ -2505,7 +2557,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         crate::refresh_window_title();
                         // A licence activated, or a slot given back: re-read
                         // what is locked, and check what just opened up.
-                        refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots);
+                        refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots, true);
                     }
                 },
             }
@@ -2860,6 +2912,34 @@ mod tests {
             first_with_work(vec![("a".to_string(), probe::Wants::Nothing)]),
             None
         );
+    }
+
+    #[test]
+    fn a_trusted_run_answers_its_own_approval() {
+        let mut state = RunState::default();
+        state.set_status("merge", NodeStatus::AwaitingApproval);
+        assert!(answers_itself(&state, "merge", true));
+        assert!(!answers_itself(&state, "merge", false));
+    }
+
+    #[test]
+    fn a_merge_a_trusted_run_held_back_is_yours_to_answer() {
+        let mut state = RunState::default();
+        state.set_status("merge", NodeStatus::AwaitingApproval);
+        state.runs.get_mut("merge").unwrap().held =
+            "The analysis found 2 possible regressions.".into();
+        // Still counted as trusted for a moment, or with Trust all on: held
+        // is what says a person has to answer it.
+        assert!(!answers_itself(&state, "merge", true));
+    }
+
+    #[test]
+    fn a_failed_step_is_yours_even_in_a_trusted_run() {
+        let mut state = RunState::default();
+        state.set_status("open_pr", NodeStatus::Failed);
+        assert!(!answers_itself(&state, "open_pr", true));
+        assert!(needs_a_person(NodeStatus::Failed));
+        assert!(!needs_a_person(NodeStatus::Running));
     }
 
     fn commit_and_pr() -> flowdef::FlowDef {

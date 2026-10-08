@@ -17,6 +17,28 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- In the Run view, a step that fails opens its panel on its own too, with the
+  error and its Retry, Skip and Cancel buttons — even in a trusted run, which
+  stops at a failure. It stays open until you retry, skip or close it.
+- The Run view's step panel slides in and out smoothly, and the map moves
+  aside and back with it, instead of the panel vanishing the moment it closes.
+
+### Fixed
+
+- GitAgent no longer runs your GitHub account out of its hourly API budget.
+  Checking each repository asked GitHub for every commit of every open pull
+  request, which cost about fifteen times more than everything else it needs,
+  so a few launches checking a few dozen repositories used up the hour — and
+  then every `gh` call failed with "API rate limit already exceeded", in
+  GitAgent and anything else on the account. Checks now cost a fraction of
+  that, and the home screen and the folder you open from it share their
+  results for two minutes instead of checking the same repositories twice.
+  Pull request cards no longer show a commit count.
+
 ## [0.1.85] - 2026-10-08
 
 ### Added
@@ -32,10 +54,11 @@ were never released.
   Click a step, its pill or its reviewer and the step opens in a panel from the
   right, with what it will do and the same Approve, Reject, Skip and Retry
   buttons as in the list. A step that stops for your approval opens it on its
-  own, once: close it and it stays closed until the next approval. Approving or
-  skipping closes it, as do Escape and ✕. The map slides left so the step stays
-  in view beside the panel, and the play controls stay within reach, so a run
-  can be followed and answered without leaving the map.
+  own — including a merge a trusted run held back for you — once: close it and
+  it stays closed until the next approval. Approving or skipping closes it, as
+  do Escape and ✕. The map slides left so the step stays in view beside the
+  panel, and the play controls stay within reach, so a run can be followed and
+  answered without leaving the map.
 - In the Run view, a step you reject gets an orange arc back over its track,
   marked "sent back". Retry it and the arc stays, counting rounds, until it
   reads "approved in round 3" — so a run that needed a few tries shows it.
