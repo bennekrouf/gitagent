@@ -419,18 +419,26 @@ fn loop_label(status: NodeStatus, rounds: u32) -> String {
     }
 }
 
-/// How wide a step's panel is over a map `area_w` wide. Must agree with
-/// `.run-drawer`'s width in the stylesheet: this is what the map slides out
-/// from under.
-fn panel_width(area_w: f64) -> f64 {
-    (area_w * 0.58).min(620.0)
+/// How wide a step's panel is folded: a strip with its name and state.
+/// Must agree with `.run-drawer-folded`'s width in the stylesheet.
+const FOLDED_PANEL: f64 = 46.0;
+
+/// How wide a step's panel is over a map `area_w` wide, open or folded. Must
+/// agree with `.run-drawer`'s width in the stylesheet: this is what the map
+/// slides out from under.
+fn panel_width(area_w: f64, folded: bool) -> f64 {
+    if folded {
+        FOLDED_PANEL
+    } else {
+        (area_w * 0.58).min(620.0)
+    }
 }
 
 /// How far to slide the map left so a station at `x`, with labels `col_w`
 /// wide, stays clear of an open panel. Only as far as that takes, and not at
 /// all when it is already clear, so as much of the map stays in view as can.
-fn slide_for(x: f64, col_w: f64, area_w: f64) -> f64 {
-    let visible = area_w - panel_width(area_w);
+fn slide_for(x: f64, col_w: f64, area_w: f64, folded: bool) -> f64 {
+    let visible = area_w - panel_width(area_w, folded);
     (x + col_w / 2.0 + 16.0 - visible).max(0.0)
 }
 
@@ -816,6 +824,10 @@ pub struct RunViewProps {
     /// the selected step is not left underneath it.
     #[props(default)]
     pub panel_open: bool,
+    /// Whether that panel is folded to a strip, giving the map its room back
+    /// while the step stays one click away.
+    #[props(default)]
+    pub panel_folded: bool,
     /// The step's panel itself, drawn over the map below the header — so the
     /// play controls stay in reach while it is open.
     #[props(default)]
@@ -917,7 +929,7 @@ pub fn RunView(props: RunViewProps) -> Element {
     let slide = if props.panel_open {
         let area_w = (*area.read()).map(|(w, _)| w).unwrap_or(plan.width);
         plan.find(&props.selected)
-            .map(|s| slide_for(s.x, plan.col_w, area_w))
+            .map(|s| slide_for(s.x, plan.col_w, area_w, props.panel_folded))
             .unwrap_or(0.0)
     } else {
         0.0
@@ -1955,9 +1967,9 @@ mod tests {
     #[test]
     fn a_step_under_the_panel_slides_out_just_far_enough() {
         let area = 1200.0;
-        let visible = area - panel_width(area);
+        let visible = area - panel_width(area, false);
         let x = 1000.0;
-        let slide = slide_for(x, 200.0, area);
+        let slide = slide_for(x, 200.0, area, false);
         assert!(slide > 0.0);
         // Its labels end right at the panel's edge.
         assert_eq!(x - slide + 100.0 + 16.0, visible);
@@ -1965,13 +1977,23 @@ mod tests {
 
     #[test]
     fn a_step_already_clear_of_the_panel_does_not_move_the_map() {
-        assert_eq!(slide_for(150.0, 200.0, 1200.0), 0.0);
+        assert_eq!(slide_for(150.0, 200.0, 1200.0, false), 0.0);
+    }
+
+    #[test]
+    fn a_folded_panel_gives_the_map_almost_all_its_room_back() {
+        let open = slide_for(1000.0, 200.0, 1200.0, false);
+        let folded = slide_for(1000.0, 200.0, 1200.0, true);
+        assert!(folded < open);
+        // A step clear of the strip does not move at all.
+        assert_eq!(slide_for(900.0, 200.0, 1200.0, true), 0.0);
     }
 
     #[test]
     fn the_panel_never_takes_more_than_its_cap() {
-        assert_eq!(panel_width(3000.0), 620.0);
-        assert_eq!(panel_width(1000.0), 580.0);
+        assert_eq!(panel_width(3000.0, false), 620.0);
+        assert_eq!(panel_width(1000.0, false), 580.0);
+        assert_eq!(panel_width(1000.0, true), FOLDED_PANEL);
     }
 
     #[test]
