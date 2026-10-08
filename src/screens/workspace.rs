@@ -1077,6 +1077,14 @@ fn step_detail(
     }
 }
 
+/// Whether `step`, waiting for approval, is about to be answered without a
+/// person: its run is still trusted and has not held it back. A held step is
+/// taken out of the trusted run and given a reason, and is a person's to
+/// answer — whether or not Trust all is on.
+fn answers_itself(state: &RunState, step: &str, trusted: bool) -> bool {
+    trusted && state.runs.get(step).is_none_or(|run| run.held.is_empty())
+}
+
 /// The repository to open on: the first in the list, top to bottom as the
 /// sidebar shows it, that has something left to do. Not the most urgent one
 /// further down — the list is the order you read in, and opening halfway down
@@ -1180,9 +1188,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 
     // A step that stops to ask for approval opens its panel over the run map
     // on its own, once per approval: close it while the step still waits and
-    // it stays closed. Not for a trusted run, which answers on its own a beat
-    // later — the panel would only flash open. Not away from another step
-    // that is waiting too, which would have two approvals fight for it.
+    // it stays closed. Not for a step a trusted run is about to answer — the
+    // panel would only flash open — but yes for one it held back for you,
+    // such as a merge the reviews were unhappy about, even with Trust all on.
+    // Not away from another step that is waiting too, which would have two
+    // approvals fight for it.
     let mut auto_opened = use_signal(|| Option::<(u64, String, usize)>::None);
     use_effect(move || {
         if !*run_view.read() {
@@ -1207,7 +1217,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         if auto_opened.peek().as_ref() == Some(&this) {
             return;
         }
-        if *global_trust.read() || trusted.read().contains(&key) {
+        // Read, not peeked: a trusted run that holds the step takes itself out
+        // of `trusted`, and that is the moment to open.
+        if answers_itself(state, &step, trusted.read().contains(&key)) {
             return;
         }
         auto_opened.set(Some(this));
@@ -2860,6 +2872,25 @@ mod tests {
             first_with_work(vec![("a".to_string(), probe::Wants::Nothing)]),
             None
         );
+    }
+
+    #[test]
+    fn a_trusted_run_answers_its_own_approval() {
+        let mut state = RunState::default();
+        state.set_status("merge", NodeStatus::AwaitingApproval);
+        assert!(answers_itself(&state, "merge", true));
+        assert!(!answers_itself(&state, "merge", false));
+    }
+
+    #[test]
+    fn a_merge_a_trusted_run_held_back_is_yours_to_answer() {
+        let mut state = RunState::default();
+        state.set_status("merge", NodeStatus::AwaitingApproval);
+        state.runs.get_mut("merge").unwrap().held =
+            "The analysis found 2 possible regressions.".into();
+        // Still counted as trusted for a moment, or with Trust all on: held
+        // is what says a person has to answer it.
+        assert!(!answers_itself(&state, "merge", true));
     }
 
     fn commit_and_pr() -> flowdef::FlowDef {

@@ -32,10 +32,11 @@ were never released.
   Click a step, its pill or its reviewer and the step opens in a panel from the
   right, with what it will do and the same Approve, Reject, Skip and Retry
   buttons as in the list. A step that stops for your approval opens it on its
-  own, once: close it and it stays closed until the next approval. Approving or
-  skipping closes it, as do Escape and ✕. The map slides left so the step stays
-  in view beside the panel, and the play controls stay within reach, so a run
-  can be followed and answered without leaving the map.
+  own — including a merge a trusted run held back for you — once: close it and
+  it stays closed until the next approval. Approving or skipping closes it, as
+  do Escape and ✕. The map slides left so the step stays in view beside the
+  panel, and the play controls stay within reach, so a run can be followed and
+  answered without leaving the map.
 - In the Run view, a step you reject gets an orange arc back over its track,
   marked "sent back". Retry it and the arc stays, counting rounds, until it
   reads "approved in round 3" — so a run that needed a few tries shows it.
