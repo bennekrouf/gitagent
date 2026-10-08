@@ -1700,3 +1700,34 @@ button.update-banner-link {
 .run-drawer-fold:hover { color: var(--text1); border-color: var(--text3); }
 /* Room for both buttons at the end of the step's header row. */
 .run-drawer .detail-head { padding-right: 84px; }
+
+/* The run view's pull request section, under the flow tabs: the same cards
+   as the list view's, laid out along one row that scrolls sideways rather
+   than stacked, so picking a pull request costs the map a single card's
+   height. */
+.run-context { flex-shrink: 0; }
+.run-context:empty { display: none; }
+.run-context .pr-list-head { padding: 8px 16px 0; }
+.run-context .pr-list {
+    flex-direction: row; gap: 8px;
+    overflow-x: auto; overflow-y: hidden; max-height: none;
+    padding: 0 16px 10px 6px;
+}
+.run-context .pr-list-item { flex: 0 0 300px; min-width: 0; }
+.run-context > .pr-card { max-width: 420px; margin: 10px 16px; }
+.run-context .pr-list-error,
+.run-context .flow-broken { margin: 10px 16px; }
+
+/* Diff on the pull request under review, in the run view: a small button
+   under its card, opening the diff in the step panel's place. */
+.pr-diff-btn { margin: 6px 10px 2px; padding: 4px 11px; font-size: 11px; align-self: flex-start; }
+.run-context .pr-list-item { display: flex; flex-direction: column; }
+.pr-solo { display: flex; flex-direction: column; }
+.run-context > .pr-solo { max-width: 420px; margin: 0 6px 6px; }
+.pr-diff-note { font-size: 12px; color: var(--text3); margin: 6px 0 10px; }
+.pr-diff-stat {
+    font-family: var(--mono); font-size: 11px; color: var(--text2);
+    white-space: pre; overflow-x: auto;
+    margin: 0 0 12px; padding: 8px 10px;
+    background: var(--bg1); border: 1px solid var(--border2); border-radius: 6px;
+}

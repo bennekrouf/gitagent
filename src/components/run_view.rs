@@ -835,6 +835,10 @@ pub struct RunViewProps {
     /// The flow tabs, the same strip the list view shows, so the flow is
     /// chosen here too. Drawn under the header.
     pub flows: Element,
+    /// What the flow is about, also the list view's: why it cannot run if it
+    /// cannot, and the pull request it acts on — every open one to pick from
+    /// for a review — so the one being validated is in sight here too.
+    pub context: Element,
     pub on_select: EventHandler<String>,
 }
 
@@ -1176,8 +1180,10 @@ pub fn RunView(props: RunViewProps) -> Element {
                 }
             }
 
-            // Above the body, so a step's panel never covers the flow tabs.
+            // Above the body, so a step's panel never covers the flow tabs or
+            // the pull request being validated.
             {props.flows}
+            div { class: "run-context", {props.context} }
 
             div { class: "run-body",
             div {
@@ -1699,6 +1705,8 @@ mod tests {
             additions: 1,
             deletions: 0,
             commits: 1,
+            base: String::new(),
+            head: String::new(),
         }
     }
 

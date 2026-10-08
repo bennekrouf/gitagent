@@ -483,11 +483,16 @@ async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFail
     })
 }
 
-/// The diff comes from git, not the forge — one code path for both platforms,
-/// and no dependency on a CLI being installed to read it.
-async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
-    let base = state.artifact("pr_base");
-    let head = state.artifact("pr_head");
+/// What a pull request changes, as `(stat, diff)`: its base and head fetched
+/// from origin and compared here. The review step uses it, and so does the
+/// run view's Diff button on a pull request's card — git, not the forge, so
+/// reading a diff costs none of the hourly API budget and works the same on
+/// both platforms.
+pub async fn pull_request_diff(
+    repo: &str,
+    base: &str,
+    head: &str,
+) -> Result<(String, String), String> {
     // Swallowing this used to leave a failed fetch looking like a missing
     // ref two lines later — "ambiguous argument origin/X...origin/Y" is a
     // confusing way to learn the actual problem was "couldn't fetch base
@@ -502,6 +507,15 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
         .await
         .unwrap_or_default();
     let diff = git::run(repo, "git", &["diff", &range, "--unified=3"]).await?;
+    Ok((stat, diff))
+}
+
+/// The diff comes from git, not the forge — one code path for both platforms,
+/// and no dependency on a CLI being installed to read it.
+async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
+    let base = state.artifact("pr_base");
+    let head = state.artifact("pr_head");
+    let (stat, diff) = pull_request_diff(repo, base, head).await?;
 
     if diff.trim().is_empty() {
         let ahead = git::run(

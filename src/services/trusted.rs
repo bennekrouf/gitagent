@@ -349,6 +349,8 @@ mod tests {
             additions: 1,
             deletions: 0,
             commits: 1,
+            base: String::new(),
+            head: String::new(),
         };
         RepoStatus {
             branch: "feat/x".into(),

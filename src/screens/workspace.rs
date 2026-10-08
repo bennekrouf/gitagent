@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::components::branches_panel::BranchesPanel;
 use crate::components::detail_pane::DetailPane;
+use crate::components::diff_view::DiffView;
 use crate::components::forge_icon::ForgeIcon;
 use crate::components::licence_panel::LicencePanel;
 use crate::components::node_card::NodeCard;
@@ -30,6 +31,7 @@ use crate::services::licence;
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
+use crate::services::review;
 use crate::services::store::Layout;
 use crate::services::trusted;
 use crate::services::{forge, git, store};
@@ -1205,11 +1207,47 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             ..store::load_layout()
         });
     };
+    // A pull request whose diff is open in the run view's panel, by number,
+    // instead of a step. And the diffs fetched for it, by repository and
+    // number: `None` while git is still fetching.
+    let mut diff_panel = use_signal(|| Option::<String>::None);
+    let mut pr_diffs =
+        use_signal(BTreeMap::<(String, String), Option<Result<(String, String), String>>>::new);
     use_effect(move || {
         if let Some(step) = drawer.read().clone() {
             panel_step.set(Some(step));
+            // A step taking the panel — clicked, or come to need you — takes
+            // it from a diff being read.
+            diff_panel.set(None);
         }
     });
+    // Opens a pull request's diff in the run view's panel, fetching it with
+    // git: the base and head from origin, compared here, as the review flow
+    // does — so it costs none of the forge's API budget. A diff already
+    // fetched shows at once while it is fetched again.
+    let mut open_diff = move |repo: String, pr: probe::PrBrief| {
+        drawer.set(None);
+        diff_panel.set(Some(pr.number.clone()));
+        let key = (repo.clone(), pr.number.clone());
+        if pr.base.is_empty() || pr.head.is_empty() {
+            pr_diffs.write().insert(
+                key,
+                Some(Err(
+                    "Which branches this pull request compares is not known yet. \
+                     Refresh the repository and try again."
+                        .into(),
+                )),
+            );
+            return;
+        }
+        if !pr_diffs.peek().contains_key(&key) {
+            pr_diffs.write().insert(key.clone(), None);
+        }
+        spawn(async move {
+            let got = review::pull_request_diff(&repo, &pr.base, &pr.head).await;
+            pr_diffs.write().insert(key, Some(got));
+        });
+    };
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     // GitAgent Pro. `licence_open` holds the repository a refused run was
@@ -1309,6 +1347,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 || picker_open.peek().is_some();
             if !dialog_open {
                 drawer.set(None);
+                diff_panel.set(None);
             }
         }
     });
@@ -1641,6 +1680,191 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let start = move |_: Event<MouseData>| begin(false);
     let start_trusted = move |_: Event<MouseData>| begin(true);
 
+    // What the flow on screen is about, under its tabs: why it cannot run if
+    // it cannot, and the pull request it acts on — every open one to pick from
+    // for a review, else the checked-out branch's. Built once, shown in the
+    // list view and the run view alike, so the pull request being validated is
+    // in sight in both.
+    let flow_context: Element = match active.clone() {
+        None => rsx! {},
+        Some(repo) => {
+            let pr_id = selected_pr.read().clone();
+            rsx! {
+            // A tooltip on the tab is not enough once the
+            // broken flow is the one you are looking at:
+            // the graph below is drawn from a definition
+            // that will not run, and nothing else on screen
+            // would say why.
+            if !flow_problems.is_empty() {
+                div { class: "flow-broken",
+                    div { class: "flow-broken-head",
+                        span { class: "flow-broken-mark", "\u{26a0}" }
+                        "This flow cannot run"
+                    }
+                    ul { class: "flow-broken-list",
+                        for problem in flow_problems.iter().cloned() {
+                            li { key: "{problem}", "{problem}" }
+                        }
+                    }
+                    button {
+                        class: "btn",
+                        onclick: move |_| setup_open.set(true),
+                        "Fix in Setup"
+                    }
+                }
+            }
+
+            // Every open pull request on this repository —
+            // not just the one for whatever branch happens
+            // to be checked out — so reviewing #7 today and
+            // #5 tomorrow needs no `git checkout` between.
+            if flow_id == probe::REVIEW_FLOW {
+                {
+                    let prs = status_map.get(&repo).map(|s| s.prs.clone()).unwrap_or_default();
+                    let prs_error = status_map.get(&repo).and_then(|s| s.prs_error.clone());
+                    if let Some(err) = prs_error {
+                        // A CLI that is missing or signed out has a known
+                        // fix; offer it here rather than only naming it.
+                        let fix = status_map
+                            .get(&repo)
+                            .and_then(|s| forge::pr_list_remedy(&s.forge, &err));
+                        let (fixing, fix_output) =
+                            pr_fix.read().get(&repo).cloned().unwrap_or_default();
+                        rsx! {
+                            div { class: "pr-list-error",
+                                "Couldn't check for open pull requests: {err}"
+                                if let Some(fix) = fix {
+                                    div { class: "remedy pr-list-fix",
+                                        div { class: "remedy-main",
+                                            div { class: "remedy-label", "{fix.label}" }
+                                            code { class: "remedy-cmd", "{fix.display}" }
+                                        }
+                                        button {
+                                            class: "btn btn-primary",
+                                            disabled: fixing,
+                                            onclick: {
+                                                let repo = repo.clone();
+                                                move |_| {
+                                                    let repo = repo.clone();
+                                                    let fix = fix.clone();
+                                                    pr_fix.write().insert(repo.clone(), (true, String::new()));
+                                                    spawn(async move {
+                                                        let (ok, output) = git::run_streaming(
+                                                            &fix.program,
+                                                            &fix.args,
+                                                            Some(&repo),
+                                                            "",
+                                                            &mut |_| {},
+                                                        )
+                                                        .await;
+                                                        pr_fix.write().insert(repo.clone(), (false, output));
+                                                        if ok {
+                                                            reprobe(repo, statuses);
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                            if fixing { "Running…" } else { "Run" }
+                                        }
+                                    }
+                                }
+                                if !fix_output.is_empty() {
+                                    pre { class: "remedy-out pr-list-fix-out", "{fix_output}" }
+                                }
+                            }
+                        }
+                    } else if prs.is_empty() {
+                        rsx! {}
+                    } else {
+                        // Once one PR on this repo is running, the
+                        // rest are unpickable — switching to another
+                        // would leave that run's git state (checkout,
+                        // fetch) racing against this one's.
+                        let running_pr = running
+                            .read()
+                            .iter()
+                            .find(|(r, f, p)| r == &repo && f == &flow_id && !p.is_empty())
+                            .map(|(_, _, p)| p.clone());
+                        rsx! {
+                            div { class: "pr-list-head",
+                                "{prs.len()} open pull request" if prs.len() != 1 { "s" }
+                            }
+                            div { class: "pr-list",
+                                for pr in prs.iter().cloned() {
+                                    {
+                                        let locked = running_pr.as_deref()
+                                            .is_some_and(|running| running != pr.number);
+                                        let class = if pr.number == pr_id {
+                                            "pr-list-item pr-list-item-on"
+                                        } else if locked {
+                                            "pr-list-item pr-list-item-locked"
+                                        } else {
+                                            "pr-list-item"
+                                        };
+                                        rsx! {
+                                            div {
+                                                key: "{pr.number}",
+                                                class,
+                                                title: if locked { "Another pull request review is already running for this repository." } else { "" },
+                                                onclick: {
+                                                    let number = pr.number.clone();
+                                                    move |_| {
+                                                        if locked {
+                                                            return;
+                                                        }
+                                                        selected_pr.set(number.clone());
+                                                        selected_node.set(String::new());
+                                                        // Its step belongs to the run of the
+                                                        // pull request just left.
+                                                        drawer.set(None);
+                                                        diff_panel.set(None);
+                                                    }
+                                                },
+                                                PrCard { pr: pr.clone() }
+                                                // The one being reviewed can be read in
+                                                // full beside the map, in the run view.
+                                                if pr.number == pr_id && *run_view.read() {
+                                                    button {
+                                                        class: "btn pr-diff-btn",
+                                                        title: "Show this pull request's diff beside the map",
+                                                        onclick: {
+                                                            let repo = repo.clone();
+                                                            let pr = pr.clone();
+                                                            move |e: Event<MouseData>| {
+                                                                e.stop_propagation();
+                                                                open_diff(repo.clone(), pr.clone());
+                                                            }
+                                                        },
+                                                        "Diff"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if let Some(pr) = status_map.get(&repo).and_then(|s| s.pr.clone()) {
+                div { class: "pr-solo",
+                    PrCard { pr: pr.clone() }
+                    if *run_view.read() {
+                        button {
+                            class: "btn pr-diff-btn",
+                            title: "Show this pull request's diff beside the map",
+                            onclick: {
+                                let repo = repo.clone();
+                                move |_| open_diff(repo.clone(), pr.clone())
+                            },
+                            "Diff"
+                        }
+                    }
+                }
+            }            }
+        }
+    };
+
     // The flow tabs — pick a flow, hide one, or choose which are shown — for
     // the selected repository. One strip, placed above the list view's steps
     // and under the run view's header alike.
@@ -1717,6 +1941,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         selected_pr.set(obvious.clone());
                                         // Its step belongs to the flow just left.
                                         drawer.set(None);
+                                        diff_panel.set(None);
                                     }
                                 },
                                 if !problems.is_empty() {
@@ -2041,6 +2266,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         // A panel left open would show a step of the
                         // repository you just left.
                         drawer.set(None);
+                        diff_panel.set(None);
                     },
                     on_change_workspace: move |_| props.on_change_workspace.call(()),
                     width: *sidebar_w.read(),
@@ -2104,13 +2330,28 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             .clone()
                             .or_else(|| panel_step.read().clone())
                             .filter(|id| graph.get(id).is_some());
-                        // Folded only means anything while it is open.
-                        let folded = *panel_folded.read() && open_step.is_some();
-                        let strip_title = shown_step
+                        // A pull request's diff, when that is what the panel
+                        // holds instead of a step.
+                        let diff_open = diff_panel.read().clone();
+                        let diff_pr = diff_open.as_ref().and_then(|n| {
+                            status_map
+                                .get(&repo)
+                                .and_then(|s| s.prs.iter().chain(s.pr.iter()).find(|p| &p.number == n).cloned())
+                        });
+                        let diff_state = diff_open
                             .as_ref()
-                            .and_then(|id| graph.get(id))
-                            .map(|spec| spec.title.clone())
-                            .unwrap_or_default();
+                            .and_then(|n| pr_diffs.read().get(&(repo.clone(), n.clone())).cloned());
+                        let panel_open = open_step.is_some() || diff_open.is_some();
+                        // Folded only means anything while it is open.
+                        let folded = *panel_folded.read() && panel_open;
+                        let strip_title = match &diff_open {
+                            Some(n) => format!("#{n} diff"),
+                            None => shown_step
+                                .as_ref()
+                                .and_then(|id| graph.get(id))
+                                .map(|spec| spec.title.clone())
+                                .unwrap_or_default(),
+                        };
                         let strip_status = shown_step
                             .as_deref()
                             .map(|id| run_state.status(id))
@@ -2144,20 +2385,21 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     selected_node.set(id.clone());
                                     drawer.set(Some(id));
                                 },
-                                panel_open: open_step.is_some(),
+                                panel_open,
                                 panel_folded: folded,
                                 flows: flow_strip,
+                                context: flow_context,
                                 // Always there, open or not: a panel that is
                                 // only removed cannot slide away, and one that
                                 // is only added cannot slide in from where it
                                 // last was.
                                 div {
-                                    class: match (open_step.is_some(), folded) {
+                                    class: match (panel_open, folded) {
                                         (true, true) => "run-drawer run-drawer-open run-drawer-folded",
                                         (true, false) => "run-drawer run-drawer-open",
                                         _ => "run-drawer",
                                     },
-                                    "aria-hidden": "{open_step.is_none()}",
+                                    "aria-hidden": "{!panel_open}",
                                     if folded {
                                         // The whole strip unfolds it: name and
                                         // state, read sideways, are enough to
@@ -2180,10 +2422,41 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                         button {
                                             class: "run-drawer-close",
                                             title: "Close (Esc)",
-                                            onclick: move |_| drawer.set(None),
+                                            onclick: move |_| {
+                                                drawer.set(None);
+                                                diff_panel.set(None);
+                                            },
                                             "\u{2715}"
                                         }
-                                        if let Some(node_id) = shown_step {
+                                        if let Some(number) = diff_open {
+                                            div { class: "detail",
+                                                div { class: "detail-head",
+                                                    span { class: "detail-title",
+                                                        "#{number} "
+                                                        {diff_pr.as_ref().map(|p| p.title.clone()).unwrap_or_default()}
+                                                    }
+                                                    if let Some(p) = diff_pr.as_ref() {
+                                                        span { class: "detail-status", "{p.head} \u{2192} {p.base}" }
+                                                    }
+                                                }
+                                                match diff_state {
+                                                    Some(Some(Ok((stat, diff)))) if diff.trim().is_empty() => rsx! {
+                                                        div { class: "pr-diff-note", "No changes between these branches." }
+                                                        pre { class: "pr-diff-stat", "{stat}" }
+                                                    },
+                                                    Some(Some(Ok((stat, diff)))) => rsx! {
+                                                        pre { class: "pr-diff-stat", "{stat}" }
+                                                        DiffView { diff, is_light: *is_light.read() }
+                                                    },
+                                                    Some(Some(Err(why))) => rsx! {
+                                                        pre { class: "log log-error", "{why}" }
+                                                    },
+                                                    _ => rsx! {
+                                                        div { class: "pr-diff-note", "Fetching the diff\u{2026}" }
+                                                    },
+                                                }
+                                            }
+                                        } else if let Some(node_id) = shown_step {
                                             {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(drawer))}
                                         }
                                     }
@@ -2436,144 +2709,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 
                                 {flow_strip}
 
-                                // A tooltip on the tab is not enough once the
-                                // broken flow is the one you are looking at:
-                                // the graph below is drawn from a definition
-                                // that will not run, and nothing else on screen
-                                // would say why.
-                                if !flow_problems.is_empty() {
-                                    div { class: "flow-broken",
-                                        div { class: "flow-broken-head",
-                                            span { class: "flow-broken-mark", "\u{26a0}" }
-                                            "This flow cannot run"
-                                        }
-                                        ul { class: "flow-broken-list",
-                                            for problem in flow_problems.iter().cloned() {
-                                                li { key: "{problem}", "{problem}" }
-                                            }
-                                        }
-                                        button {
-                                            class: "btn",
-                                            onclick: move |_| setup_open.set(true),
-                                            "Fix in Setup"
-                                        }
-                                    }
-                                }
-
-                                // Every open pull request on this repository —
-                                // not just the one for whatever branch happens
-                                // to be checked out — so reviewing #7 today and
-                                // #5 tomorrow needs no `git checkout` between.
-                                if flow_id == probe::REVIEW_FLOW {
-                                    {
-                                        let prs = status_map.get(&repo).map(|s| s.prs.clone()).unwrap_or_default();
-                                        let prs_error = status_map.get(&repo).and_then(|s| s.prs_error.clone());
-                                        if let Some(err) = prs_error {
-                                            // A CLI that is missing or signed out has a known
-                                            // fix; offer it here rather than only naming it.
-                                            let fix = status_map
-                                                .get(&repo)
-                                                .and_then(|s| forge::pr_list_remedy(&s.forge, &err));
-                                            let (fixing, fix_output) =
-                                                pr_fix.read().get(&repo).cloned().unwrap_or_default();
-                                            rsx! {
-                                                div { class: "pr-list-error",
-                                                    "Couldn't check for open pull requests: {err}"
-                                                    if let Some(fix) = fix {
-                                                        div { class: "remedy pr-list-fix",
-                                                            div { class: "remedy-main",
-                                                                div { class: "remedy-label", "{fix.label}" }
-                                                                code { class: "remedy-cmd", "{fix.display}" }
-                                                            }
-                                                            button {
-                                                                class: "btn btn-primary",
-                                                                disabled: fixing,
-                                                                onclick: {
-                                                                    let repo = repo.clone();
-                                                                    move |_| {
-                                                                        let repo = repo.clone();
-                                                                        let fix = fix.clone();
-                                                                        pr_fix.write().insert(repo.clone(), (true, String::new()));
-                                                                        spawn(async move {
-                                                                            let (ok, output) = git::run_streaming(
-                                                                                &fix.program,
-                                                                                &fix.args,
-                                                                                Some(&repo),
-                                                                                "",
-                                                                                &mut |_| {},
-                                                                            )
-                                                                            .await;
-                                                                            pr_fix.write().insert(repo.clone(), (false, output));
-                                                                            if ok {
-                                                                                reprobe(repo, statuses);
-                                                                            }
-                                                                        });
-                                                                    }
-                                                                },
-                                                                if fixing { "Running…" } else { "Run" }
-                                                            }
-                                                        }
-                                                    }
-                                                    if !fix_output.is_empty() {
-                                                        pre { class: "remedy-out pr-list-fix-out", "{fix_output}" }
-                                                    }
-                                                }
-                                            }
-                                        } else if prs.is_empty() {
-                                            rsx! {}
-                                        } else {
-                                            // Once one PR on this repo is running, the
-                                            // rest are unpickable — switching to another
-                                            // would leave that run's git state (checkout,
-                                            // fetch) racing against this one's.
-                                            let running_pr = running
-                                                .read()
-                                                .iter()
-                                                .find(|(r, f, p)| r == &repo && f == &flow_id && !p.is_empty())
-                                                .map(|(_, _, p)| p.clone());
-                                            rsx! {
-                                                div { class: "pr-list-head",
-                                                    "{prs.len()} open pull request" if prs.len() != 1 { "s" }
-                                                }
-                                                div { class: "pr-list",
-                                                    for pr in prs.iter().cloned() {
-                                                        {
-                                                            let locked = running_pr.as_deref()
-                                                                .is_some_and(|running| running != pr.number);
-                                                            let class = if pr.number == pr_id {
-                                                                "pr-list-item pr-list-item-on"
-                                                            } else if locked {
-                                                                "pr-list-item pr-list-item-locked"
-                                                            } else {
-                                                                "pr-list-item"
-                                                            };
-                                                            rsx! {
-                                                                div {
-                                                                    key: "{pr.number}",
-                                                                    class,
-                                                                    title: if locked { "Another pull request review is already running for this repository." } else { "" },
-                                                                    onclick: {
-                                                                        let number = pr.number.clone();
-                                                                        move |_| {
-                                                                            if locked {
-                                                                                return;
-                                                                            }
-                                                                            selected_pr.set(number.clone());
-                                                                            selected_node.set(String::new());
-                                                                        }
-                                                                    },
-                                                                    PrCard { pr: pr.clone() }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else if let Some(pr) = status_map.get(&repo).and_then(|s| s.pr.clone()) {
-                                    PrCard { pr }
-                                }
+                                {flow_context}
 
                                 div { class: "col-scroll",
                                     for node in graph.nodes.iter().cloned() {
@@ -3045,6 +3181,8 @@ mod tests {
             additions: 1,
             deletions: 0,
             commits: 1,
+            base: String::new(),
+            head: String::new(),
         }
     }
 
