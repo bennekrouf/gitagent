@@ -1102,6 +1102,22 @@ fn needs_a_person(status: NodeStatus) -> bool {
     matches!(status, NodeStatus::AwaitingApproval | NodeStatus::Failed)
 }
 
+/// Which flow a run starts on, as `(flow, pull request)`. The one on screen —
+/// what Start and Play mean — unless the Trusted run button asked for the
+/// flow to be chosen for it, when it is whatever the repository most `needs`,
+/// falling back to the one on screen when it needs nothing in particular.
+fn starting_flow(
+    chosen_for_you: bool,
+    needs: Option<(String, String)>,
+    on_screen: (String, String),
+) -> Option<(String, String)> {
+    if chosen_for_you {
+        needs.or(Some(on_screen))
+    } else {
+        Some(on_screen)
+    }
+}
+
 /// The repository to open on: the first in the list, top to bottom as the
 /// sidebar shows it, that has something left to do. Not the most urgent one
 /// further down — the list is the order you read in, and opening halfway down
@@ -1176,6 +1192,19 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // The step the panel last showed, kept after it closes so the panel can
     // slide out with its content still in it instead of going blank first.
     let mut panel_step = use_signal(|| Option::<String>::None);
+    // Folded to a strip at the right edge: the map gets its room back and the
+    // step stays one click away. Remembered — between openings and across
+    // restarts — so a panel folded once stays folded for the next step, and a
+    // step that comes to need you shows up on the strip rather than taking
+    // the map back. Only the strip itself unfolds it.
+    let mut panel_folded = use_signal(|| store::load_layout().panel_folded);
+    let mut set_folded = move |folded: bool| {
+        panel_folded.set(folded);
+        store::save_layout(&Layout {
+            panel_folded: folded,
+            ..store::load_layout()
+        });
+    };
     use_effect(move || {
         if let Some(step) = drawer.read().clone() {
             panel_step.set(Some(step));
@@ -1452,9 +1481,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             return;
         }
         free_slots.set(licence::load_slots());
-        // "Trust all" overrides the button that was actually clicked — even a
-        // plain Start runs trusted once it's on, since the whole point is not
-        // having to remember which button to press per repository.
+        // Two questions, kept apart: which flow to start, and whether its
+        // approvals answer themselves. Only the Trusted run button chooses the
+        // flow for you. "Trust all" answers the second question for every
+        // run — a plain Start or Play runs trusted once it is on, since the
+        // whole point is not having to remember which button to press — but
+        // it does not take the first one away: Play on the Review tab reviews.
+        let chosen_for_you = trust;
         let trust = trust || *global_trust.read();
         // Settings live in a per-window signal but one file on disk. Re-reading
         // here is what stops a second window running against a stale provider.
@@ -1473,17 +1506,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         // and that used to disable the button on every tab at once, including
         // a "Deploy VPS" flow whose whole point is that you run it when you
         // decide to, not when a probe says so.
-        let opening = if trust {
-            statuses
-                .read()
-                .get(&repo)
-                .and_then(|status| {
-                    trusted::next_flow(&book.read(), status, &repo_flows.read().hidden_for(&repo))
-                })
-                .or_else(|| Some((selected_flow.read().clone(), selected_pr.read().clone())))
-        } else {
-            Some((selected_flow.read().clone(), selected_pr.read().clone()))
-        };
+        let opening = starting_flow(
+            chosen_for_you,
+            statuses.read().get(&repo).and_then(|status| {
+                trusted::next_flow(&book.read(), status, &repo_flows.read().hidden_for(&repo))
+            }),
+            (selected_flow.read().clone(), selected_pr.read().clone()),
+        );
         let Some((mut id, mut pr)) = opening else {
             // Nothing to start at all. Silently doing nothing is what made
             // this button feel broken, so say why.
@@ -1939,6 +1968,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         store::save_layout(&Layout {
                             sidebar: *sidebar_w.read(),
                             middle: *middle_w.read(),
+                            panel_folded: *panel_folded.read(),
                         });
                     }
                 },
@@ -1950,6 +1980,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         store::save_layout(&Layout {
                             sidebar: *sidebar_w.read(),
                             middle: *middle_w.read(),
+                            panel_folded: *panel_folded.read(),
                         });
                     }
                 },
@@ -2073,6 +2104,17 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             .clone()
                             .or_else(|| panel_step.read().clone())
                             .filter(|id| graph.get(id).is_some());
+                        // Folded only means anything while it is open.
+                        let folded = *panel_folded.read() && open_step.is_some();
+                        let strip_title = shown_step
+                            .as_ref()
+                            .and_then(|id| graph.get(id))
+                            .map(|spec| spec.title.clone())
+                            .unwrap_or_default();
+                        let strip_status = shown_step
+                            .as_deref()
+                            .map(|id| run_state.status(id))
+                            .unwrap_or_default();
                         rsx! {
                             RunView {
                                 can_start,
@@ -2103,22 +2145,47 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     drawer.set(Some(id));
                                 },
                                 panel_open: open_step.is_some(),
+                                panel_folded: folded,
                                 flows: flow_strip,
                                 // Always there, open or not: a panel that is
                                 // only removed cannot slide away, and one that
                                 // is only added cannot slide in from where it
                                 // last was.
                                 div {
-                                    class: if open_step.is_some() { "run-drawer run-drawer-open" } else { "run-drawer" },
+                                    class: match (open_step.is_some(), folded) {
+                                        (true, true) => "run-drawer run-drawer-open run-drawer-folded",
+                                        (true, false) => "run-drawer run-drawer-open",
+                                        _ => "run-drawer",
+                                    },
                                     "aria-hidden": "{open_step.is_none()}",
-                                    button {
-                                        class: "run-drawer-close",
-                                        title: "Close (Esc)",
-                                        onclick: move |_| drawer.set(None),
-                                        "\u{2715}"
-                                    }
-                                    if let Some(node_id) = shown_step {
-                                        {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(drawer))}
+                                    if folded {
+                                        // The whole strip unfolds it: name and
+                                        // state, read sideways, are enough to
+                                        // say which step is waiting there.
+                                        button {
+                                            class: "run-drawer-strip",
+                                            title: "Unfold",
+                                            onclick: move |_| set_folded(false),
+                                            span { class: "run-drawer-unfold", "\u{2039}" }
+                                            span { class: "dot dot-{strip_status.css()}" }
+                                            span { class: "run-drawer-strip-name", "{strip_title}" }
+                                        }
+                                    } else {
+                                        button {
+                                            class: "run-drawer-fold",
+                                            title: "Fold to the edge, to see more of the map",
+                                            onclick: move |_| set_folded(true),
+                                            "\u{203a}"
+                                        }
+                                        button {
+                                            class: "run-drawer-close",
+                                            title: "Close (Esc)",
+                                            onclick: move |_| drawer.set(None),
+                                            "\u{2715}"
+                                        }
+                                        if let Some(node_id) = shown_step {
+                                            {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(drawer))}
+                                        }
                                     }
                                 }
                             }
@@ -2911,6 +2978,28 @@ mod tests {
         assert_eq!(
             first_with_work(vec![("a".to_string(), probe::Wants::Nothing)]),
             None
+        );
+    }
+
+    #[test]
+    fn play_and_start_run_the_flow_on_screen_whatever_is_trusted() {
+        let on_screen = ("review_and_merge".to_string(), "7".to_string());
+        let needed = Some(("commit_and_pr".to_string(), String::new()));
+        // Trust all on or off, a plain Start or Play is not a request to
+        // choose: the Review tab reviews.
+        assert_eq!(
+            starting_flow(false, needed.clone(), on_screen.clone()),
+            Some(on_screen.clone())
+        );
+        // Only the Trusted run button goes where the repository needs.
+        assert_eq!(
+            starting_flow(true, needed, on_screen.clone()),
+            Some(("commit_and_pr".to_string(), String::new()))
+        );
+        // And with nothing in particular needed, it too runs what is on screen.
+        assert_eq!(
+            starting_flow(true, None, on_screen.clone()),
+            Some(on_screen)
         );
     }
 

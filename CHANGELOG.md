@@ -17,6 +17,23 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The Run view's step panel folds: › next to ✕ shrinks it to a strip at the
+  right edge with the step's name and state, and the map takes the room back.
+  Click the strip to unfold it. It stays folded until you do — for the next
+  step you open, and after a restart — so a step that comes to need you shows
+  on the strip instead of covering the map again.
+
+### Fixed
+
+- With **Trust all** on, Play and Start run the flow you have selected. Before,
+  they started whichever flow the repository needed most — usually Commit →
+  PR — whatever tab you were on. It still runs trusted and carries on to the
+  next flow afterwards; only the **Trusted run** button picks the flow for you.
+
 ## [0.1.86] - 2026-10-08
 
 ### Changed

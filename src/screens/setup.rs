@@ -174,6 +174,7 @@ pub fn Setup(props: SetupProps) -> Element {
                         store::save_layout(&Layout {
                             sidebar: *sidebar_w.read(),
                             middle: *editor_w.read(),
+                            ..store::load_layout()
                         });
                     }
                 },
@@ -183,6 +184,7 @@ pub fn Setup(props: SetupProps) -> Element {
                         store::save_layout(&Layout {
                             sidebar: *sidebar_w.read(),
                             middle: *editor_w.read(),
+                            ..store::load_layout()
                         });
                     }
                 },
