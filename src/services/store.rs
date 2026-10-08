@@ -169,6 +169,11 @@ pub struct Layout {
     pub sidebar: f64,
     /// The middle column: the flow list in the workspace, the editor in Setup.
     pub middle: f64,
+    /// Whether the run view's step panel is folded to a strip. Kept between
+    /// openings and across restarts: someone who folds it wants the map, and
+    /// should not have to fold it again for every step.
+    #[serde(default)]
+    pub panel_folded: bool,
 }
 
 impl Default for Layout {
@@ -176,6 +181,7 @@ impl Default for Layout {
         Self {
             sidebar: 224.0,
             middle: 330.0,
+            panel_folded: false,
         }
     }
 }
@@ -361,6 +367,25 @@ pub fn save_repo_bases(bases: &RepoBases) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_layout_saved_before_the_panel_could_fold_still_loads_unfolded() {
+        let old: super::Layout =
+            serde_json::from_str(r#"{"sidebar": 260.0, "middle": 400.0}"#).unwrap();
+        assert_eq!(old.sidebar, 260.0);
+        assert!(!old.panel_folded);
+    }
+
+    #[test]
+    fn the_folded_panel_survives_a_save_and_load() {
+        let folded = super::Layout {
+            panel_folded: true,
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&folded).unwrap();
+        let back: super::Layout = serde_json::from_str(&text).unwrap();
+        assert!(back.panel_folded);
+    }
 
     #[test]
     fn an_atomic_write_replaces_the_file_without_a_truncated_window() {
