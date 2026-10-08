@@ -419,9 +419,14 @@ pub async fn execute(
         Step::OpenPr => open_pr(repo, state).await,
         // The review steps live in their own module but share one entry point:
         // a step means the same thing wherever a flow places it.
-        Step::FindPr | Step::PrStatus | Step::PrDiff | Step::Analyse | Step::Merge | Step::Sync => {
-            super::review::execute(node.step, repo, cfg, state, asker).await
-        }
+        Step::FindPr
+        | Step::PrStatus
+        | Step::PrDiff
+        | Step::Analyse
+        | Step::SecondOpinion
+        | Step::Lenses
+        | Step::Merge
+        | Step::Sync => super::review::execute(node.step, repo, cfg, state, asker).await,
         // Only these two shell out to a process that can run long enough for
         // live output to matter — everything else above finishes fast enough
         // that a final log is all "streaming" would ever show anyway.

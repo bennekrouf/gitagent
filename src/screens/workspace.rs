@@ -20,11 +20,12 @@ use crate::components::licence_panel::LicencePanel;
 use crate::components::node_card::NodeCard;
 use crate::components::pr_card::PrCard;
 use crate::components::repo_sidebar::{phase_of, Phase, RepoEntry, RepoSidebar};
+use crate::components::run_view::{Gates, RunView};
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
-use crate::services::graph::{Graph, NodeKind, NodeRun, NodeStatus, Remedy, RunState};
+use crate::services::graph::{Graph, NodeKind, NodeRun, NodeStatus, Remedy, RunState, Step};
 use crate::services::licence;
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
@@ -268,7 +269,7 @@ async fn drive(
                 run.proposal = proposal;
                 run.items = items;
                 run.preview_diff = preview_diff;
-                run.status = NodeStatus::AwaitingApproval;
+                entry.set_status(&node.id, NodeStatus::AwaitingApproval);
             }
 
             // The run has stopped and cannot continue without a person. If they
@@ -373,12 +374,11 @@ async fn drive(
                 trusted: auto == Some(trusted::Verdict::Approve),
             });
             if !approved {
-                let mut w = states.write();
-                let entry = w.entry(key.clone()).or_default();
-                entry.set_status(&node.id, NodeStatus::Rejected);
-                entry.runs.entry(node.id.clone()).or_default().summary =
-                    "declined — nothing was run".into();
-                entry.propagate_block(&graph);
+                states
+                    .write()
+                    .entry(key.clone())
+                    .or_default()
+                    .reject(&node.id, &graph);
                 continue;
             }
         }
@@ -403,10 +403,40 @@ async fn drive(
                     .insert(crate::services::graph::qualified(&node.id, &k), v.clone());
                 entry.artifacts.insert(k, v);
             }
+            entry.set_status(&node.id, NodeStatus::Bypassed);
             let run = entry.runs.entry(node.id.clone()).or_default();
-            run.status = NodeStatus::Bypassed;
             run.summary = stand_in.summary;
             run.log = stand_in.log;
+            continue;
+        }
+
+        // Focused reviews with no lens turned on, likewise.
+        if node.step == Step::Lenses && !cfg.read().lenses.any() {
+            let mut w = states.write();
+            let entry = w.entry(key.clone()).or_default();
+            entry.set_status(&node.id, NodeStatus::Bypassed);
+            let run = entry.runs.entry(node.id.clone()).or_default();
+            run.summary = "skipped — no focused review turned on".into();
+            run.log = "No focused review is turned on in Settings, so none ran. Turn on \
+                       alignment, security or architecture under Model provider \u{2192} \
+                       Focused reviews to have every pull request checked for it."
+                .into();
+            continue;
+        }
+
+        // A second opinion with no second model chosen is skipped the same
+        // way, and for the same reason it must not fail: the merge waits on
+        // it, and an optional reviewer nobody set up must not stop a merge.
+        if node.step == Step::SecondOpinion && !cfg.read().second_config().uses_model() {
+            let mut w = states.write();
+            let entry = w.entry(key.clone()).or_default();
+            entry.set_status(&node.id, NodeStatus::Bypassed);
+            let run = entry.runs.entry(node.id.clone()).or_default();
+            run.summary = "skipped — no second reviewer chosen".into();
+            run.log = "No second reviewer is chosen in Settings, so nothing gave a second \
+                       opinion. Pick one under Model provider \u{2192} Second reviewer to have \
+                       every pull request reviewed twice."
+                .into();
             continue;
         }
 
@@ -521,13 +551,16 @@ async fn drive(
                 for (k, v) in outcome.artifacts {
                     entry.artifacts.insert(k, v);
                 }
-                {
-                    let run = entry.runs.entry(node.id.clone()).or_default();
-                    run.status = if nothing {
+                entry.set_status(
+                    &node.id,
+                    if nothing {
                         NodeStatus::Skipped
                     } else {
                         NodeStatus::Done
-                    };
+                    },
+                );
+                {
+                    let run = entry.runs.entry(node.id.clone()).or_default();
                     run.summary = outcome.summary;
                     run.log = outcome.log;
                     // A step may offer files for deselection (scan does), and
@@ -543,9 +576,9 @@ async fn drive(
             }
             Err(failure) => {
                 announce(NodeStatus::Failed, &key.0, &node.title, &failure.message);
+                entry.set_status(&node.id, NodeStatus::Failed);
                 {
                     let run = entry.runs.entry(node.id.clone()).or_default();
-                    run.status = NodeStatus::Failed;
                     run.summary = "failed".into();
                     run.log = failure.message;
                     run.remedies = failure.remedies;
@@ -818,12 +851,10 @@ fn refresh_all(
         }
         picked.set(true);
         let map = statuses.read().clone();
-        // Most urgent first; ties broken by the order on disk.
-        let best = list
-            .iter()
-            .filter_map(|r| map.get(&r.path).map(|s| (r.path.clone(), s.wants())))
-            .filter(|(_, wants)| wants.needs_a_person())
-            .min_by_key(|(_, wants)| *wants);
+        let best = first_with_work(
+            list.iter()
+                .filter_map(|r| map.get(&r.path).map(|s| (r.path.clone(), s.wants()))),
+        );
 
         if let Some((path, wants)) = best {
             // Open on whichever flow says it answers this, whatever its name.
@@ -841,6 +872,219 @@ fn refresh_all(
             selected_repo.set(Some(path));
         }
     });
+}
+
+/// The signals a step's panel acts on. Copy, like the signals themselves, so
+/// one value can be handed to every place that shows a step.
+#[derive(Clone, Copy)]
+struct Wiring {
+    states: Signal<States>,
+    running: Signal<BTreeSet<Key>>,
+    selected_node: Signal<String>,
+    selected_repo: Signal<Option<String>>,
+    selected_flow: Signal<String>,
+    selected_pr: Signal<String>,
+    llm_config: Signal<LlmConfig>,
+    statuses: Signal<BTreeMap<String, RepoStatus>>,
+    trusted: Signal<BTreeSet<Key>>,
+}
+
+/// One step of one run, with everything you can do to it: approve or reject,
+/// pick files, run a fix, retry, skip, cancel. The list view shows it in its
+/// right-hand column and the run view in a panel over the map — the same
+/// panel, built here once, so the two can never drift apart.
+///
+/// `drawer` is the run view's open panel, closed once the step is approved or
+/// skipped: the run moves on, and so does your attention. Reject leaves it
+/// open, since that is where you would retry. The list view passes `None`.
+fn step_detail(
+    wiring: Wiring,
+    key: Key,
+    graph: Graph,
+    state: RunState,
+    node_id: String,
+    is_light: bool,
+    drawer: Option<Signal<Option<String>>>,
+) -> Element {
+    let Wiring {
+        mut states,
+        mut running,
+        selected_node,
+        selected_repo,
+        selected_flow,
+        selected_pr,
+        llm_config,
+        statuses,
+        trusted,
+    } = wiring;
+    rsx! {
+        DetailPane {
+            spec: graph.get(&node_id).cloned(),
+            run: state.runs.get(&node_id).cloned().unwrap_or_else(NodeRun::default),
+            diff: graph.get(&node_id).and_then(|spec| {
+                spec.writes.iter()
+                    .find(|w| w.as_str() == "diff" || w.as_str() == "pr_diff")
+                    .and_then(|key| state.artifacts.get(key).cloned())
+            }).or_else(|| {
+                // `merge` writes no diff of its own, but the one
+                // `pr_diff` already fetched earlier in this same
+                // run is exactly the code a conflict — or a
+                // decision to abandon — is about.
+                if node_id == "merge" {
+                    state.artifacts.get("pr_diff").cloned()
+                } else {
+                    None
+                }
+            }),
+            is_light,
+            run_started: state.started,
+            on_approve: {
+                let key = key.clone();
+                move |id: String| {
+                    states.write().entry(key.clone()).or_default()
+                        .decisions.insert(id, true);
+                    approvals().notify_waiters();
+                    if let Some(mut drawer) = drawer {
+                        drawer.set(None);
+                    }
+                }
+            },
+            on_reject: {
+                let key = key.clone();
+                move |id: String| {
+                    states.write().entry(key.clone()).or_default()
+                        .decisions.insert(id, false);
+                    approvals().notify_waiters();
+                }
+            },
+            on_toggle: {
+                let key = key.clone();
+                move |(node, item): (String, String)| {
+                    let mut w = states.write();
+                    let entry = w.entry(key.clone()).or_default();
+                    if let Some(run) = entry.runs.get_mut(&node) {
+                        if let Some(found) =
+                            run.items.iter_mut().find(|i| i.key == item)
+                        {
+                            found.included = !found.included;
+                        }
+                    }
+                }
+            },
+            on_remedy: {
+                let key = key.clone();
+                let retry_graph = graph.clone();
+                move |(node, index): (String, usize)| {
+                    let key = key.clone();
+                    let retry_graph = retry_graph.clone();
+                    let found = states.read().get(&key)
+                        .and_then(|s| s.runs.get(&node))
+                        .and_then(|r| r.remedies.get(index).cloned());
+                    let Some(remedy) = found else { return };
+
+                    set_remedy(states, &key, &node, index, |r| {
+                        r.running = true;
+                        r.output.clear();
+                    });
+
+                    spawn(async move {
+                        // In the repo: `gh pr close 11` from anywhere
+                        // else closes #11 of whichever repo that is.
+                        let (ok, output) = git::run_streaming(
+                            &remedy.program,
+                            &remedy.args,
+                            Some(&key.0),
+                            "",
+                            &mut |_| {},
+                        )
+                        .await;
+                        set_remedy(states, &key, &node, index, |r| {
+                            r.running = false;
+                            r.done = ok;
+                            r.output = if output.is_empty() && ok {
+                                "done".into()
+                            } else {
+                                output.clone()
+                            };
+                        });
+                        if ok && !remedy.sets.is_empty() {
+                            let mut w = states.write();
+                            let entry = w.entry(key.clone()).or_default();
+                            for (k, v) in &remedy.sets {
+                                entry.artifacts.insert(k.clone(), v.clone());
+                            }
+                        }
+                        if ok && remedy.retry_after {
+                            // A fix that unblocked this step is only
+                            // useful if the run moves on, so re-queue it.
+                            retry_node(
+                                states, running, selected_node,
+                                selected_repo, selected_flow, selected_pr,
+                                llm_config, statuses, retry_graph,
+                                key, &node, trusted,
+                            );
+                        } else if ok {
+                            // A terminal remedy resolves the failure by
+                            // abandoning the step, not by unblocking it —
+                            // retrying would just fail again differently.
+                            states.write().remove(&key);
+                            running.write().remove(&key);
+                            reprobe(key.0.clone(), statuses);
+                        }
+                    });
+                }
+            },
+            on_retry: {
+                let key = key.clone();
+                let retry_graph = graph.clone();
+                move |node: String| {
+                    retry_node(
+                        states, running, selected_node,
+                        selected_repo, selected_flow, selected_pr,
+                        llm_config, statuses, retry_graph.clone(),
+                        key.clone(), &node, trusted,
+                    );
+                }
+            },
+            on_skip: {
+                let key = key.clone();
+                let skip_graph = graph.clone();
+                move |node: String| {
+                    skip_node(
+                        states, running, selected_node,
+                        selected_repo, selected_flow, selected_pr,
+                        llm_config, statuses, skip_graph.clone(),
+                        key.clone(), &node, trusted,
+                    );
+                    if let Some(mut drawer) = drawer {
+                        drawer.set(None);
+                    }
+                }
+            },
+            on_cancel: {
+                let key = key.clone();
+                move |_| {
+                    states.write().remove(&key);
+                    running.write().remove(&key);
+                    // A run parked at an approval
+                    // hears about it now, not on its
+                    // next timeout.
+                    approvals().notify_waiters();
+                    reprobe(key.0.clone(), statuses);
+                }
+            },
+        }
+    }
+}
+
+/// The repository to open on: the first in the list, top to bottom as the
+/// sidebar shows it, that has something left to do. Not the most urgent one
+/// further down — the list is the order you read in, and opening halfway down
+/// it reads as a jump.
+fn first_with_work(
+    repos: impl IntoIterator<Item = (String, probe::Wants)>,
+) -> Option<(String, probe::Wants)> {
+    repos.into_iter().find(|(_, wants)| wants.needs_a_person())
 }
 
 #[component]
@@ -897,6 +1141,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // Why the last trusted run stopped, when the reason was not "there is
     // nothing left". Cleared when the next one starts.
     let mut chain_note = use_signal(String::new);
+    // The run map instead of the step list and detail pane: one switch for
+    // the whole window, so it stays on while you move between repositories.
+    // On by default — where a run is is the first thing worth seeing; the
+    // list is one click away for approving and reading logs.
+    let mut run_view = use_signal(|| true);
+    // The step whose panel is open over the run map, if any.
+    let mut drawer = use_signal(|| Option::<String>::None);
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     // GitAgent Pro. `licence_open` holds the repository a refused run was
@@ -926,6 +1177,73 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // all of them: opening it on one repository used to leave it open on the
     // next one you selected, which reads as a panel that will not close.
     let mut picker_open = use_signal(|| Option::<String>::None);
+
+    // A step that stops to ask for approval opens its panel over the run map
+    // on its own, once per approval: close it while the step still waits and
+    // it stays closed. Not for a trusted run, which answers on its own a beat
+    // later — the panel would only flash open. Not away from another step
+    // that is waiting too, which would have two approvals fight for it.
+    let mut auto_opened = use_signal(|| Option::<(u64, String, usize)>::None);
+    use_effect(move || {
+        if !*run_view.read() {
+            return;
+        }
+        let Some(repo) = selected_repo.read().clone() else {
+            return;
+        };
+        let key: Key = (
+            repo,
+            selected_flow.read().clone(),
+            selected_pr.read().clone(),
+        );
+        let states = states.read();
+        let Some(state) = states.get(&key) else {
+            return;
+        };
+        let Some((step, at)) = state.newest_approval() else {
+            return;
+        };
+        let this = (state.run, step.clone(), at);
+        if auto_opened.peek().as_ref() == Some(&this) {
+            return;
+        }
+        if *global_trust.read() || trusted.read().contains(&key) {
+            return;
+        }
+        auto_opened.set(Some(this));
+        let showing_another_approval = drawer.peek().as_ref().is_some_and(|open| {
+            open != &step && state.status(open) == NodeStatus::AwaitingApproval
+        });
+        if !showing_another_approval {
+            selected_node.set(step.clone());
+            drawer.set(Some(step));
+        }
+    });
+
+    // Escape closes a step's panel over the run map. Listened for on the
+    // window, not the panel, because nothing in the panel has focus after
+    // a click on the map. The handler is kept on `window` and replaced on
+    // each mount, so a workspace opened twice never stacks two of them.
+    use_future(move || async move {
+        let mut keys = document::eval(
+            "if (window._gaEscape) window.removeEventListener('keydown', window._gaEscape);\
+             window._gaEscape = (e) => { if (e.key === 'Escape') dioxus.send(true); };\
+             window.addEventListener('keydown', window._gaEscape);",
+        );
+        while keys.recv::<bool>().await.is_ok() {
+            // A dialog in front owns the key: closing the panel hidden
+            // behind it would be a change nobody could see happen.
+            let dialog_open = *settings_open.peek()
+                || licence_open.peek().is_some()
+                || branches_open.peek().is_some()
+                || base_editor_open.peek().is_some()
+                || confirm_hide.peek().is_some()
+                || picker_open.peek().is_some();
+            if !dialog_open {
+                drawer.set(None);
+            }
+        }
+    });
 
     // Hiding a flow is one operation whether it comes from a tab's × or from
     // the picker's checkbox, including the part that is easy to forget: the
@@ -987,6 +1305,17 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     });
 
     let llm_config = props.llm_config;
+    let wiring = Wiring {
+        states,
+        running,
+        selected_node,
+        selected_repo,
+        selected_flow,
+        selected_pr,
+        llm_config,
+        statuses,
+        trusted,
+    };
     let repo_list = repos.read().clone();
     let status_map = statuses.read().clone();
     let forge_map: BTreeMap<String, crate::services::forge::Forge> = status_map
@@ -1243,6 +1572,199 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let start = move |_: Event<MouseData>| begin(false);
     let start_trusted = move |_: Event<MouseData>| begin(true);
 
+    // The flow tabs — pick a flow, hide one, or choose which are shown — for
+    // the selected repository. One strip, placed above the list view's steps
+    // and under the run view's header alike.
+    let flow_strip: Element = match active.clone() {
+        None => rsx! {},
+        Some(repo) => {
+            let label = repo_list
+                .iter()
+                .find(|r| r.path == repo)
+                .map(|r| r.label.clone())
+                .unwrap_or_else(|| repo.clone());
+            let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
+            let visible_tabs: Vec<(String, String, Vec<String>)> = listed
+                .iter()
+                .filter(|(id, _, _)| !hidden_here.contains(id))
+                .cloned()
+                .collect();
+            let showing_picker = picker_open.read().as_deref() == Some(repo.as_str());
+            // Counted against the book rather than the stored list: an id
+            // left behind by a flow deleted in Setup must not advertise
+            // "1 hidden" with nothing to show. Flows made for other
+            // repositories are offers, not something this one hid, so they
+            // are counted apart.
+            let elsewhere: Vec<String> = listed
+                .iter()
+                .filter(|(id, _, _)| repo_flows.read().elsewhere_only(&repo, id))
+                .map(|(id, _, _)| id.clone())
+                .collect();
+            let hidden_count = listed
+                .iter()
+                .filter(|(id, _, _)| hidden_here.contains(id) && !elsewhere.contains(id))
+                .count();
+            let offered = elsewhere.len();
+            rsx! {
+                div { class: "flow-tabs",
+                    for (id, label, problems) in visible_tabs.iter().cloned() {
+                        div {
+                            key: "{id}",
+                            class: match (id == flow_id, problems.is_empty()) {
+                                (true, true) => "flow-tab flow-tab-on",
+                                (true, false) => "flow-tab flow-tab-on flow-tab-broken",
+                                (false, true) => "flow-tab",
+                                (false, false) => "flow-tab flow-tab-broken",
+                            },
+                            button {
+                                class: "flow-tab-main",
+                                // The tab still selects: seeing why a flow is
+                                // broken is the point of showing it.
+                                title: if problems.is_empty() {
+                                    String::new()
+                                } else {
+                                    problems.join("\n")
+                                },
+                                onclick: {
+                                    let id = id.clone();
+                                    let first = flows.get(&id)
+                                        .map(|f| f.first_node())
+                                        .unwrap_or_default();
+                                    // A tab is a flow, not one particular PR review
+                                    // within it, so the previous tab's selection must
+                                    // not carry over and silently scope the next
+                                    // "Start" to it. Clearing it outright was the
+                                    // over-correction: arriving at a review flow with
+                                    // one open pull request and nothing selected makes
+                                    // you click a list of one to say the only thing it
+                                    // could have said.
+                                    let obvious = status_map
+                                        .get(&repo)
+                                        .map(|s| s.default_pr())
+                                        .unwrap_or_default();
+                                    move |_| {
+                                        selected_flow.set(id.clone());
+                                        selected_node.set(first.clone());
+                                        selected_pr.set(obvious.clone());
+                                        // Its step belongs to the flow just left.
+                                        drawer.set(None);
+                                    }
+                                },
+                                if !problems.is_empty() {
+                                    span { class: "flow-tab-warn", "\u{26a0}" }
+                                }
+                                "{label}"
+                                if running.read().iter().any(|(r, f, _)| r == &repo && f == &id) {
+                                    span { class: "flow-tab-dot" }
+                                }
+                            }
+                            button {
+                                class: "flow-tab-hide",
+                                title: "Hide \"{label}\" for {repo_list.iter().find(|r| r.path == repo).map(|r| r.label.clone()).unwrap_or_else(|| repo.clone())}",
+                                onclick: {
+                                    let repo = repo.clone();
+                                    let id = id.clone();
+                                    move |e: Event<MouseData>| {
+                                        e.stop_propagation();
+                                        confirm_hide.set(Some((repo.clone(), id.clone())));
+                                    }
+                                },
+                                "×"
+                            }
+                        }
+                    }
+                    // Always there, even with nothing hidden:
+                    // the × only appears on hover, so this is
+                    // how someone learns the strip is theirs
+                    // to edit at all.
+                    button {
+                        class: if showing_picker {
+                            "flow-tab-picker flow-tab-picker-on"
+                        } else {
+                            "flow-tab-picker"
+                        },
+                        title: "Choose which flows {label} shows",
+                        onclick: {
+                            let repo = repo.clone();
+                            move |_| {
+                                let open = picker_open.read().as_deref() == Some(repo.as_str());
+                                picker_open.set(if open { None } else { Some(repo.clone()) });
+                            }
+                        },
+                        if hidden_count > 0 && offered > 0 {
+                            "{hidden_count} hidden · {offered} more"
+                        } else if offered > 0 {
+                            "{offered} more"
+                        } else if hidden_count > 0 {
+                            "{hidden_count} hidden"
+                        } else {
+                            "\u{22ef}"
+                        }
+                    }
+                    if showing_picker {
+                        // Clicking anywhere else closes it; a
+                        // transparent backdrop is what makes
+                        // "anywhere else" mean the whole window.
+                        div {
+                            class: "flow-picker-backdrop",
+                            onclick: move |_| picker_open.set(None),
+                        }
+                        div {
+                            class: "flow-picker",
+                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                            div { class: "flow-picker-head", "Flows shown for {label}" }
+                            // Every flow in the book, checked or
+                            // not, so the choice is made against
+                            // the full list rather than by
+                            // remembering what was taken away.
+                            for (id, flow_label, problems) in listed.iter().cloned() {
+                                {
+                                    let shown = !hidden_here.contains(&id);
+                                    rsx! {
+                                        label {
+                                            key: "{id}",
+                                            class: if shown { "flow-picker-row" } else { "flow-picker-row flow-picker-row-off" },
+                                            title: if problems.is_empty() { String::new() } else { problems.join("\n") },
+                                            input {
+                                                r#type: "checkbox",
+                                                checked: shown,
+                                                onchange: {
+                                                    let repo = repo.clone();
+                                                    let id = id.clone();
+                                                    move |_| {
+                                                        if repo_flows.read().is_hidden(&repo, &id) {
+                                                            repo_flows.write().show(&repo, &id);
+                                                            store::save_repo_flows(&repo_flows.read());
+                                                        } else {
+                                                            hide_flow(&repo, &id);
+                                                        }
+                                                    }
+                                                },
+                                            }
+                                            if !problems.is_empty() {
+                                                span { class: "flow-tab-warn", "\u{26a0}" }
+                                            }
+                                            span { class: "flow-picker-label", "{flow_label}" }
+                                            if elsewhere.contains(&id) {
+                                                span {
+                                                    class: "flow-picker-hint",
+                                                    "only on other repositories — tick to add here"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            div { class: "flow-picker-note",
+                                "Only this repository is affected. Flows themselves are edited in Setup."
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
     if *setup_open.read() {
         return rsx! {
             Setup {
@@ -1281,6 +1803,20 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             }
                         },
                         if *global_trust.read() { "Trusting everything…" } else { "Trust all" }
+                    }
+                    div { class: "view-switch",
+                        button {
+                            class: if *run_view.read() { "view-switch-opt" } else { "view-switch-opt view-switch-on" },
+                            title: "Each step as a card, with the selected one's detail beside it",
+                            onclick: move |_| run_view.set(false),
+                            "List"
+                        }
+                        button {
+                            class: if *run_view.read() { "view-switch-opt view-switch-on" } else { "view-switch-opt" },
+                            title: "The selected repository's flow as a line that fills in while it runs",
+                            onclick: move |_| run_view.set(true),
+                            "Run"
+                        }
                     }
                     button {
                         class: "btn btn-ghost",
@@ -1431,6 +1967,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         }
                         selected_node.set(node_id);
                         selected_pr.set(pr_id);
+                        // A panel left open would show a step of the
+                        // repository you just left.
+                        drawer.set(None);
                     },
                     on_change_workspace: move |_| props.on_change_workspace.call(()),
                     width: *sidebar_w.read(),
@@ -1454,6 +1993,85 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             }
                         }
                     },
+                    Some(repo) if *run_view.read() => {
+                        let key: Key = (repo.clone(), flow_id.clone(), selected_pr.read().clone());
+                        let repo_label = repo_list.iter()
+                            .find(|r| r.path == repo)
+                            .map(|r| r.label.clone())
+                            .unwrap_or_else(|| repo.clone());
+                        let flow_label = current.as_ref().map(|f| f.label.clone()).unwrap_or_default();
+                        // Whether Play may start the flow, by the same rules
+                        // as the list view's Start button.
+                        let run_state = states_snapshot.get(&key).cloned().unwrap_or_default();
+                        let other_run = other_run_in(&running.read(), &repo, &key)
+                            .map(|other| busy_note(&flows, other))
+                            .or_else(|| {
+                                branches_busy
+                                    .read()
+                                    .as_ref()
+                                    .filter(|(r, _)| r == &repo)
+                                    .map(|(_, branch)| branch_busy_note(branch))
+                            });
+                        let can_run = probe::affordance(
+                            &flow_id,
+                            status_map.get(&repo),
+                            *probing.read() > 0,
+                            run_state.started,
+                            &key.2,
+                            &flow_problems,
+                        );
+                        let can_start = !running.read().contains(&key)
+                            && other_run.is_none()
+                            && can_run.enabled;
+                        let start_note = other_run.unwrap_or(can_run.reason);
+                        // The step whose panel is open, if it is still a step
+                        // of the flow on screen.
+                        let open_step = drawer.read().clone().filter(|id| graph.get(id).is_some());
+                        rsx! {
+                            RunView {
+                                can_start,
+                                start_note,
+                                on_start: move |_| begin(false),
+                                graph: graph.clone(),
+                                state: run_state.clone(),
+                                repo_label,
+                                flow_label,
+                                selected: selected_node.read().clone(),
+                                lenses: props.llm_config.read().lenses.clone(),
+                                gates: {
+                                    let status = status_map.get(&repo);
+                                    Gates::for_run(
+                                        &graph,
+                                        &run_state,
+                                        &selected_pr.read(),
+                                        status.map(|s| s.prs.as_slice()).unwrap_or_default(),
+                                        status.and_then(|s| s.pr.as_ref()),
+                                    )
+                                },
+                                // A step clicked on the map — or its pill, or
+                                // its reviewer spoke — opens its panel over
+                                // the map, where it is approved, retried or
+                                // read, without leaving the run.
+                                on_select: move |id: String| {
+                                    selected_node.set(id.clone());
+                                    drawer.set(Some(id));
+                                },
+                                panel_open: open_step.is_some(),
+                                flows: flow_strip,
+                                if let Some(node_id) = open_step {
+                                    div { class: "run-drawer", key: "{node_id}",
+                                        button {
+                                            class: "run-drawer-close",
+                                            title: "Close (Esc)",
+                                            onclick: move |_| drawer.set(None),
+                                            "\u{2715}"
+                                        }
+                                        {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(drawer))}
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Some(repo) => {
                         let pr_id = selected_pr.read().clone();
                         let key: Key = (repo.clone(), flow_id.clone(), pr_id.clone());
@@ -1520,28 +2138,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         // the one just opened, or the one just merged.
                         let pr_url = state.artifact("pr_url").to_string();
                         let finished = state.started && state.is_finished(&graph);
-
-                        let visible_tabs: Vec<(String, String, Vec<String>)> = listed
-                            .iter()
-                            .filter(|(id, _, _)| !hidden_here.contains(id))
-                            .cloned()
-                            .collect();
-                        let showing_picker = picker_open.read().as_deref() == Some(repo.as_str());
-                        // Counted against the book rather than the stored
-                        // list: an id left behind by a flow deleted in Setup
-                        // must not advertise "1 hidden" with nothing to show.
-                        // Flows made for other repositories are offers, not
-                        // something this one hid, so they are counted apart.
-                        let elsewhere: Vec<String> = listed
-                            .iter()
-                            .filter(|(id, _, _)| repo_flows.read().elsewhere_only(&repo, id))
-                            .map(|(id, _, _)| id.clone())
-                            .collect();
-                        let hidden_count = listed
-                            .iter()
-                            .filter(|(id, _, _)| hidden_here.contains(id) && !elsewhere.contains(id))
-                            .count();
-                        let offered = elsewhere.len();
 
                         rsx! {
                             div { class: "graph-col", style: "width: {middle_w}px;",
@@ -1719,159 +2315,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     }
                                 }
 
-                                div { class: "flow-tabs",
-                                    for (id, label, problems) in visible_tabs.iter().cloned() {
-                                        div {
-                                            key: "{id}",
-                                            class: match (id == flow_id, problems.is_empty()) {
-                                                (true, true) => "flow-tab flow-tab-on",
-                                                (true, false) => "flow-tab flow-tab-on flow-tab-broken",
-                                                (false, true) => "flow-tab",
-                                                (false, false) => "flow-tab flow-tab-broken",
-                                            },
-                                            button {
-                                                class: "flow-tab-main",
-                                                // The tab still selects: seeing why a flow is
-                                                // broken is the point of showing it.
-                                                title: if problems.is_empty() {
-                                                    String::new()
-                                                } else {
-                                                    problems.join("\n")
-                                                },
-                                                onclick: {
-                                                    let id = id.clone();
-                                                    let first = flows.get(&id)
-                                                        .map(|f| f.first_node())
-                                                        .unwrap_or_default();
-                                                    // A tab is a flow, not one particular PR review
-                                                    // within it, so the previous tab's selection must
-                                                    // not carry over and silently scope the next
-                                                    // "Start" to it. Clearing it outright was the
-                                                    // over-correction: arriving at a review flow with
-                                                    // one open pull request and nothing selected makes
-                                                    // you click a list of one to say the only thing it
-                                                    // could have said.
-                                                    let obvious = status_map
-                                                        .get(&repo)
-                                                        .map(|s| s.default_pr())
-                                                        .unwrap_or_default();
-                                                    move |_| {
-                                                        selected_flow.set(id.clone());
-                                                        selected_node.set(first.clone());
-                                                        selected_pr.set(obvious.clone());
-                                                    }
-                                                },
-                                                if !problems.is_empty() {
-                                                    span { class: "flow-tab-warn", "\u{26a0}" }
-                                                }
-                                                "{label}"
-                                                if running.read().iter().any(|(r, f, _)| r == &repo && f == &id) {
-                                                    span { class: "flow-tab-dot" }
-                                                }
-                                            }
-                                            button {
-                                                class: "flow-tab-hide",
-                                                title: "Hide \"{label}\" for {repo_list.iter().find(|r| r.path == repo).map(|r| r.label.clone()).unwrap_or_else(|| repo.clone())}",
-                                                onclick: {
-                                                    let repo = repo.clone();
-                                                    let id = id.clone();
-                                                    move |e: Event<MouseData>| {
-                                                        e.stop_propagation();
-                                                        confirm_hide.set(Some((repo.clone(), id.clone())));
-                                                    }
-                                                },
-                                                "×"
-                                            }
-                                        }
-                                    }
-                                    // Always there, even with nothing hidden:
-                                    // the × only appears on hover, so this is
-                                    // how someone learns the strip is theirs
-                                    // to edit at all.
-                                    button {
-                                        class: if showing_picker {
-                                            "flow-tab-picker flow-tab-picker-on"
-                                        } else {
-                                            "flow-tab-picker"
-                                        },
-                                        title: "Choose which flows {label} shows",
-                                        onclick: {
-                                            let repo = repo.clone();
-                                            move |_| {
-                                                let open = picker_open.read().as_deref() == Some(repo.as_str());
-                                                picker_open.set(if open { None } else { Some(repo.clone()) });
-                                            }
-                                        },
-                                        if hidden_count > 0 && offered > 0 {
-                                            "{hidden_count} hidden · {offered} more"
-                                        } else if offered > 0 {
-                                            "{offered} more"
-                                        } else if hidden_count > 0 {
-                                            "{hidden_count} hidden"
-                                        } else {
-                                            "\u{22ef}"
-                                        }
-                                    }
-                                    if showing_picker {
-                                        // Clicking anywhere else closes it; a
-                                        // transparent backdrop is what makes
-                                        // "anywhere else" mean the whole window.
-                                        div {
-                                            class: "flow-picker-backdrop",
-                                            onclick: move |_| picker_open.set(None),
-                                        }
-                                        div {
-                                            class: "flow-picker",
-                                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
-                                            div { class: "flow-picker-head", "Flows shown for {label}" }
-                                            // Every flow in the book, checked or
-                                            // not, so the choice is made against
-                                            // the full list rather than by
-                                            // remembering what was taken away.
-                                            for (id, flow_label, problems) in listed.iter().cloned() {
-                                                {
-                                                    let shown = !hidden_here.contains(&id);
-                                                    rsx! {
-                                                        label {
-                                                            key: "{id}",
-                                                            class: if shown { "flow-picker-row" } else { "flow-picker-row flow-picker-row-off" },
-                                                            title: if problems.is_empty() { String::new() } else { problems.join("\n") },
-                                                            input {
-                                                                r#type: "checkbox",
-                                                                checked: shown,
-                                                                onchange: {
-                                                                    let repo = repo.clone();
-                                                                    let id = id.clone();
-                                                                    move |_| {
-                                                                        if repo_flows.read().is_hidden(&repo, &id) {
-                                                                            repo_flows.write().show(&repo, &id);
-                                                                            store::save_repo_flows(&repo_flows.read());
-                                                                        } else {
-                                                                            hide_flow(&repo, &id);
-                                                                        }
-                                                                    }
-                                                                },
-                                                            }
-                                                            if !problems.is_empty() {
-                                                                span { class: "flow-tab-warn", "\u{26a0}" }
-                                                            }
-                                                            span { class: "flow-picker-label", "{flow_label}" }
-                                                            if elsewhere.contains(&id) {
-                                                                span {
-                                                                    class: "flow-picker-hint",
-                                                                    "only on other repositories — tick to add here"
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            div { class: "flow-picker-note",
-                                                "Only this repository is affected. Flows themselves are edited in Setup."
-                                            }
-                                        }
-                                    }
-                                }
+                                {flow_strip}
 
                                 // A tooltip on the tab is not enough once the
                                 // broken flow is the one you are looking at:
@@ -2040,156 +2484,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             }
 
                             div { class: "detail-col",
-                                DetailPane {
-                                    spec: graph.get(&node_id).cloned(),
-                                    run: state.runs.get(&node_id).cloned().unwrap_or_else(NodeRun::default),
-                                    diff: graph.get(&node_id).and_then(|spec| {
-                                        spec.writes.iter()
-                                            .find(|w| w.as_str() == "diff" || w.as_str() == "pr_diff")
-                                            .and_then(|key| state.artifacts.get(key).cloned())
-                                    }).or_else(|| {
-                                        // `merge` writes no diff of its own, but the one
-                                        // `pr_diff` already fetched earlier in this same
-                                        // run is exactly the code a conflict — or a
-                                        // decision to abandon — is about.
-                                        if node_id == "merge" {
-                                            state.artifacts.get("pr_diff").cloned()
-                                        } else {
-                                            None
-                                        }
-                                    }),
-                                    is_light: *is_light.read(),
-                                    run_started: state.started,
-                                    on_approve: {
-                                        let key = key.clone();
-                                        move |id: String| {
-                                            states.write().entry(key.clone()).or_default()
-                                                .decisions.insert(id, true);
-                                            approvals().notify_waiters();
-                                        }
-                                    },
-                                    on_reject: {
-                                        let key = key.clone();
-                                        move |id: String| {
-                                            states.write().entry(key.clone()).or_default()
-                                                .decisions.insert(id, false);
-                                            approvals().notify_waiters();
-                                        }
-                                    },
-                                    on_toggle: {
-                                        let key = key.clone();
-                                        move |(node, item): (String, String)| {
-                                            let mut w = states.write();
-                                            let entry = w.entry(key.clone()).or_default();
-                                            if let Some(run) = entry.runs.get_mut(&node) {
-                                                if let Some(found) =
-                                                    run.items.iter_mut().find(|i| i.key == item)
-                                                {
-                                                    found.included = !found.included;
-                                                }
-                                            }
-                                        }
-                                    },
-                                    on_remedy: {
-                                        let key = key.clone();
-                                        let retry_graph = graph.clone();
-                                        move |(node, index): (String, usize)| {
-                                            let key = key.clone();
-                                            let retry_graph = retry_graph.clone();
-                                            let found = states.read().get(&key)
-                                                .and_then(|s| s.runs.get(&node))
-                                                .and_then(|r| r.remedies.get(index).cloned());
-                                            let Some(remedy) = found else { return };
-
-                                            set_remedy(states, &key, &node, index, |r| {
-                                                r.running = true;
-                                                r.output.clear();
-                                            });
-
-                                            spawn(async move {
-                                                // In the repo: `gh pr close 11` from anywhere
-                                                // else closes #11 of whichever repo that is.
-                                                let (ok, output) = git::run_streaming(
-                                                    &remedy.program,
-                                                    &remedy.args,
-                                                    Some(&key.0),
-                                                    "",
-                                                    &mut |_| {},
-                                                )
-                                                .await;
-                                                set_remedy(states, &key, &node, index, |r| {
-                                                    r.running = false;
-                                                    r.done = ok;
-                                                    r.output = if output.is_empty() && ok {
-                                                        "done".into()
-                                                    } else {
-                                                        output.clone()
-                                                    };
-                                                });
-                                                if ok && !remedy.sets.is_empty() {
-                                                    let mut w = states.write();
-                                                    let entry = w.entry(key.clone()).or_default();
-                                                    for (k, v) in &remedy.sets {
-                                                        entry.artifacts.insert(k.clone(), v.clone());
-                                                    }
-                                                }
-                                                if ok && remedy.retry_after {
-                                                    // A fix that unblocked this step is only
-                                                    // useful if the run moves on, so re-queue it.
-                                                    retry_node(
-                                                        states, running, selected_node,
-                                                        selected_repo, selected_flow, selected_pr,
-                                                        llm_config, statuses, retry_graph,
-                                                        key, &node, trusted,
-                                                    );
-                                                } else if ok {
-                                                    // A terminal remedy resolves the failure by
-                                                    // abandoning the step, not by unblocking it —
-                                                    // retrying would just fail again differently.
-                                                    states.write().remove(&key);
-                                                    running.write().remove(&key);
-                                                    reprobe(key.0.clone(), statuses);
-                                                }
-                                            });
-                                        }
-                                    },
-                                    on_retry: {
-                                        let key = key.clone();
-                                        let retry_graph = graph.clone();
-                                        move |node: String| {
-                                            retry_node(
-                                                states, running, selected_node,
-                                                selected_repo, selected_flow, selected_pr,
-                                                llm_config, statuses, retry_graph.clone(),
-                                                key.clone(), &node, trusted,
-                                            );
-                                        }
-                                    },
-                                    on_skip: {
-                                        let key = key.clone();
-                                        let skip_graph = graph.clone();
-                                        move |node: String| {
-                                            skip_node(
-                                                states, running, selected_node,
-                                                selected_repo, selected_flow, selected_pr,
-                                                llm_config, statuses, skip_graph.clone(),
-                                                key.clone(), &node, trusted,
-                                            );
-                                        }
-                                    },
-                                    on_cancel: {
-                                        let key = key.clone();
-                                        move |_| {
-                                            states.write().remove(&key);
-                                            running.write().remove(&key);
-                                            // A run parked at an approval
-                                            // hears about it now, not on its
-                                            // next timeout.
-                                            approvals().notify_waiters();
-                                            reprobe(key.0.clone(), statuses);
-                                        }
-                                    },
-                                }
+                                {step_detail(wiring, key.clone(), graph.clone(), state.clone(), node_id.clone(), *is_light.read(), None)}
                             }
                         }
                     }
@@ -2542,6 +2837,30 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_opens_on_the_first_repository_in_the_list_with_work_left() {
+        let list = vec![
+            ("a".to_string(), probe::Wants::Nothing),
+            ("b".to_string(), probe::Wants::Release),
+            ("c".to_string(), probe::Wants::Resolve),
+        ];
+        // c is more urgent, but b comes first in the list.
+        assert_eq!(first_with_work(list).map(|(p, _)| p), Some("b".to_string()));
+    }
+
+    #[test]
+    fn checks_still_running_is_not_work_left() {
+        let list = vec![
+            ("a".to_string(), probe::Wants::Wait),
+            ("b".to_string(), probe::Wants::Commit),
+        ];
+        assert_eq!(first_with_work(list).map(|(p, _)| p), Some("b".to_string()));
+        assert_eq!(
+            first_with_work(vec![("a".to_string(), probe::Wants::Nothing)]),
+            None
+        );
+    }
 
     fn commit_and_pr() -> flowdef::FlowDef {
         FlowBook::defaults().get("commit_and_pr").unwrap().clone()

@@ -34,6 +34,11 @@ pub enum Step {
     PrStatus,
     PrDiff,
     Analyse,
+    /// The same review, by a second model, for a second opinion.
+    SecondOpinion,
+    /// Focused reviews — alignment, security, architecture — each turned on
+    /// separately in Settings.
+    Lenses,
     Merge,
     Sync,
     // ── Release ──
@@ -321,6 +326,13 @@ pub struct RunState {
     /// and skips, so whatever is driving a run can tell that it was cancelled
     /// — or cancelled and started again — and stop rather than carry on.
     pub run: u64,
+    /// How many times each step has been declined in this run. Kept through
+    /// retries — that is the point of it: a step approved after being sent
+    /// back twice was approved in round three, and the run view says so.
+    pub rejections: BTreeMap<NodeId, u32>,
+    /// Every status change, in order. What the run view replays: the run as
+    /// it happened, step by step, without needing to have been watching.
+    pub history: Vec<(NodeId, NodeStatus)>,
 }
 
 impl RunState {
@@ -338,15 +350,64 @@ impl RunState {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             },
+            rejections: BTreeMap::new(),
+            history: vec![],
         }
+    }
+
+    /// A person declined this step: it stops, everything behind it is
+    /// blocked, and the round is counted.
+    pub fn reject(&mut self, id: &str, graph: &Graph) {
+        self.set_status(id, NodeStatus::Rejected);
+        self.runs.entry(id.to_string()).or_default().summary = "declined — nothing was run".into();
+        *self.rejections.entry(id.to_string()).or_default() += 1;
+        self.propagate_block(graph);
     }
 
     pub fn status(&self, id: &str) -> NodeStatus {
         self.runs.get(id).map(|r| r.status).unwrap_or_default()
     }
 
+    /// The one way a status changes, so that every change is in `history`.
     pub fn set_status(&mut self, id: &str, status: NodeStatus) {
-        self.runs.entry(id.to_string()).or_default().status = status;
+        let run = self.runs.entry(id.to_string()).or_default();
+        if run.status != status {
+            self.history.push((id.to_string(), status));
+        }
+        run.status = status;
+    }
+
+    /// The step that most recently stopped to ask for approval and is still
+    /// waiting, with where in `history` it started waiting. That position is
+    /// what tells one approval from the next of the same step after a retry.
+    pub fn newest_approval(&self) -> Option<(String, usize)> {
+        self.history
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, (id, status))| {
+                *status == NodeStatus::AwaitingApproval
+                    && self.status(id) == NodeStatus::AwaitingApproval
+            })
+            .map(|(at, (id, _))| (id.clone(), at))
+    }
+
+    /// This run as it stood after the first `upto` changes in its history:
+    /// every status rewound and replayed, and the rejection counts with them.
+    /// Everything else — logs, artifacts — is left as it is now.
+    pub fn replayed(&self, upto: usize) -> RunState {
+        let mut then = self.clone();
+        for run in then.runs.values_mut() {
+            run.status = NodeStatus::Pending;
+        }
+        then.rejections.clear();
+        for (id, status) in self.history.iter().take(upto) {
+            then.runs.entry(id.clone()).or_default().status = *status;
+            if *status == NodeStatus::Rejected {
+                *then.rejections.entry(id.clone()).or_default() += 1;
+            }
+        }
+        then
     }
 
     /// This state as `node` sees it: every bound input replaced by the value
@@ -431,13 +492,13 @@ impl RunState {
     pub fn retry_from(&mut self, id: &str, graph: &Graph) {
         self.decisions.remove(id);
         if let Some(run) = self.runs.get_mut(id) {
-            run.status = NodeStatus::Pending;
             run.summary.clear();
             run.log.clear();
             run.proposal.clear();
             run.preview_diff.clear();
             run.items.clear();
             run.held.clear();
+            self.set_status(id, NodeStatus::Pending);
         }
         // Free every blocked node, then work out from scratch which of them
         // are still blocked. The blanket un-block on its own is wrong: with
@@ -460,9 +521,9 @@ impl RunState {
     /// run with no account of why the step did not run.
     pub fn bypass(&mut self, id: &str, graph: &Graph) {
         self.decisions.remove(id);
+        self.set_status(id, NodeStatus::Bypassed);
         {
             let run = self.runs.entry(id.to_string()).or_default();
-            run.status = NodeStatus::Bypassed;
             run.summary = "skipped — the run was told to carry on without it".into();
             run.proposal.clear();
             run.preview_diff.clear();
@@ -586,6 +647,80 @@ mod tests {
         s.set_status("a", NodeStatus::Rejected);
         s.propagate_block(&g);
         assert!(s.is_finished(&g));
+    }
+
+    #[test]
+    fn a_step_sent_back_and_retried_remembers_its_round() {
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        s.reject("a", &g);
+        s.retry_from("a", &g);
+        s.reject("a", &g);
+        s.retry_from("a", &g);
+        assert_eq!(s.status("a"), NodeStatus::Pending);
+        assert_eq!(s.rejections.get("a"), Some(&2));
+        assert_eq!(s.rejections.get("b"), None);
+    }
+
+    #[test]
+    fn every_status_change_is_recorded_once_in_order() {
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        s.set_status("a", NodeStatus::Running);
+        s.set_status("a", NodeStatus::Running);
+        s.set_status("a", NodeStatus::Done);
+        s.reject("b", &g);
+        s.retry_from("b", &g);
+        let seen: Vec<(&str, NodeStatus)> = s
+            .history
+            .iter()
+            .map(|(id, st)| (id.as_str(), *st))
+            .collect();
+        assert_eq!(
+            &seen[..4],
+            &[
+                ("a", NodeStatus::Running),
+                ("a", NodeStatus::Done),
+                ("b", NodeStatus::Rejected),
+                ("d", NodeStatus::Blocked),
+            ]
+        );
+        assert!(seen.contains(&("b", NodeStatus::Pending)));
+    }
+
+    #[test]
+    fn the_newest_approval_is_the_latest_step_still_waiting() {
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        assert_eq!(s.newest_approval(), None);
+        s.set_status("b", NodeStatus::AwaitingApproval);
+        s.set_status("c", NodeStatus::AwaitingApproval);
+        assert_eq!(s.newest_approval(), Some(("c".to_string(), 1)));
+        // Answered, it no longer counts; the one still waiting does.
+        s.set_status("c", NodeStatus::Running);
+        assert_eq!(s.newest_approval(), Some(("b".to_string(), 0)));
+        // Asked again after a retry: a new approval, at a new place.
+        s.set_status("b", NodeStatus::Rejected);
+        s.set_status("b", NodeStatus::Pending);
+        s.set_status("b", NodeStatus::AwaitingApproval);
+        assert_eq!(s.newest_approval(), Some(("b".to_string(), 5)));
+    }
+
+    #[test]
+    fn replaying_part_of_a_run_rewinds_statuses_and_rounds() {
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        s.set_status("a", NodeStatus::Done);
+        s.reject("b", &g);
+        s.retry_from("b", &g);
+        s.set_status("b", NodeStatus::Done);
+        let start = s.replayed(0);
+        assert_eq!(start.status("a"), NodeStatus::Pending);
+        assert!(start.rejections.is_empty());
+        let after_rejection = s.replayed(2);
+        assert_eq!(after_rejection.status("b"), NodeStatus::Rejected);
+        assert_eq!(after_rejection.rejections.get("b"), Some(&1));
+        assert_eq!(s.replayed(s.history.len()).status("b"), NodeStatus::Done);
     }
 
     #[test]

@@ -48,20 +48,34 @@ impl Layout {
 /// Longest path from a root. Cycle-safe: the pass runs at most once per node,
 /// so anything caught in a loop simply stops improving rather than hanging.
 fn layers(flow: &FlowDef) -> HashMap<String, usize> {
-    let mut layer: HashMap<String, usize> =
-        flow.nodes.iter().map(|n| (n.id.clone(), 0usize)).collect();
+    layers_of(
+        flow.nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.deps.as_slice())),
+    )
+}
 
-    for _ in 0..flow.nodes.len() {
+/// The same, for anything that is a list of ids and their dependencies — the
+/// run view lays out a `Graph` rather than a `FlowDef`.
+pub fn layers_of<'a>(
+    nodes: impl Iterator<Item = (&'a str, &'a [String])>,
+) -> HashMap<String, usize> {
+    let nodes: Vec<(&str, &[String])> = nodes.collect();
+    let mut layer: HashMap<String, usize> = nodes
+        .iter()
+        .map(|(id, _)| (id.to_string(), 0usize))
+        .collect();
+
+    for _ in 0..nodes.len() {
         let mut changed = false;
-        for node in &flow.nodes {
-            let want = node
-                .deps
+        for (id, deps) in &nodes {
+            let want = deps
                 .iter()
                 .filter_map(|d| layer.get(d))
                 .map(|l| l + 1)
                 .max()
                 .unwrap_or(0);
-            if let Some(current) = layer.get_mut(&node.id) {
+            if let Some(current) = layer.get_mut(*id) {
                 if want > *current {
                     *current = want;
                     changed = true;

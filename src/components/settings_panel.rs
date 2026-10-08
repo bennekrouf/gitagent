@@ -4,6 +4,7 @@
 use dioxus::prelude::*;
 
 use crate::services::llm::{self, LlmConfig, ProviderKind, REMOTES};
+use crate::services::review::LENSES;
 use crate::services::store;
 use crate::telemetry;
 
@@ -18,6 +19,8 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     let mut cfg = props.llm_config;
     let mut probe_result = use_signal(|| Option::<Result<String, String>>::None);
     let mut probing = use_signal(|| false);
+    let mut second_probe = use_signal(|| Option::<Result<String, String>>::None);
+    let mut second_probing = use_signal(|| false);
     // Read once when the panel opens; the buttons below write straight through
     // to disk, so this only has to follow what was just clicked.
     let mut sharing = use_signal(telemetry::shared);
@@ -33,6 +36,17 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
         });
     };
 
+    let test_second = move |_| {
+        let snapshot = cfg.read().second_config();
+        second_probing.set(true);
+        second_probe.set(None);
+        spawn(async move {
+            let result = llm::probe(&snapshot).await;
+            second_probe.set(Some(result));
+            second_probing.set(false);
+        });
+    };
+
     let close = move |_| {
         store::save_settings(&cfg.read());
         props.on_close.call(());
@@ -41,6 +55,8 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     let current = cfg.read().clone();
     let preset = current.preset();
     let key_present = current.remote_key().is_some();
+    let second = current.second.clone();
+    let second_cfg = current.second_config();
 
     rsx! {
         div { class: "modal-backdrop", onclick: close,
@@ -180,6 +196,109 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                         Some(Ok(msg)) => rsx! { div { class: "probe probe-ok", "{msg}" } },
                         Some(Err(msg)) => rsx! { div { class: "probe probe-bad", "{msg}" } },
                         None => rsx! {},
+                    }
+
+                    // A second model that reviews every pull request again,
+                    // for a second opinion. Off unless chosen.
+                    div { class: "field-row field-head", span { "Second reviewer" } }
+                    div { class: "field-row",
+                        for kind in [ProviderKind::Off, ProviderKind::Ollama, ProviderKind::Remote] {
+                            button {
+                                key: "second-{kind:?}",
+                                class: if second.kind == kind { "seg seg-on" } else { "seg" },
+                                onclick: move |_| {
+                                    cfg.write().second.kind = kind;
+                                    second_probe.set(None);
+                                },
+                                if kind == ProviderKind::Off { "none" } else { "{kind.label()}" }
+                            }
+                        }
+                    }
+                    if second.kind == ProviderKind::Ollama {
+                        label { class: "field",
+                            span { "Model" }
+                            input {
+                                value: "{second.ollama_model}",
+                                placeholder: "{current.ollama_model}",
+                                oninput: move |e| cfg.write().second.ollama_model = e.value(),
+                            }
+                        }
+                    } else if second.kind == ProviderKind::Remote {
+                        label { class: "field",
+                            span { "Provider" }
+                            select {
+                                value: "{second.remote}",
+                                onchange: move |e| {
+                                    let mut w = cfg.write();
+                                    w.second.remote = e.value();
+                                    w.second.remote_model.clear();
+                                    second_probe.set(None);
+                                },
+                                for entry in REMOTES.iter() {
+                                    option {
+                                        key: "{entry.key}",
+                                        value: "{entry.key}",
+                                        selected: second.remote == entry.key,
+                                        "{entry.label}"
+                                        if llm::api_key(entry.env).is_none() { " (no key)" }
+                                    }
+                                }
+                            }
+                        }
+                        label { class: "field",
+                            span { "Model" }
+                            input {
+                                value: "{second.remote_model}",
+                                placeholder: "{second_cfg.preset().model}",
+                                oninput: move |e| cfg.write().second.remote_model = e.value(),
+                            }
+                        }
+                    }
+                    if second.kind != ProviderKind::Off {
+                        div { class: "field-row",
+                            button {
+                                class: "btn",
+                                disabled: *second_probing.read(),
+                                onclick: test_second,
+                                if *second_probing.read() { "Testing…" } else { "Test second reviewer" }
+                            }
+                        }
+                        match second_probe.read().clone() {
+                            Some(Ok(msg)) => rsx! { div { class: "probe probe-ok", "{msg}" } },
+                            Some(Err(msg)) => rsx! { div { class: "probe probe-bad", "{msg}" } },
+                            None => rsx! {},
+                        }
+                    }
+                    p { class: "field-note",
+                        "Reviews every pull request a second time, with a different model, \
+                         beside the first review. A second pair of eyes catches what one model \
+                         misses, at the cost of one more model call per review. Its findings \
+                         show at the merge, and stop a trusted run like the first review's do."
+                    }
+
+                    // Focused reviews, one switch each: every one is another
+                    // model call per review, so each is chosen on its own.
+                    div { class: "field-row field-head", span { "Focused reviews" } }
+                    div { class: "lens-list",
+                        for lens in LENSES {
+                            label { key: "{lens.key()}", class: "lens-row",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: current.lenses.is_on(lens.key()),
+                                    onchange: move |e| cfg.write().lenses.set(lens.key(), e.checked()),
+                                }
+                                div { class: "lens-text",
+                                    div { class: "lens-name", "{lens.label()}" }
+                                    div { class: "lens-about", "{lens.about()}" }
+                                }
+                            }
+                        }
+                    }
+                    p { class: "field-note",
+                        "Each one reviews every pull request again with the main model, looking \
+                         for one thing only. One more model call per review for each, run one \
+                         after another, so on a local model they add up. Their findings show at \
+                         the merge, and stop a trusted run like the first review's do."
                     }
 
                     // Only in a build that can send anything: a switch that
