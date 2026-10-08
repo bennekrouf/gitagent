@@ -377,17 +377,18 @@ impl RunState {
         run.status = status;
     }
 
-    /// The step that most recently stopped to ask for approval and is still
-    /// waiting, with where in `history` it started waiting. That position is
-    /// what tells one approval from the next of the same step after a retry.
-    pub fn newest_approval(&self) -> Option<(String, usize)> {
+    /// The step that most recently came to need a person and still does —
+    /// one waiting for approval, or one that failed — with where in `history`
+    /// that happened. That position is what tells one approval or failure
+    /// from the next of the same step after a retry.
+    pub fn newest_for_a_person(&self) -> Option<(String, usize)> {
         self.history
             .iter()
             .enumerate()
             .rev()
             .find(|(_, (id, status))| {
-                *status == NodeStatus::AwaitingApproval
-                    && self.status(id) == NodeStatus::AwaitingApproval
+                matches!(status, NodeStatus::AwaitingApproval | NodeStatus::Failed)
+                    && self.status(id) == *status
             })
             .map(|(at, (id, _))| (id.clone(), at))
     }
@@ -692,18 +693,30 @@ mod tests {
     fn the_newest_approval_is_the_latest_step_still_waiting() {
         let g = diamond();
         let mut s = RunState::fresh(&g);
-        assert_eq!(s.newest_approval(), None);
+        assert_eq!(s.newest_for_a_person(), None);
         s.set_status("b", NodeStatus::AwaitingApproval);
         s.set_status("c", NodeStatus::AwaitingApproval);
-        assert_eq!(s.newest_approval(), Some(("c".to_string(), 1)));
+        assert_eq!(s.newest_for_a_person(), Some(("c".to_string(), 1)));
         // Answered, it no longer counts; the one still waiting does.
         s.set_status("c", NodeStatus::Running);
-        assert_eq!(s.newest_approval(), Some(("b".to_string(), 0)));
+        assert_eq!(s.newest_for_a_person(), Some(("b".to_string(), 0)));
         // Asked again after a retry: a new approval, at a new place.
         s.set_status("b", NodeStatus::Rejected);
         s.set_status("b", NodeStatus::Pending);
         s.set_status("b", NodeStatus::AwaitingApproval);
-        assert_eq!(s.newest_approval(), Some(("b".to_string(), 5)));
+        assert_eq!(s.newest_for_a_person(), Some(("b".to_string(), 5)));
+    }
+
+    #[test]
+    fn a_step_that_failed_needs_a_person_until_it_is_retried() {
+        let g = diamond();
+        let mut s = RunState::fresh(&g);
+        s.set_status("a", NodeStatus::AwaitingApproval);
+        s.set_status("a", NodeStatus::Running);
+        s.set_status("a", NodeStatus::Failed);
+        assert_eq!(s.newest_for_a_person(), Some(("a".to_string(), 2)));
+        s.retry_from("a", &g);
+        assert_eq!(s.newest_for_a_person(), None);
     }
 
     #[test]

@@ -17,6 +17,28 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- In the Run view, a step that fails opens its panel on its own too, with the
+  error and its Retry, Skip and Cancel buttons — even in a trusted run, which
+  stops at a failure. It stays open until you retry, skip or close it.
+- The Run view's step panel slides in and out smoothly, and the map moves
+  aside and back with it, instead of the panel vanishing the moment it closes.
+
+### Fixed
+
+- GitAgent no longer runs your GitHub account out of its hourly API budget.
+  Checking each repository asked GitHub for every commit of every open pull
+  request, which cost about fifteen times more than everything else it needs,
+  so a few launches checking a few dozen repositories used up the hour — and
+  then every `gh` call failed with "API rate limit already exceeded", in
+  GitAgent and anything else on the account. Checks now cost a fraction of
+  that, and the home screen and the folder you open from it share their
+  results for two minutes instead of checking the same repositories twice.
+  Pull request cards no longer show a commit count.
+
 ## [0.1.85] - 2026-10-08
 
 ### Added
