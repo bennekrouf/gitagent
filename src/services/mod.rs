@@ -16,5 +16,6 @@ pub mod release;
 pub mod remote;
 pub mod review;
 pub mod store;
+pub mod testprogress;
 pub mod testsuite;
 pub mod trusted;

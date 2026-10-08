@@ -229,6 +229,45 @@ fn merge(state: &RunState) -> Verdict {
             if findings == 1 { "it" } else { "them" },
         ));
     }
+    // A focused review that ran and found something stops it just the same.
+    for lens in crate::services::review::LENSES {
+        let verdict = state.artifact(&format!("{}_verdict", lens.key()));
+        let found: usize = state
+            .artifact(&format!("{}_finding_count", lens.key()))
+            .parse()
+            .unwrap_or(0);
+        if verdict == "risky" || found > 0 {
+            return Verdict::Hold(format!(
+                "The {} review {}. A trusted run stops here so you can read it before \
+                 this is merged.",
+                lens.label().to_lowercase(),
+                if verdict == "risky" {
+                    "called this change risky".to_string()
+                } else {
+                    format!("found {found} problem{}", if found == 1 { "" } else { "s" })
+                },
+            ));
+        }
+    }
+    // A second opinion is optional — none chosen is no evidence either way —
+    // but when one was given it counts as much as the first.
+    let second = state.artifact("second_verdict");
+    let second_findings: usize = state.artifact("second_finding_count").parse().unwrap_or(0);
+    if second == "risky" || second_findings > 0 {
+        return Verdict::Hold(format!(
+            "The second opinion ({}) {}. A trusted run stops here so you can read it before \
+             this is merged.",
+            state.artifact("second_model"),
+            if second == "risky" {
+                "called this change risky".to_string()
+            } else {
+                format!(
+                    "found {second_findings} possible regression{}",
+                    if second_findings == 1 { "" } else { "s" }
+                )
+            },
+        ));
+    }
 
     match checks {
         "passing" => Verdict::Approve,
@@ -705,6 +744,40 @@ mod tests {
     fn a_clean_merge_is_clicked_through() {
         let clean = state("looks_safe", "0", "passing");
         assert_eq!(decide(&node(Step::Merge), &clean), Verdict::Approve);
+    }
+
+    #[test]
+    fn a_second_opinion_with_findings_stops_the_merge_too() {
+        let mut s = state("looks_safe", "0", "passing");
+        assert_eq!(decide(&node(Step::Merge), &s), Verdict::Approve);
+        s.artifacts
+            .insert("second_verdict".into(), "worth_a_look".into());
+        s.artifacts
+            .insert("second_finding_count".into(), "2".into());
+        s.artifacts
+            .insert("second_model".into(), "deepseek-chat".into());
+        let held = decide(&node(Step::Merge), &s);
+        assert!(held.reason().unwrap().contains("deepseek-chat"));
+    }
+
+    #[test]
+    fn a_focused_review_with_findings_stops_the_merge() {
+        let mut s = state("looks_safe", "0", "passing");
+        s.artifacts
+            .insert("security_verdict".into(), "worth_a_look".into());
+        s.artifacts
+            .insert("security_finding_count".into(), "1".into());
+        let held = decide(&node(Step::Merge), &s);
+        assert!(held
+            .reason()
+            .unwrap()
+            .contains("security review found 1 problem"));
+    }
+
+    #[test]
+    fn no_second_opinion_is_no_reason_to_stop() {
+        let s = state("looks_safe", "0", "passing");
+        assert_eq!(decide(&node(Step::Merge), &s), Verdict::Approve);
     }
 
     #[test]

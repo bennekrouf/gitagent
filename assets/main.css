@@ -897,6 +897,15 @@ body {
     border: 1px solid var(--border); border-radius: 6px;
 }
 .field input:focus { outline: none; border-color: var(--green); }
+.field select {
+    font-family: var(--mono); font-size: 12px;
+    padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg0); color: var(--text1);
+}
+.field select:focus { outline: none; border-color: var(--green); }
+/* A heading between groups of settings in one modal. */
+.field-head { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border2); }
+.field-head span { font-size: 12px; font-weight: 600; color: var(--text1); }
 .field-row { display: flex; gap: 8px; }
 .field-row .field-grow { flex: 1; min-width: 0; }
 .field-note { font-size: 11px; color: var(--text3); line-height: 1.6; }
@@ -1253,3 +1262,381 @@ button.update-banner-link {
     padding: 3px 9px; font-size: 11px; text-transform: none; letter-spacing: 0;
 }
 .repo-refresh:disabled { opacity: 0.6; cursor: default; }
+
+/* ── List / Run switch in the top bar ─────────────────────────────── */
+.view-switch {
+    display: inline-flex;
+    border: 1px solid var(--border); border-radius: 7px;
+    overflow: hidden;
+}
+.view-switch-opt {
+    font-family: var(--mono); font-size: 12px;
+    padding: 7px 12px;
+    background: transparent; color: var(--text2);
+    border: none; cursor: pointer;
+}
+.view-switch-opt + .view-switch-opt { border-left: 1px solid var(--border); }
+.view-switch-opt:hover { color: var(--text1); background: var(--bg2); }
+.view-switch-on, .view-switch-on:hover { background: var(--bg2); color: var(--green); }
+
+/* ── Run view: the flow as a line that fills in ───────────────────── */
+.run-view {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column;
+    background: var(--bg0);
+}
+.run-head {
+    display: flex; align-items: center; gap: 16px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border2);
+    flex-shrink: 0;
+}
+.run-head-main { flex: 1; min-width: 0; }
+.run-title {
+    font-size: 13px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.run-sub { display: flex; gap: 12px; font-size: 11px; color: var(--text2); margin-top: 2px; }
+.run-count { color: var(--text3); }
+.run-needs { color: var(--yellow); }
+.run-legend { display: flex; gap: 14px; font-size: 11px; color: var(--text3); flex-shrink: 0; }
+.run-key::before {
+    content: ''; display: inline-block;
+    width: 16px; height: 3px; border-radius: 2px;
+    margin-right: 6px; vertical-align: middle;
+}
+.run-key-moving::before  { background: var(--blue); }
+.run-key-back::before    { background: var(--orange); }
+.run-key-arrived::before { background: var(--green); }
+
+.run-canvas { flex: 1; min-height: 0; overflow: auto; }
+.run-svg { display: block; }
+.run-foot {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border2); flex-shrink: 0;
+}
+/* One row that scrolls sideways rather than wrapping: a long flow keeps its
+   pills in reading order instead of folding into a second line. */
+.run-stages {
+    display: flex; gap: 8px; min-width: 0;
+    overflow-x: auto; scrollbar-width: none;
+    /* The scrollbar is hidden, so the edge fades instead to say there is
+       more; the padding lets the last pill scroll clear of the fade. */
+    padding-right: 36px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+.run-stages::-webkit-scrollbar { display: none; }
+.run-foot-hint { font-size: 11px; color: var(--text3); white-space: nowrap; flex-shrink: 0; }
+
+.run-stage {
+    display: inline-flex; align-items: center; gap: 8px;
+    flex-shrink: 0;
+    padding: 5px 13px 5px 5px;
+    font-family: var(--mono); font-size: 12px; color: var(--text3);
+    background: transparent;
+    border: 1px solid var(--border); border-radius: 999px;
+    cursor: pointer;
+    transition: border-color 0.3s ease, color 0.3s ease, background 0.3s ease;
+}
+.run-stage:hover { color: var(--text1); border-color: var(--text3); }
+.run-stage-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    font-size: 11px; font-weight: 700;
+    background: var(--bg2); color: var(--text3);
+    transition: background 0.3s ease, color 0.3s ease;
+}
+.run-stage-name { white-space: nowrap; }
+
+.run-stage-done, .run-stage-running, .run-stage-awaiting,
+.run-stage-failed, .run-stage-rejected { color: var(--text1); }
+.run-stage-done     .run-stage-num { background: var(--green);  color: var(--bg0); }
+.run-stage-running  .run-stage-num { background: var(--blue);   color: var(--bg0); }
+.run-stage-awaiting .run-stage-num { background: var(--yellow); color: var(--bg0); }
+.run-stage-failed   .run-stage-num { background: var(--red);    color: var(--bg0); }
+.run-stage-rejected .run-stage-num { background: var(--orange); color: var(--bg0); }
+/* The step the run is at gets the outline, as the station on the map does. */
+.run-stage-running  { border-color: var(--blue);   background: var(--bg1); }
+.run-stage-awaiting { border-color: var(--yellow); background: var(--bg1); }
+.run-stage-skipped, .run-stage-blocked { border-style: dashed; }
+.run-stage-on { box-shadow: inset 0 0 0 1px var(--text2); }
+
+.run-rail { stroke: var(--border); stroke-width: 7; stroke-linecap: round; opacity: 0.6; }
+/* pathLength="1" on the path, so a dash of 1 is the whole track whatever its
+   real length: offset 1 is empty, 0 is full. */
+.run-fill {
+    stroke-width: 7; stroke-linecap: round;
+    stroke-dasharray: 1; stroke-dashoffset: 1;
+    transition: stroke 0.4s ease;
+}
+@keyframes run-fill { to { stroke-dashoffset: 0; } }
+.run-fill-moving  { stroke: var(--blue); }
+.run-fill-arrived { stroke: var(--green); }
+.run-fill-back    { stroke: var(--orange); }
+.run-fill-failed  { stroke: var(--red); }
+.run-fill-idle    { stroke: var(--text3); opacity: 0.5; }
+
+/* Approach stops short of the station — 0.12 of the track left — and Finish
+   closes that gap. Draw is a track seen already settled, drawn whole. The head
+   dot below uses the same durations and easings so it stays on the tip. */
+.run-phase-approach { animation: run-approach calc(1.4s / var(--run-speed, 1)) ease-out forwards; }
+.run-phase-finish   { stroke-dashoffset: 0.12; animation: run-finish calc(0.6s / var(--run-speed, 1)) ease-in forwards; }
+.run-phase-draw     { animation: run-fill calc(0.9s / var(--run-speed, 1)) ease-out forwards; }
+@keyframes run-approach { to { stroke-dashoffset: 0.12; } }
+@keyframes run-finish   { from { stroke-dashoffset: 0.12; } to { stroke-dashoffset: 0; } }
+
+/* The head: one zero-length dash with a round cap is a dot, and a dashoffset
+   of -p puts it at p along the track. */
+.run-dot {
+    stroke-width: 15; stroke-linecap: round;
+    stroke-dasharray: 0 2;
+    pointer-events: none;
+    transition: stroke 0.4s ease;
+}
+.run-dot-moving  { stroke: var(--blue); }
+.run-dot-arrived { stroke: var(--green); }
+.run-dot-back    { stroke: var(--orange); }
+.run-dot-failed  { stroke: var(--red); }
+.run-dot-idle    { stroke: var(--text3); }
+.run-dot-approach {
+    animation:
+        run-dot-approach calc(1.4s / var(--run-speed, 1)) ease-out forwards,
+        run-dot-wait calc(1.6s / var(--run-speed, 1)) ease-in-out calc(1.4s / var(--run-speed, 1)) infinite;
+}
+.run-dot-finish {
+    stroke-dashoffset: -0.88;
+    animation: run-dot-finish calc(0.6s / var(--run-speed, 1)) ease-in forwards, run-dot-out calc(0.25s / var(--run-speed, 1)) ease calc(0.6s / var(--run-speed, 1)) forwards;
+}
+.run-dot-draw {
+    animation: run-dot-draw calc(0.9s / var(--run-speed, 1)) ease-out forwards, run-dot-out calc(0.25s / var(--run-speed, 1)) ease calc(0.9s / var(--run-speed, 1)) forwards;
+}
+.run-dot-stop { stroke-dashoffset: -0.88; animation: run-dot-out calc(0.4s / var(--run-speed, 1)) ease forwards; }
+@keyframes run-dot-approach { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -0.88; } }
+@keyframes run-dot-finish   { from { stroke-dashoffset: -0.88; } to { stroke-dashoffset: -1; } }
+@keyframes run-dot-draw     { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -1; } }
+@keyframes run-dot-out      { to { opacity: 0; } }
+/* Waiting at the signal: the dot breathes, so a run parked on a step still
+   reads as alive. */
+@keyframes run-dot-wait {
+    0%, 100% { stroke-dashoffset: -0.88; stroke-width: 15; }
+    50%      { stroke-dashoffset: -0.88; stroke-width: 11; }
+}
+
+.run-bar { stroke: var(--border); stroke-width: 9; stroke-linecap: round; transition: stroke 0.4s ease; }
+.run-bar-on { stroke: var(--text1); }
+.run-bar-label { fill: var(--text3); font-size: 13px; text-anchor: middle; }
+
+.run-station { cursor: pointer; }
+.run-ring { fill: var(--bg0); stroke: var(--text2); stroke-width: 4; transition: stroke 0.3s ease; }
+.run-core { fill: transparent; transition: fill 0.3s ease; }
+.run-station:hover .run-ring { stroke: var(--text1); }
+.run-station-on .run-ring { stroke-width: 6; }
+.run-name { fill: var(--text1); font-size: 16px; font-weight: 600; text-anchor: middle; }
+.run-meta { fill: var(--text2); font-size: 13px; text-anchor: middle; }
+.run-state { font-size: 12px; font-weight: 600; text-anchor: middle; letter-spacing: 0.4px; text-transform: uppercase; }
+.run-state.status-running  { fill: var(--blue); }
+.run-state.status-awaiting { fill: var(--yellow); }
+.run-state.status-done     { fill: var(--green); }
+.run-state.status-failed   { fill: var(--red); }
+.run-state.status-rejected { fill: var(--orange); }
+.run-state.status-skipped,
+.run-state.status-blocked  { fill: var(--text3); }
+.run-kind { fill: var(--text3); opacity: 0.7; }
+.run-gate { fill: var(--yellow); pointer-events: none; }
+
+.run-station-running  .run-ring { stroke: var(--blue); }
+.run-station-running  .run-core { fill: var(--blue); }
+.run-station-awaiting .run-ring { stroke: var(--yellow); }
+.run-station-awaiting .run-core { fill: var(--yellow); }
+.run-station-done     .run-ring { stroke: var(--green); }
+.run-station-done     .run-core { fill: var(--green); }
+.run-station-failed   .run-ring { stroke: var(--red); }
+.run-station-failed   .run-core { fill: var(--red); }
+.run-station-rejected .run-ring { stroke: var(--orange); }
+.run-station-rejected .run-core { fill: var(--orange); }
+.run-station-skipped  .run-ring,
+.run-station-blocked  .run-ring { stroke: var(--text3); stroke-dasharray: 3 3; }
+
+/* The step the train is at breathes, so it is found at a glance. */
+.run-halo {
+    fill: none; stroke-width: 2;
+    transform-box: fill-box; transform-origin: center;
+    animation: run-halo calc(1.6s / var(--run-speed, 1)) ease-out infinite;
+}
+.run-station-running  .run-halo { stroke: var(--blue); }
+.run-station-awaiting .run-halo { stroke: var(--yellow); }
+@keyframes run-halo {
+    from { transform: scale(1);   opacity: 0.7; }
+    to   { transform: scale(2.2); opacity: 0; }
+}
+
+/* Revise loop: the arc a sent-back step draws back over its own track. It
+   draws itself backwards, from the step to where the track starts. */
+.run-loop-arc {
+    stroke: var(--orange); stroke-width: 4; stroke-linecap: round;
+    stroke-dasharray: 1; stroke-dashoffset: 1;
+    animation: run-fill calc(1s / var(--run-speed, 1)) ease-out forwards;
+    opacity: 0.55;
+}
+.run-loop-end { fill: var(--orange); opacity: 0.55; }
+.run-loop-pill { fill: var(--bg0); stroke: var(--orange); stroke-width: 1.5; opacity: 0.85; }
+.run-loop-text { fill: var(--orange); font-size: 12px; text-anchor: middle; }
+.run-loop-live .run-loop-arc,
+.run-loop-live .run-loop-end,
+.run-loop-live .run-loop-pill { opacity: 1; }
+.run-loop { pointer-events: none; }
+/* A track or loop passing behind a label must not cut through its letters:
+   a stroke in the background colour, painted under the fill, clears a gap. */
+.run-state, .run-name, .run-meta, .run-bar-label {
+    paint-order: stroke; stroke: var(--bg0); stroke-width: 5px; stroke-linejoin: round;
+}
+
+/* A test step's progress, one bar per tier, under its labels. */
+.run-tier-name  { fill: var(--text2); font-size: 12px; text-anchor: start; }
+.run-tier-count { fill: var(--text3); font-size: 11px; text-anchor: end; }
+.run-tier-rail  { fill: var(--border); opacity: 0.6; }
+.run-tier-fill  { transition: width 0.3s ease, fill 0.4s ease; }
+.run-tier-going  { fill: var(--blue); }
+.run-tier-done   { fill: var(--green); }
+.run-tier-failed { fill: var(--red); }
+.run-tier-name, .run-tier-count {
+    paint-order: stroke; stroke: var(--bg0); stroke-width: 5px; stroke-linejoin: round;
+}
+
+/* Pause freezes the map's animations where they are; the run goes on. */
+.run-paused * { animation-play-state: paused !important; }
+
+/* Play, restart and speed, top left of the run view. */
+.run-player { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.run-ctl, .run-restart, .run-speed {
+    font-family: var(--mono); font-size: 12px;
+    border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border);
+}
+.run-ctl, .run-restart { padding: 6px 12px; background: transparent; color: var(--text1); }
+/* The one in effect is filled, like a pressed key. */
+.run-ctl-on { background: var(--text1); color: var(--bg0); border-color: var(--text1); font-weight: 600; cursor: default; }
+.run-ctl:disabled, .run-restart:disabled { opacity: 0.4; cursor: default; }
+.run-ctl:hover:not(:disabled):not(.run-ctl-on),
+.run-restart:hover:not(:disabled) { border-color: var(--text3); }
+.run-speeds { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.run-speed {
+    padding: 6px 10px; border: none; border-radius: 0;
+    background: transparent; color: var(--text3);
+}
+.run-speed + .run-speed { border-left: 1px solid var(--border); }
+.run-speed-on { background: var(--bg2); color: var(--text1); }
+.run-mode { font-size: 11px; color: var(--text3); min-width: 90px; }
+.run-mode-live { color: var(--green); }
+.run-mode-live::before {
+    content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green); margin-right: 6px; vertical-align: 1px;
+    animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* The merge gates by the end of the line: ticked, pending, failing or not
+   there yet. */
+.run-gate-box  { fill: var(--bg0); stroke: var(--text3); stroke-width: 1.5; transition: fill 0.3s ease, stroke 0.3s ease; }
+.run-gate-tick { stroke: var(--bg0); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.run-gate-text {
+    fill: var(--text3); font-size: 13px;
+    paint-order: stroke; stroke: var(--bg0); stroke-width: 5px; stroke-linejoin: round;
+}
+.run-gate-ok   .run-gate-box  { fill: var(--green); stroke: var(--green); }
+.run-gate-ok   .run-gate-text { fill: var(--text1); }
+.run-gate-bad  .run-gate-box  { fill: var(--red); stroke: var(--red); }
+.run-gate-bad  .run-gate-text { fill: var(--red); }
+.run-gate-wait .run-gate-box  { stroke: var(--yellow); stroke-dasharray: 3 2; animation: pulse 1.4s ease-in-out infinite; }
+.run-gate-wait .run-gate-text { fill: var(--yellow); }
+.run-gate-none .run-gate-box  { stroke-dasharray: 2 2; }
+
+/* The review circle and its reviewers, under the map. Each colour rule names
+   the spoke it belongs to: the circle carries a tone of its own, and a bare
+   `.run-tone-bad .run-sat` would paint every reviewer inside it red. */
+.run-hub-link { stroke: var(--border); stroke-width: 2; stroke-dasharray: 5 5; }
+.run-hub-ring { fill: var(--bg0); stroke: var(--text2); stroke-width: 4; transition: stroke 0.3s ease; }
+.run-hub-core { cursor: pointer; }
+.run-hub-text { fill: var(--text1); font-size: 15px; font-weight: 700; text-anchor: middle; }
+.run-spoke { cursor: pointer; }
+.run-spoke-line { stroke: var(--border); stroke-width: 3; stroke-linecap: round; transition: stroke 0.3s ease; }
+.run-sat { fill: var(--bg0); stroke: var(--text2); stroke-width: 3.5; transition: stroke 0.3s ease, fill 0.3s ease; }
+.run-spoke:hover .run-sat { stroke: var(--text1); }
+.run-sat-name { fill: var(--text1); font-size: 14px; font-weight: 700; }
+.run-sat-note { fill: var(--text3); font-size: 12px; }
+.run-sat-name, .run-sat-note {
+    paint-order: stroke; stroke: var(--bg0); stroke-width: 5px; stroke-linejoin: round;
+}
+
+.run-spoke.run-tone-good    .run-sat, .run-hub.run-tone-good    > .run-hub-core .run-hub-ring { stroke: var(--green); }
+.run-spoke.run-tone-working .run-sat, .run-hub.run-tone-working > .run-hub-core .run-hub-ring { stroke: var(--blue); }
+.run-spoke.run-tone-warn    .run-sat, .run-hub.run-tone-warn    > .run-hub-core .run-hub-ring { stroke: var(--yellow); }
+.run-spoke.run-tone-waiting .run-sat, .run-hub.run-tone-waiting > .run-hub-core .run-hub-ring { stroke: var(--yellow); }
+.run-spoke.run-tone-bad     .run-sat, .run-hub.run-tone-bad     > .run-hub-core .run-hub-ring { stroke: var(--red); }
+.run-spoke.run-tone-back    .run-sat, .run-hub.run-tone-back    > .run-hub-core .run-hub-ring { stroke: var(--orange); }
+.run-spoke.run-tone-good    .run-sat { fill: var(--green); }
+.run-spoke.run-tone-bad     .run-sat { fill: var(--red); }
+.run-spoke.run-tone-working .run-sat { animation: pulse 1s ease-in-out infinite; }
+.run-spoke.run-tone-waiting .run-sat { animation: pulse 1.4s ease-in-out infinite; }
+.run-spoke.run-tone-good    .run-spoke-line { stroke: var(--green); opacity: 0.6; }
+.run-spoke.run-tone-working .run-spoke-line { stroke: var(--blue); }
+.run-spoke.run-tone-warn    .run-spoke-line,
+.run-spoke.run-tone-waiting .run-spoke-line { stroke: var(--yellow); }
+.run-spoke.run-tone-bad     .run-spoke-line { stroke: var(--red); }
+/* Fix is the way back into review, drawn as a two-rail track: a wide orange
+   line with a background-coloured gap down its middle. Butt caps, so the gap
+   runs the full length and the rails stay open at both ends. */
+.run-spoke.run-tone-back .run-spoke-line { stroke: var(--orange); stroke-width: 9; stroke-linecap: butt; }
+.run-spoke-gap { stroke: var(--bg0); stroke-width: 3.5; stroke-linecap: butt; }
+.run-spoke.run-tone-back .run-sat-name, .run-spoke.run-tone-back .run-sat-note { fill: var(--orange); }
+
+/* Focused-review switches in Settings: a checkbox, the lens, what it checks. */
+.lens-list { display: flex; flex-direction: column; gap: 4px; }
+.lens-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 7px 9px; border-radius: 6px; cursor: pointer;
+}
+.lens-row:hover { background: var(--bg2); }
+.lens-row input { margin-top: 3px; accent-color: var(--green); }
+.lens-name { font-size: 12px; font-weight: 600; color: var(--text1); }
+.lens-about { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+/* Everything under the run view's header: the map, the pills, and a step's
+   panel when one is open — which covers these but never the play controls. */
+.run-body {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column;
+    position: relative; overflow: hidden;
+}
+/* Slides out from under an open panel, and back, in step with it. */
+.run-svg { transition: transform 0.25s ease-out; }
+
+/* A step's panel over the run map: the same content as the list view's right
+   column, sliding in from the right and covering part of the map, which stays
+   visible and clickable to its left. */
+.run-drawer {
+    position: absolute; top: 0; right: 0; bottom: 0;
+    /* Kept in step with `panel_width` in run_view.rs, which slides the map
+       out from under it by this much. */
+    width: min(620px, 58%);
+    background: var(--bg0);
+    border-left: 1px solid var(--border);
+    box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
+    overflow-y: auto;
+    z-index: 5;
+    animation: run-drawer-in 0.22s ease-out;
+}
+@keyframes run-drawer-in {
+    from { transform: translateX(100%); opacity: 0.6; }
+    to   { transform: translateX(0);    opacity: 1; }
+}
+.run-drawer-close {
+    position: absolute; top: 10px; right: 12px; z-index: 1;
+    width: 28px; height: 28px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--bg1); color: var(--text2);
+    font-size: 13px; cursor: pointer;
+}
+.run-drawer-close:hover { color: var(--text1); border-color: var(--text3); }
+/* Room for the close button at the end of the step's header row. */
+.run-drawer .detail-head { padding-right: 48px; }

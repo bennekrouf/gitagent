@@ -218,6 +218,56 @@ impl FlowDef {
         true
     }
 
+    /// Puts a second opinion beside this flow's analysis, if it has one and no
+    /// second opinion already, and makes whatever waits on the analysis wait
+    /// on both. Returns whether anything changed.
+    ///
+    /// Harmless to a flow whose owner never picks a second model: the step is
+    /// marked skipped at once and nothing behind it is held up.
+    pub fn insert_second_opinion(&mut self) -> bool {
+        self.insert_beside_analysis("second_opinion")
+    }
+
+    /// The same for the focused reviews, and harmless in the same way to a
+    /// flow whose owner never turns a lens on.
+    pub fn insert_lenses(&mut self) -> bool {
+        self.insert_beside_analysis("lenses")
+    }
+
+    /// Adds a `step` node that reads what the analysis reads and is waited on
+    /// by whatever waits on the analysis. Not if the flow has no analysis, or
+    /// has one of these already.
+    fn insert_beside_analysis(&mut self, step: &str) -> bool {
+        if self.nodes.iter().any(|n| n.step == step) {
+            return false;
+        }
+        let Some(at) = self.nodes.iter().position(|n| n.step == "analyse") else {
+            return false;
+        };
+        let analyse = self.nodes[at].id.clone();
+        let id = self.free_id(step);
+        for node in &mut self.nodes {
+            if node.deps.contains(&analyse) {
+                node.deps.push(id.clone());
+            }
+        }
+        let deps: Vec<&str> = self.nodes[at].deps.iter().map(String::as_str).collect();
+        let node = dep(NodeDef::from_catalogue(&id, step), &deps);
+        // After any sibling already placed beside the analysis, so the file
+        // keeps reading analysis, second opinion, focused reviews.
+        let mut after = at;
+        while after + 1 < self.nodes.len()
+            && matches!(
+                self.nodes[after + 1].step.as_str(),
+                "second_opinion" | "lenses"
+            )
+        {
+            after += 1;
+        }
+        self.nodes.insert(after + 1, node);
+        true
+    }
+
     /// Puts `draft_notes → write_notes` in front of a step that runs
     /// `release.sh`, so a release with no notes gets a draft to approve
     /// rather than a script refusing to run. Returns whether anything changed.
@@ -555,6 +605,12 @@ pub const ADOPTED_TEST_STEP: &str = "run_tests";
 /// Names the one-time adoption that adds the release-notes steps.
 pub const ADOPTED_NOTES_STEPS: &str = "release_notes";
 
+/// Names the one-time adoption that adds the second-opinion step.
+pub const ADOPTED_SECOND_OPINION: &str = "second_opinion";
+
+/// Names the one-time adoption that adds the focused-reviews step.
+pub const ADOPTED_LENSES: &str = "lenses";
+
 const FLOWS_FILE: &str = "flows.toml";
 
 impl FlowBook {
@@ -620,9 +676,16 @@ impl FlowBook {
                         ),
                         dep(NodeDef::from_catalogue("pr_diff", "pr_diff"), &["find_pr"]),
                         dep(NodeDef::from_catalogue("analyse", "analyse"), &["pr_diff"]),
+                        // Beside the analysis, not after it: both read the
+                        // same diff, and the merge waits for the two.
+                        dep(
+                            NodeDef::from_catalogue("second_opinion", "second_opinion"),
+                            &["pr_diff"],
+                        ),
+                        dep(NodeDef::from_catalogue("lenses", "lenses"), &["pr_diff"]),
                         dep(
                             NodeDef::from_catalogue("merge", "merge"),
-                            &["pr_status", "analyse"],
+                            &["pr_status", "analyse", "second_opinion", "lenses"],
                         ),
                         dep(NodeDef::from_catalogue("sync", "sync"), &["merge"]),
                     ],
@@ -642,7 +705,11 @@ impl FlowBook {
             Ok(mut book) if !book.flows.is_empty() => {
                 book.adopt_missing_declarations();
                 // `|` rather than `||`: each adoption must get its turn.
-                if book.adopt_missing_test_step() | book.adopt_notes_steps() {
+                if book.adopt_missing_test_step()
+                    | book.adopt_notes_steps()
+                    | book.adopt_second_opinion()
+                    | book.adopt_lenses()
+                {
                     book.save();
                 }
                 book
@@ -713,6 +780,31 @@ impl FlowBook {
         self.adopted.push(ADOPTED_NOTES_STEPS.to_string());
         for flow in &mut self.flows {
             flow.insert_notes_steps();
+        }
+        true
+    }
+
+    /// Adds the second-opinion step to every flow that analyses a pull
+    /// request, once ever — same contract as `adopt_missing_test_step`.
+    pub fn adopt_second_opinion(&mut self) -> bool {
+        if self.adopted.iter().any(|a| a == ADOPTED_SECOND_OPINION) {
+            return false;
+        }
+        self.adopted.push(ADOPTED_SECOND_OPINION.to_string());
+        for flow in &mut self.flows {
+            flow.insert_second_opinion();
+        }
+        true
+    }
+
+    /// Adds the focused-reviews step the same way, once ever.
+    pub fn adopt_lenses(&mut self) -> bool {
+        if self.adopted.iter().any(|a| a == ADOPTED_LENSES) {
+            return false;
+        }
+        self.adopted.push(ADOPTED_LENSES.to_string());
+        for flow in &mut self.flows {
+            flow.insert_lenses();
         }
         true
     }
@@ -789,6 +881,86 @@ fn dep(mut node: NodeDef, deps: &[&str]) -> NodeDef {
 
 #[cfg(test)]
 mod tests {
+    fn review_without_second_opinion() -> FlowDef {
+        let mut flow = FlowBook::defaults()
+            .get("review_and_merge")
+            .unwrap()
+            .clone();
+        flow.remove_node("second_opinion");
+        flow
+    }
+
+    #[test]
+    fn a_saved_review_flow_gets_the_focused_reviews_beside_its_analysis() {
+        let mut flow = FlowBook::defaults()
+            .get("review_and_merge")
+            .unwrap()
+            .clone();
+        flow.remove_node("lenses");
+        assert!(flow.insert_lenses());
+        let lenses = flow.nodes.iter().find(|n| n.step == "lenses").unwrap();
+        assert_eq!(lenses.deps, vec!["pr_diff".to_string()]);
+        let merge = flow.nodes.iter().find(|n| n.id == "merge").unwrap();
+        assert!(merge.deps.contains(&"lenses".to_string()));
+        assert!(validate(&flow).is_empty(), "{:?}", validate(&flow));
+        assert!(!flow.insert_lenses(), "only once");
+    }
+
+    #[test]
+    fn the_focused_reviews_are_added_once_ever() {
+        let mut book = FlowBook::defaults();
+        book.flows[1].remove_node("lenses");
+        assert!(book.adopt_lenses());
+        book.flows[1].remove_node("lenses");
+        assert!(!book.adopt_lenses());
+        assert!(!book.flows[1].nodes.iter().any(|n| n.step == "lenses"));
+    }
+
+    #[test]
+    fn a_saved_review_flow_gets_the_second_opinion_beside_its_analysis() {
+        let mut flow = review_without_second_opinion();
+        assert!(flow.insert_second_opinion());
+        let second = flow
+            .nodes
+            .iter()
+            .find(|n| n.step == "second_opinion")
+            .unwrap();
+        assert_eq!(second.deps, vec!["pr_diff".to_string()]);
+        let merge = flow.nodes.iter().find(|n| n.id == "merge").unwrap();
+        assert!(merge.deps.contains(&"analyse".to_string()));
+        assert!(merge.deps.contains(&"second_opinion".to_string()));
+        assert!(validate(&flow).is_empty(), "{:?}", validate(&flow));
+    }
+
+    #[test]
+    fn the_second_opinion_is_added_once_ever() {
+        let mut book = FlowBook::defaults();
+        book.flows[1] = review_without_second_opinion();
+        assert!(book.adopt_second_opinion());
+        assert!(!book.adopt_second_opinion());
+        // Deleted afterwards, it stays deleted.
+        book.flows[1].remove_node("second_opinion");
+        assert!(!book.adopt_second_opinion());
+        assert!(!book.flows[1]
+            .nodes
+            .iter()
+            .any(|n| n.step == "second_opinion"));
+    }
+
+    #[test]
+    fn a_flow_with_no_analysis_gets_no_second_opinion() {
+        let mut flow = FlowBook::defaults().get("commit_and_pr").unwrap().clone();
+        assert!(!flow.insert_second_opinion());
+    }
+
+    #[test]
+    fn the_shipped_review_flow_is_valid_with_its_second_opinion() {
+        let book = FlowBook::defaults();
+        let flow = book.get("review_and_merge").unwrap();
+        assert!(flow.nodes.iter().any(|n| n.step == "second_opinion"));
+        assert!(validate(flow).is_empty(), "{:?}", validate(flow));
+    }
+
     use super::*;
 
     fn node(id: &str, step: &str, deps: &[&str]) -> NodeDef {

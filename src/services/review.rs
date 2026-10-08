@@ -30,19 +30,60 @@ use super::llm::{complete_json, Asker, LlmConfig};
 pub fn proposal(step: Step, state: &RunState) -> String {
     match step {
         Step::Merge => format!(
-            "gh pr merge {} --squash --delete-branch\n\n\
-             ── CI ────────────────────────────────\n{}\n\
-             merge state: {}\n{}\n\
-             ── Model ─────────────────────────────\nverdict: {}\n\n{}",
-            state.artifact("pr_number"),
-            state.artifact("checks_summary"),
-            state.artifact("merge_state"),
-            state.artifact("checks_detail"),
-            state.artifact("verdict"),
-            state.artifact("analysis"),
+            "{}{}{}",
+            merge_proposal(state),
+            second_opinion(state),
+            focused(state)
         ),
         _ => String::new(),
     }
+}
+
+/// The second model's verdict under the first's, when there is one — the
+/// disagreement between them is as worth seeing as the one between model and
+/// CI.
+fn second_opinion(state: &RunState) -> String {
+    let verdict = state.artifact("second_verdict");
+    if verdict.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n── Second opinion ({}) ──────────────\nverdict: {}\n\n{}",
+        state.artifact("second_model"),
+        verdict,
+        state.artifact("second_analysis"),
+    )
+}
+
+/// Each focused review that ran, under the rest.
+fn focused(state: &RunState) -> String {
+    LENSES
+        .into_iter()
+        .filter(|l| !state.artifact(&format!("{}_verdict", l.key())).is_empty())
+        .map(|l| {
+            format!(
+                "\n\n── {} ──────────────────────\nverdict: {}\n\n{}",
+                l.label(),
+                state.artifact(&format!("{}_verdict", l.key())),
+                state.artifact(&format!("{}_analysis", l.key())),
+            )
+        })
+        .collect()
+}
+
+fn merge_proposal(state: &RunState) -> String {
+    format!(
+        "gh pr merge {} --squash --delete-branch\n\n\
+         ── CI ────────────────────────────────\n{}\n\
+         merge state: {}\n{}\n\
+         ── Model ─────────────────────────────\nverdict: {}\n\n{}",
+        state.artifact("pr_number"),
+        state.artifact("checks_summary"),
+        state.artifact("merge_state"),
+        state.artifact("checks_detail"),
+        state.artifact("verdict"),
+        state.artifact("analysis"),
+    )
 }
 
 pub async fn execute(
@@ -56,7 +97,14 @@ pub async fn execute(
         Step::FindPr => find_pr(repo, state).await,
         Step::PrStatus => pr_status(repo, state).await,
         Step::PrDiff => pr_diff(repo, state).await,
-        Step::Analyse => analyse(cfg, state, asker).await,
+        Step::Analyse => analyse(cfg, state, asker, REGRESSIONS, "").await,
+        // The same review, asked of the second model. The step is only ever
+        // reached with one chosen: with none, the run marks it skipped first.
+        Step::SecondOpinion => {
+            analyse(&cfg.second_config(), state, asker, REGRESSIONS, "second_").await
+        }
+        // Likewise only reached with at least one lens turned on.
+        Step::Lenses => lenses(cfg, state, asker).await,
         Step::Merge => merge(repo, state).await,
         Step::Sync => sync(repo, state).await,
         _ => Err(StepFailure::from("step does not belong to this flow")),
@@ -536,12 +584,122 @@ fn empty_pr(forge: &Forge, number: &str, base: &str, head: &str, ahead: usize) -
     StepFailure { message, remedies }
 }
 
-async fn analyse(
+/// Reviews the diff with `cfg`'s model. `prefix` keeps a second opinion's
+/// results apart from the first's: `verdict` and `second_verdict`, and so on,
+/// so neither overwrites the other and each is read for what it is.
+/// What the regression review looks for — the first review, and the second
+/// opinion, which asks a second model the same question.
+const REGRESSIONS: &str = "You review a pull request diff for regressions.";
+
+/// A focused review: one question asked of the whole diff, beside the
+/// regression review rather than instead of it. Each is its own model call, so
+/// each is turned on separately in Settings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lens {
+    Alignment,
+    Security,
+    Architecture,
+}
+
+pub const LENSES: [Lens; 3] = [Lens::Alignment, Lens::Security, Lens::Architecture];
+
+impl Lens {
+    /// Names its artifacts — `security_verdict` — and its switch in Settings.
+    pub fn key(self) -> &'static str {
+        match self {
+            Lens::Alignment => "alignment",
+            Lens::Security => "security",
+            Lens::Architecture => "architecture",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Lens::Alignment => "Alignment",
+            Lens::Security => "Security",
+            Lens::Architecture => "Architecture",
+        }
+    }
+
+    /// One line for Settings: what turning it on buys.
+    pub fn about(self) -> &'static str {
+        match self {
+            Lens::Alignment => "does the change do what its title says, and nothing unrelated",
+            Lens::Security => "vulnerabilities the change introduces",
+            Lens::Architecture => "layering, coupling and logic in the wrong place",
+        }
+    }
+
+    fn focus(self) -> &'static str {
+        match self {
+            Lens::Alignment => {
+                "You check whether a pull request diff does what its title says it does. \
+                 A finding is a place where the diff goes beyond the title (unrelated \
+                 changes), falls short of it (something the title promises that is missing), \
+                 or contradicts it."
+            }
+            Lens::Security => {
+                "You review a pull request diff for security vulnerabilities it introduces: \
+                 injection, unchecked input reaching a shell, query or path, secrets or \
+                 credentials in code, missing authorisation, unsafe deserialisation."
+            }
+            Lens::Architecture => {
+                "You review a pull request diff for architectural problems it introduces: \
+                 logic placed in the wrong layer or module, new coupling between parts that \
+                 were separate, duplicated logic, and abstractions inconsistent with the \
+                 surrounding code shown in the diff."
+            }
+        }
+    }
+}
+
+/// Runs every lens turned on in Settings, one after another, so a local model
+/// is never asked three things at once. Each writes its own results under its
+/// own name, and `lenses_run` says which ran.
+async fn lenses(
     cfg: &LlmConfig,
     state: &RunState,
     asker: &mut Asker<'_>,
 ) -> Result<StepOutcome, StepFailure> {
-    let system = "You review a pull request diff for regressions.\n\
+    let mut artifacts = vec![];
+    let mut summary = vec![];
+    let mut log = vec![];
+    let mut ran = vec![];
+    for lens in LENSES.into_iter().filter(|l| cfg.lenses.is_on(l.key())) {
+        (asker.on_line)(&format!(
+            "\u{2500}\u{2500} {} \u{2500}\u{2500}",
+            lens.label()
+        ));
+        let prefix = format!("{}_", lens.key());
+        let out = analyse(cfg, state, asker, lens.focus(), &prefix).await?;
+        summary.push(format!("{} {}", lens.label().to_lowercase(), out.summary));
+        log.push(format!(
+            "\u{2500}\u{2500} {} \u{2500}\u{2500}\n{}",
+            lens.label(),
+            out.log
+        ));
+        artifacts.extend(out.artifacts);
+        ran.push(lens.key());
+    }
+    artifacts.push(("lenses_run".into(), ran.join(",")));
+    Ok(StepOutcome {
+        summary: summary.join(" \u{00b7} "),
+        log: log.join("\n\n"),
+        artifacts,
+        nothing_to_do: false,
+        items: vec![],
+    })
+}
+
+async fn analyse(
+    cfg: &LlmConfig,
+    state: &RunState,
+    asker: &mut Asker<'_>,
+    focus: &str,
+    prefix: &str,
+) -> Result<StepOutcome, StepFailure> {
+    let system = format!(
+        "{focus}\n\
         Report only what the diff itself shows. Rules:\n\
         - `verdict`: `looks_safe` if you found nothing concrete, `worth_a_look` for \
           plausible problems, `risky` for a specific likely break.\n\
@@ -550,7 +708,8 @@ async fn analyse(
           VERBATIM from the diff above. If you cannot quote the diff, do not \
           report the finding.\n\
         - Report nothing rather than something vague. \"Consider adding tests\" and \
-          \"verify error handling\" are not findings.";
+          \"verify error handling\" are not findings."
+    );
 
     let head = format!(
         "Title: {}\n\nDiffstat:\n{}\n\nDiff:\n",
@@ -586,7 +745,7 @@ async fn analyse(
         "required": ["verdict", "summary", "findings"]
     });
 
-    let value = complete_json(cfg, system, &user, &schema, asker).await?;
+    let value = complete_json(cfg, &system, &user, &schema, asker).await?;
     let verdict = value["verdict"]
         .as_str()
         .unwrap_or("worth_a_look")
@@ -628,14 +787,23 @@ async fn analyse(
         ));
     }
 
+    let model = cfg.active_model().to_string();
+    let mut artifacts = vec![
+        (format!("{prefix}verdict"), verdict.clone()),
+        (format!("{prefix}analysis"), analysis.clone()),
+        (format!("{prefix}finding_count"), kept.len().to_string()),
+    ];
+    if !prefix.is_empty() {
+        artifacts.push((format!("{prefix}model"), model.clone()));
+    }
     Ok(StepOutcome {
-        summary: format!("{verdict} · {} finding(s)", kept.len()),
+        summary: if prefix.is_empty() {
+            format!("{verdict} · {} finding(s)", kept.len())
+        } else {
+            format!("{model}: {verdict} · {} finding(s)", kept.len())
+        },
         log: format!("{analysis}{}", fitted.note()),
-        artifacts: vec![
-            ("verdict".into(), verdict),
-            ("analysis".into(), analysis),
-            ("finding_count".into(), kept.len().to_string()),
-        ],
+        artifacts,
         nothing_to_do: false,
         items: vec![],
     })
@@ -1009,6 +1177,8 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
             Step::PrStatus,
             Step::PrDiff,
             Step::Analyse,
+            Step::SecondOpinion,
+            Step::Lenses,
             Step::Sync,
         ] {
             assert!(proposal(step, &s).is_empty());

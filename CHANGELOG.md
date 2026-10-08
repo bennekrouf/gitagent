@@ -17,6 +17,75 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A List / Run switch in the top bar. Run, now what GitAgent opens on, replaces
+  the step list and detail pane with the selected repository's flow drawn as a
+  line map, with the repository list still on the left and the same flow tabs as
+  the list above it, to switch flow or choose which are shown. Each track fills
+  toward the next step as the run reaches it: blue while that step is working,
+  green once it's done, orange if you rejected it. A dot rides the front of each
+  track and waits just short of a step that's still working or waiting for you,
+  then runs in when it finishes. Steps that run side by side fill in parallel.
+  Click a step, its pill or its reviewer and the step opens in a panel from the
+  right, with what it will do and the same Approve, Reject, Skip and Retry
+  buttons as in the list. A step that stops for your approval opens it on its
+  own, once: close it and it stays closed until the next approval. Approving or
+  skipping closes it, as do Escape and ✕. The map slides left so the step stays
+  in view beside the panel, and the play controls stay within reach, so a run
+  can be followed and answered without leaving the map.
+- In the Run view, a step you reject gets an orange arc back over its track,
+  marked "sent back". Retry it and the arc stays, counting rounds, until it
+  reads "approved in round 3" — so a run that needed a few tries shows it.
+- In the Run view, the Run tests step shows a progress bar per kind of test
+  — unit, integration, end-to-end, doc — counting up as they pass, for
+  projects tested with `cargo test`. With `pytest` there is one bar for the
+  whole suite. Other test runners don't print a total to count against, so
+  they show none.
+- Along the bottom of the Run view, every step is a numbered pill in the
+  order the map reads, coloured by where it's got to — done, running, waiting
+  for you, failed or sent back. Click one to open that step.
+- The Run view has Play, Pause, Restart and speed controls. Before anything
+  has run, Play starts the flow, just like Start in the list view, stopping
+  for you at every approval. Once it's running, Pause freezes the map where
+  it is while the run itself carries on, and Play catches up step by step.
+  Restart replays the whole run from its first step, even one that finished
+  while you were in another view, at 0.5×, 1× or 2×.
+- For flows with a pull request in them, the Run view shows two checkboxes
+  by the end of the line: "PR ready" ticks once the pull request exists and
+  names it, and "CI green" ticks when its checks pass — or shows them still
+  running, failing, or not set up.
+- The review flow's Run view has a review circle under the map, with a spoke
+  per reviewer: you reading the diff, the model's analysis with its verdict
+  and number of findings, and the CI checks. Once the review is sent back, an
+  orange Fix spoke appears, and it stays to show the fix was reviewed again.
+  Click a reviewer to open its step.
+- A second reviewer: choose a second model under Model provider → Second
+  reviewer, and the review flow has every pull request reviewed again by it,
+  beside the first review. Its verdict shows at the merge under the first,
+  holds a trusted run just as the first review's findings do, and appears in
+  the review circle under the model's own name. Off by default — it is one
+  more model call per review — and with none chosen the step is skipped
+  without holding up the merge. Saved review flows get the step once; delete
+  it and it stays deleted.
+- Focused reviews: turn on Alignment (does the change do what its title
+  says, and nothing unrelated), Security (vulnerabilities it introduces) or
+  Architecture (layering, coupling, logic in the wrong place) under Model
+  provider → Focused reviews, and the review flow checks every pull request
+  for each with the main model. Each finding has to quote the diff, like the
+  regression review's. Results show at the merge, hold a trusted run, and
+  each gets its own spoke in the review circle — saying where to turn it on
+  while it's off. All off by default: each is one more model call per
+  review.
+
+### Changed
+
+- GitAgent opens on the first repository in the list that has something left
+  to do, rather than the most urgent one further down — so it starts where
+  you would start reading.
+
 ## [0.1.84] - 2026-10-07
 
 ### Added

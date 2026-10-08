@@ -327,6 +327,74 @@ pub struct LlmConfig {
     /// Overrides the preset's model when non-empty.
     #[serde(default, alias = "deepseek_model")]
     pub remote_model: String,
+    /// A second model that reviews every pull request alongside the first.
+    /// Off unless chosen: it is one more model call per review.
+    #[serde(default)]
+    pub second: SecondModel,
+    /// Which focused reviews run beside the regression review. All off unless
+    /// turned on: each is one more model call per review.
+    #[serde(default)]
+    pub lenses: Lenses,
+}
+
+/// One switch per focused review, by the lens's key.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct Lenses {
+    #[serde(default)]
+    pub alignment: bool,
+    #[serde(default)]
+    pub security: bool,
+    #[serde(default)]
+    pub architecture: bool,
+}
+
+impl Lenses {
+    pub fn is_on(&self, key: &str) -> bool {
+        match key {
+            "alignment" => self.alignment,
+            "security" => self.security,
+            "architecture" => self.architecture,
+            _ => false,
+        }
+    }
+
+    pub fn set(&mut self, key: &str, on: bool) {
+        match key {
+            "alignment" => self.alignment = on,
+            "security" => self.security = on,
+            "architecture" => self.architecture = on,
+            _ => {}
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        self.alignment || self.security || self.architecture
+    }
+}
+
+/// Which model gives the second opinion. Only what differs from the main
+/// model is kept: the ollama address and context window, and a proxy URL set
+/// for the same remote provider, are shared with it.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct SecondModel {
+    pub kind: ProviderKind,
+    #[serde(default)]
+    pub ollama_model: String,
+    #[serde(default = "default_remote")]
+    pub remote: String,
+    #[serde(default)]
+    pub remote_model: String,
+}
+
+impl Default for SecondModel {
+    fn default() -> Self {
+        Self {
+            kind: ProviderKind::Off,
+            ollama_model: String::new(),
+            remote: default_remote(),
+            remote_model: String::new(),
+        }
+    }
 }
 
 fn default_remote() -> String {
@@ -343,6 +411,8 @@ impl Default for LlmConfig {
             remote: default_remote(),
             remote_url: String::new(),
             remote_model: String::new(),
+            second: SecondModel::default(),
+            lenses: Lenses::default(),
         }
     }
 }
@@ -358,6 +428,36 @@ impl LlmConfig {
 }
 
 impl LlmConfig {
+    /// The second reviewer as a full config, ready to call. `Off` when none
+    /// is chosen — or when this install runs without AI at all, which a second
+    /// opinion must not quietly overrule.
+    pub fn second_config(&self) -> LlmConfig {
+        let s = &self.second;
+        LlmConfig {
+            kind: if self.uses_model() {
+                s.kind
+            } else {
+                ProviderKind::Off
+            },
+            ollama_url: self.ollama_url.clone(),
+            ollama_model: if s.ollama_model.trim().is_empty() {
+                self.ollama_model.clone()
+            } else {
+                s.ollama_model.trim().to_string()
+            },
+            ollama_num_ctx: self.ollama_num_ctx,
+            remote: s.remote.clone(),
+            remote_url: if s.remote == self.remote {
+                self.remote_url.clone()
+            } else {
+                String::new()
+            },
+            remote_model: s.remote_model.clone(),
+            second: SecondModel::default(),
+            lenses: Lenses::default(),
+        }
+    }
+
     pub fn preset(&self) -> &'static Remote {
         remote(&self.remote)
     }
@@ -755,6 +855,45 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn there_is_no_second_reviewer_until_one_is_chosen() {
+        assert!(!LlmConfig::default().second_config().uses_model());
+    }
+
+    #[test]
+    fn the_second_reviewer_shares_the_main_models_connection() {
+        let mut cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            remote: "openai".into(),
+            remote_url: "https://proxy.example/v1".into(),
+            ..Default::default()
+        };
+        cfg.second = SecondModel {
+            kind: ProviderKind::Remote,
+            remote: "openai".into(),
+            remote_model: "gpt-5".into(),
+            ..Default::default()
+        };
+        let second = cfg.second_config();
+        assert_eq!(second.remote_base_url(), "https://proxy.example/v1");
+        assert_eq!(second.active_model(), "gpt-5");
+        cfg.second.remote = "deepseek".into();
+        assert_eq!(
+            cfg.second_config().remote_base_url(),
+            "https://api.deepseek.com/v1"
+        );
+    }
+
+    #[test]
+    fn a_second_reviewer_does_not_switch_ai_back_on() {
+        let mut cfg = LlmConfig {
+            kind: ProviderKind::Off,
+            ..Default::default()
+        };
+        cfg.second.kind = ProviderKind::Ollama;
+        assert!(!cfg.second_config().uses_model());
+    }
+
     use super::*;
 
     #[test]
