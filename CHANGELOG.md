@@ -19,6 +19,13 @@ were never released.
 
 ## [Unreleased]
 
+### Added
+
+- The repository list on the left can be folded: **‹** in its header shrinks it
+  to a strip of status dots, one per repository, still showing which one wants
+  you and still clickable; **›** opens it again. GitAgent remembers which way
+  you left it.
+
 ### Changed
 
 - Steps describe what they do with the run's real branches and pull request
@@ -37,6 +44,9 @@ were never released.
   ended — done, nothing to do, or declined — so the Run view shows where the
   repository stands now instead of the last run's steps all marked done.
   Runs still going, waiting for you, or failed with a fix to try are kept.
+- The hint at the end of the Run view's bottom bar steps aside when the bar
+  is crowded, leaving the room to the step pills and the replay speed, and
+  comes back when there is space.
 
 ### Fixed
 
@@ -50,6 +60,13 @@ were never released.
   waiting. The track into it went grey and its dot stopped short of it; now
   the run passes straight through in blue and waits at the next step that
   was not skipped, or turns green once everything past it is done.
+- When **Back to base** or a release can't update the branch because you have
+  uncommitted edits to files that changed on origin, the step now offers to set
+  your edits aside, update, and put them back, all from the run view. Before,
+  you had to leave GitAgent and stash them in a terminal. If your edits clash
+  with what came in, both versions stay marked in the file and a copy is kept
+  in the stash, so nothing is lost. **Back to base** still finishes and lists
+  the files to resolve, and a release waits until they are resolved.
 
 ## [0.1.89] - 2026-10-09
 

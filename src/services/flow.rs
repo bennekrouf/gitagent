@@ -632,6 +632,18 @@ fn is_release(command: &str) -> bool {
 ///
 /// `Ok(Some(note))` when it pulled, for the step's log.
 pub(crate) async fn catch_up(repo: &str) -> Result<Option<String>, StepFailure> {
+    // An autostash whose edits clashed leaves this copy up to date but with
+    // conflict markers in files — a release must not read those.
+    let clashed = git::unmerged_paths(repo).await;
+    if !clashed.is_empty() {
+        return Err(StepFailure::from(format!(
+            "This copy is up to date, but these files still have both versions \
+             marked from your edits clashing with the update:\n\n  {}\n\nKeep what \
+             you want in each, `git add` it, then retry this step. Once all are \
+             resolved, `git stash drop` removes the copy kept in the stash.",
+            clashed.join("\n  ")
+        )));
+    }
     let git::Upstream::Behind {
         tracking,
         behind,
@@ -647,11 +659,18 @@ pub(crate) async fn catch_up(repo: &str) -> Result<Option<String>, StepFailure> 
             Ok(_) => Ok(Some(format!(
                 "Pulled {commits} from {tracking} first, so the release includes them."
             ))),
-            Err(e) => Err(StepFailure::from(format!(
-                "{tracking} has {commits} this copy does not, and local changes are in \
-                 the way of pulling them. Commit or stash them, then retry this step — \
-                 a release cut from here would leave those commits out.\n\n{e}"
-            ))),
+            Err(e) => Err(StepFailure {
+                remedies: if git::local_changes_in_the_way(&e) {
+                    vec![autostash_remedy("@{u}")]
+                } else {
+                    vec![]
+                },
+                message: format!(
+                    "{tracking} has {commits} this copy does not, and local changes are \
+                     in the way of pulling them. Commit or stash them, then retry this \
+                     step — a release cut from here would leave those commits out.\n\n{e}"
+                ),
+            }),
         };
     }
 
@@ -1591,6 +1610,20 @@ async fn free_branch_name(repo: &str, branch: &str) -> String {
         }
     }
     unreachable!()
+}
+
+/// A fast-forward git refused because uncommitted edits are in the way.
+///
+/// `--autostash` sets them aside, moves the branch, and puts them back. If
+/// putting them back clashes with what came in, git leaves both versions
+/// marked in the files and keeps a copy in the stash — nothing is lost, and
+/// the person resolves it in their editor.
+pub(crate) fn autostash_remedy(target: &str) -> Remedy {
+    Remedy::new(
+        "Set your changes aside, update, and put them back",
+        "git",
+        &["merge", "--ff-only", "--autostash", target],
+    )
 }
 
 fn rename_remedy(branch: &str, new: &str) -> Remedy {

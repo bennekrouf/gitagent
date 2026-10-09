@@ -226,6 +226,53 @@ pub struct RepoSidebarProps {
 #[component]
 pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
     let selected = props.selected.clone();
+    let mut folded = use_signal(crate::services::store::sidebar_folded);
+    let mut fold = move |to: bool| {
+        folded.set(to);
+        crate::services::store::save_sidebar_folded(to);
+    };
+
+    // Folded: a strip of status dots, one per repository, in the same order —
+    // still enough to see which one wants you and to switch to it.
+    if *folded.read() {
+        return rsx! {
+            div { class: "sidebar sidebar-folded",
+                button {
+                    class: "sidebar-switch sidebar-unfold",
+                    title: "Show the repository list",
+                    onclick: move |_| fold(false),
+                    "\u{203a}"
+                }
+                div { class: "sidebar-strip",
+                    for entry in props.entries.iter().cloned() {
+                        button {
+                            key: "{entry.path}",
+                            class: if selected.as_deref() == Some(entry.path.as_str()) {
+                                "strip-row strip-row-on"
+                            } else {
+                                "strip-row"
+                            },
+                            title: match entry.wants {
+                                Some(w) if w.is_worth_saying() => format!("{} \u{2014} {}", entry.label, w.note()),
+                                _ => entry.label.clone(),
+                            },
+                            onclick: {
+                                let path = entry.path.clone();
+                                move |_| props.on_select.call(path.clone())
+                            },
+                            span {
+                                class: if !entry.phase.is_live() {
+                                    format!("dot dot-{}", entry.wants.map(|w| w.css()).unwrap_or("pending"))
+                                } else {
+                                    format!("dot dot-{}", entry.phase.css())
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
 
     rsx! {
         div { class: "sidebar", style: "width: {props.width}px;",
@@ -255,6 +302,12 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                     }
                 }
                 div { class: "sidebar-actions",
+                    button {
+                        class: "sidebar-switch",
+                        title: "Fold the repository list to a strip",
+                        onclick: move |_| fold(true),
+                        "\u{2039}"
+                    }
                     button {
                         class: "sidebar-switch sidebar-refresh",
                         disabled: props.probing > 0,
