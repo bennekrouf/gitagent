@@ -83,6 +83,44 @@ fn zoom_wheel(zoom: f64, delta_y: f64) -> f64 {
     (zoom * (-delta_y * 0.0015).exp()).clamp(ZOOM_MIN, ZOOM_MAX)
 }
 
+/// Keeps the point under the cursor — `at`, in window coordinates — where it
+/// is while the map is redrawn at another zoom, or the middle of the visible
+/// map when there is no cursor to follow (the − and + buttons).
+///
+/// Sent before the zoom changes, so it reads the scroll and the map's size as
+/// they were; it then waits for the map to be redrawn and scrolls by however
+/// much it actually grew or shrank, rather than by the zoom ratio, which the
+/// layout does not follow exactly while the map still fits on screen.
+fn zoom_anchor_js(at: Option<(f64, f64)>) -> String {
+    let (x, y) = match at {
+        Some((x, y)) => (format!("{x} - r.left"), format!("{y} - r.top")),
+        None => ("c.clientWidth / 2".into(), "c.clientHeight / 2".into()),
+    };
+    format!(
+        "(() => {{\
+           const c = document.querySelector('.run-canvas');\
+           const s = c && c.querySelector('svg.run-svg');\
+           if (!c || !s) return;\
+           const r = c.getBoundingClientRect();\
+           const px = {x}, py = {y};\
+           const ox = c.scrollLeft + px, oy = c.scrollTop + py;\
+           const b0 = s.getBoundingClientRect();\
+           let tries = 0;\
+           const settle = () => {{\
+             const b1 = s.getBoundingClientRect();\
+             if (Math.abs(b1.width - b0.width) < 0.5 && tries++ < 20) {{\
+               requestAnimationFrame(settle); return;\
+             }}\
+             const kx = b0.width ? b1.width / b0.width : 1;\
+             const ky = b0.height ? b1.height / b0.height : 1;\
+             c.scrollLeft = ox * kx - px;\
+             c.scrollTop = oy * ky - py;\
+           }};\
+           requestAnimationFrame(settle);\
+         }})()"
+    )
+}
+
 /// How long a replay spends on each change in the run's history, at 1×.
 const REPLAY_STEP_MS: f64 = 700.0;
 const SPEEDS: [f64; 3] = [0.5, 1.0, 2.0];
@@ -1331,7 +1369,14 @@ pub fn RunView(props: RunViewProps) -> Element {
                         e.prevent_default();
                         let dy = e.delta().strip_units().y;
                         let now = *zoom.peek();
-                        zoom.set(zoom_wheel(now, dy));
+                        let next = zoom_wheel(now, dy);
+                        if next != now {
+                            // Around the cursor, not the corner: what you are
+                            // pointing at stays under the pointer.
+                            let at = e.client_coordinates();
+                            document::eval(&zoom_anchor_js(Some((at.x, at.y))));
+                            zoom.set(next);
+                        }
                     }
                 },
                 onresize: move |e| {
@@ -1674,6 +1719,7 @@ pub fn RunView(props: RunViewProps) -> Element {
                             disabled: z <= ZOOM_MIN + 1e-9,
                             onclick: move |_| {
                                 let now = *zoom.peek();
+                                document::eval(&zoom_anchor_js(None));
                                 zoom.set(zoom_step(now, false));
                             },
                             "\u{2212}"
@@ -1681,7 +1727,10 @@ pub fn RunView(props: RunViewProps) -> Element {
                         button {
                             class: "run-speed run-zoom-level",
                             title: "Back to 100%",
-                            onclick: move |_| zoom.set(1.0),
+                            onclick: move |_| {
+                                document::eval(&zoom_anchor_js(None));
+                                zoom.set(1.0);
+                            },
                             "{(z * 100.0).round()}%"
                         }
                         button {
@@ -1690,6 +1739,7 @@ pub fn RunView(props: RunViewProps) -> Element {
                             disabled: z >= ZOOM_MAX - 1e-9,
                             onclick: move |_| {
                                 let now = *zoom.peek();
+                                document::eval(&zoom_anchor_js(None));
                                 zoom.set(zoom_step(now, true));
                             },
                             "+"
@@ -2235,6 +2285,19 @@ mod tests {
         assert_eq!(zoom_step(1.04, true), 1.1);
         assert_eq!(zoom_step(ZOOM_MAX, true), ZOOM_MAX);
         assert_eq!(zoom_step(ZOOM_MIN, false), ZOOM_MIN);
+    }
+
+    #[test]
+    fn zooming_holds_the_point_under_the_cursor_or_the_middle_of_the_view() {
+        let at_cursor = zoom_anchor_js(Some((380.0, 260.0)));
+        assert!(at_cursor.contains("380 - r.left") && at_cursor.contains("260 - r.top"));
+        let at_middle = zoom_anchor_js(None);
+        assert!(
+            at_middle.contains("c.clientWidth / 2") && at_middle.contains("c.clientHeight / 2")
+        );
+        // It scrolls by how much the map really changed, measured after the
+        // redraw, not by the zoom ratio it was asked for.
+        assert!(at_cursor.contains("b1.width / b0.width"));
     }
 
     #[test]

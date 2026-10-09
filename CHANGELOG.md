@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Zooming the Run view's map keeps what you are pointing at under the
+  pointer: ⌘ + scroll and pinch zoom around the cursor, and **−** / **+**
+  around the middle of the view, instead of leaving the map scrolled to where
+  it was and sending what you were looking at off screen.
+
 ## [0.1.91] - 2026-10-09
 
 ### Added
