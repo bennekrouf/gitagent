@@ -28,6 +28,7 @@ use crate::services::graph::{live_subtitle, Graph, NodeKind, NodeStatus, RunStat
 use crate::services::llm::Lenses;
 use crate::services::probe::{Checks, PrBrief};
 use crate::services::review::LENSES;
+use crate::services::store;
 use crate::services::testprogress::{self, Tier};
 
 /// Spacing between columns and between stacked rows. The map stretches
@@ -63,6 +64,25 @@ const HUB_ROOM: f64 = 290.0;
 const ROW_MIN_WITH_HUB: f64 = 150.0;
 const HUB_R: f64 = 42.0;
 const SPOKE: f64 = 112.0;
+/// How far the map zooms, out and in, and by how much a button press moves it.
+const ZOOM_MIN: f64 = 0.5;
+const ZOOM_MAX: f64 = 2.0;
+const ZOOM_STEP: f64 = 0.1;
+
+/// One press of − or +: to the next tenth, so a level reached by scrolling
+/// lands back on round numbers.
+fn zoom_step(zoom: f64, up: bool) -> f64 {
+    let tenths = (zoom / ZOOM_STEP).round();
+    let next = if up { tenths + 1.0 } else { tenths - 1.0 };
+    (next * ZOOM_STEP).clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
+/// ⌘ + scroll, or a pinch, which reaches the page as a wheel with Ctrl held:
+/// smooth rather than in steps, scrolling up zooming in.
+fn zoom_wheel(zoom: f64, delta_y: f64) -> f64 {
+    (zoom * (-delta_y * 0.0015).exp()).clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
 /// How long a replay spends on each change in the run's history, at 1×.
 const REPLAY_STEP_MS: f64 = 700.0;
 const SPEEDS: [f64; 3] = [0.5, 1.0, 2.0];
@@ -930,6 +950,21 @@ pub fn RunView(props: RunViewProps) -> Element {
     // instead of scaling — scaling a wide flow down is what made the text
     // small and left the height empty.
     let mut area = use_signal(|| Option::<(f64, f64)>::None);
+    // The map's zoom, remembered between runs and restarts. The map is laid
+    // out for the room it would have at this zoom, then drawn scaled to it —
+    // so a big flow fits zoomed out, and zoomed in everything grows, scrolls,
+    // and stays sharp, being drawn rather than magnified.
+    let mut zoom = use_signal(|| store::run_zoom().clamp(ZOOM_MIN, ZOOM_MAX));
+    // Saved once it settles, not on every tick of a scroll or pinch.
+    use_effect(move || {
+        let level = *zoom.read();
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            if *zoom.peek() == level {
+                store::save_run_zoom(level);
+            }
+        });
+    });
 
     // The player. The run itself is never paused — it is real work — but the
     // view of it can be: frozen where it is, or wound back and replayed from
@@ -1013,9 +1048,10 @@ pub fn RunView(props: RunViewProps) -> Element {
         .map(|(_, t)| t.len() as f64 * TIER_ROW + 14.0)
         .fold(0.0, f64::max);
     let hub = review_hub(&props.graph, &shown, &props.lenses);
+    let z = *zoom.read();
     let plan = map(
         &props.graph,
-        *area.read(),
+        (*area.read()).map(|(w, h)| (w / z, h / z)),
         looped,
         props.gates.is_some(),
         below,
@@ -1023,10 +1059,12 @@ pub fn RunView(props: RunViewProps) -> Element {
     );
     // With a panel open, the map moves left until the step it is about is
     // clear of it, and back when it closes.
+    // Worked out on screen, where the panel is: the station and its labels at
+    // their zoomed size, against the panel's own width.
     let slide = if props.panel_open {
-        let area_w = (*area.read()).map(|(w, _)| w).unwrap_or(plan.width);
+        let area_w = (*area.read()).map(|(w, _)| w).unwrap_or(plan.width * z);
         plan.find(&props.selected)
-            .map(|s| slide_for(s.x, plan.col_w, area_w, props.panel_folded))
+            .map(|s| slide_for(s.x * z, plan.col_w * z, area_w, props.panel_folded))
             .unwrap_or(0.0)
     } else {
         0.0
@@ -1285,6 +1323,17 @@ pub fn RunView(props: RunViewProps) -> Element {
             div { class: "run-body",
             div {
                 class: if *playing.read() { "run-canvas" } else { "run-canvas run-paused" },
+                // ⌘ + scroll, or a pinch, zooms the map; plain scrolling
+                // scrolls it as before.
+                onwheel: move |e: Event<WheelData>| {
+                    let held = e.modifiers();
+                    if held.meta() || held.ctrl() {
+                        e.prevent_default();
+                        let dy = e.delta().strip_units().y;
+                        let now = *zoom.peek();
+                        zoom.set(zoom_wheel(now, dy));
+                    }
+                },
                 onresize: move |e| {
                     if let Ok(size) = e.get_content_box_size() {
                         let next = Some((size.width, size.height));
@@ -1299,8 +1348,8 @@ pub fn RunView(props: RunViewProps) -> Element {
                     svg {
                         class: "run-svg",
                         style: "transform: translateX(-{slide}px);",
-                        width: "{plan.width}",
-                        height: "{plan.height}",
+                        width: "{plan.width * z}",
+                        height: "{plan.height * z}",
                         view_box: "0 0 {plan.width} {plan.height}",
 
                         for t in tracks.iter() {
@@ -1613,6 +1662,37 @@ pub fn RunView(props: RunViewProps) -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+                div { class: "run-foot-zoom",
+                    span { class: "run-speeds-label", "Zoom" }
+                    div { class: "run-speeds",
+                        button {
+                            class: "run-speed",
+                            title: "Zoom out (\u{2318} + scroll down, or pinch)",
+                            disabled: z <= ZOOM_MIN + 1e-9,
+                            onclick: move |_| {
+                                let now = *zoom.peek();
+                                zoom.set(zoom_step(now, false));
+                            },
+                            "\u{2212}"
+                        }
+                        button {
+                            class: "run-speed run-zoom-level",
+                            title: "Back to 100%",
+                            onclick: move |_| zoom.set(1.0),
+                            "{(z * 100.0).round()}%"
+                        }
+                        button {
+                            class: "run-speed",
+                            title: "Zoom in (\u{2318} + scroll up, or pinch)",
+                            disabled: z >= ZOOM_MAX - 1e-9,
+                            onclick: move |_| {
+                                let now = *zoom.peek();
+                                zoom.set(zoom_step(now, true));
+                            },
+                            "+"
                         }
                     }
                 }
@@ -2145,6 +2225,41 @@ mod tests {
         let plan = map(&review(), None, false, false, 0.0, true);
         let lowest = plan.stations.iter().map(|s| s.y).fold(f64::MIN, f64::max);
         assert!(plan.height - lowest >= PAD_BOTTOM + HUB_ROOM);
+    }
+
+    #[test]
+    fn the_zoom_buttons_move_in_tenths_within_bounds() {
+        assert_eq!(zoom_step(1.0, true), 1.1);
+        assert_eq!(zoom_step(1.0, false), 0.9);
+        // A level reached by scrolling snaps back to round numbers.
+        assert_eq!(zoom_step(1.04, true), 1.1);
+        assert_eq!(zoom_step(ZOOM_MAX, true), ZOOM_MAX);
+        assert_eq!(zoom_step(ZOOM_MIN, false), ZOOM_MIN);
+    }
+
+    #[test]
+    fn scrolling_up_with_the_command_key_zooms_in_and_stays_in_bounds() {
+        assert!(zoom_wheel(1.0, -100.0) > 1.0);
+        assert!(zoom_wheel(1.0, 100.0) < 1.0);
+        assert_eq!(zoom_wheel(1.9, -10_000.0), ZOOM_MAX);
+        assert_eq!(zoom_wheel(0.6, 10_000.0), ZOOM_MIN);
+    }
+
+    #[test]
+    fn zoomed_out_the_same_flow_is_laid_out_for_more_room() {
+        // The map is laid out for the room it would have at the zoom, so at
+        // half size it spreads over twice the room, and drawn at half size
+        // fills the screen it is on.
+        let screen = (1000.0, 600.0);
+        let half = map(
+            &commit(),
+            Some((screen.0 / 0.5, screen.1 / 0.5)),
+            false,
+            false,
+            0.0,
+            false,
+        );
+        assert_eq!(half.width * 0.5, screen.0);
     }
 
     #[test]

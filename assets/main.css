@@ -1819,3 +1819,9 @@ button.update-banner-link {
 .strip-row:hover { background: var(--bg2); }
 .strip-row-on { background: var(--bg2); border-color: var(--border); }
 .strip-row .dot { margin: 0; }
+
+/* The map's zoom, beside the replay speed in the run view's bottom bar. */
+.run-foot-zoom { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.run-foot-zoom .run-speed { padding: 4px 9px; font-size: 11px; }
+.run-foot-zoom .run-speed:disabled { opacity: 0.4; cursor: default; }
+.run-zoom-level { min-width: 46px; }

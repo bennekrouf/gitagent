@@ -383,6 +383,30 @@ pub fn save_repo_bases(bases: &RepoBases) {
     write(REPO_BASES_FILE, bases);
 }
 
+/// How far the run view's map is zoomed, `1.0` being its own size. Its own
+/// file, like the sidebar's fold, so nothing else that saves layout can race
+/// it.
+#[derive(Serialize, Deserialize)]
+struct RunZoomPref {
+    zoom: f64,
+}
+
+impl Default for RunZoomPref {
+    fn default() -> Self {
+        Self { zoom: 1.0 }
+    }
+}
+
+const RUN_ZOOM_FILE: &str = "run_zoom.json";
+
+pub fn run_zoom() -> f64 {
+    read::<RunZoomPref>(RUN_ZOOM_FILE).zoom
+}
+
+pub fn save_run_zoom(zoom: f64) {
+    write(RUN_ZOOM_FILE, &RunZoomPref { zoom });
+}
+
 #[cfg(test)]
 mod tests {
 

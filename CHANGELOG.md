@@ -25,6 +25,12 @@ were never released.
   to a strip of status dots, one per repository, still showing which one wants
   you and still clickable; **›** opens it again. GitAgent remembers which way
   you left it.
+- The Run view's map zooms, from 50% to 200%: **− / +** in its bottom bar,
+  beside the replay speed, or ⌘ + scroll and pinch on the map; click the
+  percentage to go back to 100%. Zoomed out, a big flow such as Review →
+  Merge with its review circle fits on one screen; zoomed in, everything grows
+  and stays sharp, and the map scrolls. The rest of the window keeps its size,
+  and GitAgent remembers the zoom.
 
 ### Changed
 
