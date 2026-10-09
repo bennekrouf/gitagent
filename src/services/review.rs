@@ -19,7 +19,7 @@
 
 use serde_json::json;
 
-use super::flow::{StepFailure, StepOutcome};
+use super::flow::{self, StepFailure, StepOutcome};
 use super::forge::Forge;
 use super::git;
 use super::graph::{Remedy, RunState, Step};
@@ -954,7 +954,14 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     if let Some(there) = git::worktree_holding(repo, base).await {
         return sync_elsewhere(repo, base, &there).await;
     }
-    let mut log = git::run(repo, "git", &["checkout", base]).await?;
+    // Already where it needs to be, git is not asked again: after an
+    // autostash whose edits clashed, a checkout or merge would refuse over
+    // the conflicts even though there is nothing left for either to do.
+    let mut log = if git::current_branch(repo).await.ok().as_deref() == Some(base) {
+        String::new()
+    } else {
+        git::run(repo, "git", &["checkout", base]).await?
+    };
     // Fetch only the base, then fast-forward, rather than `git pull`: a pull
     // fetches every branch (and prunes, where configured), which widens the
     // window for another git process to move a ref under it — and that race
@@ -963,16 +970,26 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
         Ok(out) => log.push_str(&out),
         Err(e) => return Err(sync_fetch_failure(base, e)),
     }
-    log.push_str(
-        &git::run(
-            repo,
-            "git",
-            &["merge", "--ff-only", &format!("origin/{base}")],
-        )
-        .await?,
-    );
+    let target = format!("origin/{base}");
+    if !git::same_commit(repo, "HEAD", &target).await {
+        match git::run(repo, "git", &["merge", "--ff-only", &target]).await {
+            Ok(out) => log.push_str(&out),
+            Err(e) => return Err(sync_merge_failure(base, e)),
+        }
+    }
+    let clashed = git::unmerged_paths(repo).await;
+    if !clashed.is_empty() {
+        log = format!("{}\n\n{}", clashes_note(&clashed), log.trim());
+    }
     Ok(StepOutcome {
-        summary: format!("on {base}, up to date"),
+        summary: if clashed.is_empty() {
+            format!("on {base}, up to date")
+        } else {
+            format!(
+                "on {base}, up to date; {} to resolve",
+                plural_files(clashed.len())
+            )
+        },
         log: log.trim().to_string(),
         artifacts: vec![("sync_output".into(), log)],
         nothing_to_do: false,
@@ -1051,9 +1068,128 @@ fn sync_fetch_failure(base: &str, err: String) -> StepFailure {
     }
 }
 
+/// The pull request is merged and this copy is on the base; only the
+/// fast-forward is left. When uncommitted edits are what stopped it, say so
+/// and offer to move them out of the way and back.
+fn sync_merge_failure(base: &str, err: String) -> StepFailure {
+    if !git::local_changes_in_the_way(&err) {
+        return StepFailure::from(err);
+    }
+    StepFailure {
+        message: format!(
+            "The merge is done, but {base} could not be brought up to date: you have \
+             uncommitted edits to files that changed on origin/{base}. Nothing was \
+             touched. Set them aside and put them back after updating — if they clash \
+             with what came in, both versions are left marked in the file for you to \
+             pick from, a copy stays in the stash, and this step still finishes.\n\n{err}"
+        ),
+        remedies: vec![flow::autostash_remedy(&format!("origin/{base}"))],
+    }
+}
+
+/// What to do about edits that clashed when they were put back. The step is
+/// done either way; this is the person's to finish in their editor.
+fn clashes_note(paths: &[String]) -> String {
+    format!(
+        "Your edits clashed with the update in {}:\n\n  {}\n\nBoth versions are \
+         marked in each file. Keep what you want, `git add` the file, and once all \
+         are resolved, `git stash drop` removes the copy kept in the stash.",
+        plural_files(paths.len()),
+        paths.join("\n  ")
+    )
+}
+
+fn plural_files(n: usize) -> String {
+    if n == 1 {
+        "1 file".into()
+    } else {
+        format!("{n} files")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DIRTY_MERGE: &str = "error: Your local changes to the following files would be \
+        overwritten by merge:\n\tCHANGELOG.md\n\tassets/main.css\nPlease commit your changes \
+        or stash them before you merge.\nAborting\n\nwhile running: `git merge --ff-only \
+        origin/main`";
+
+    #[test]
+    fn local_edits_in_the_way_of_sync_offer_an_autostash() {
+        let failure = sync_merge_failure("main", DIRTY_MERGE.into());
+        assert!(failure.message.contains("The merge is done"));
+        assert_eq!(failure.remedies.len(), 1);
+        let remedy = &failure.remedies[0];
+        assert_eq!(
+            remedy.args,
+            ["merge", "--ff-only", "--autostash", "origin/main"]
+        );
+        assert!(remedy.retry_after);
+        assert!(!remedy.abandons);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clashing_autostash_still_lets_the_sync_retry_finish() {
+        // Real git: origin changes a file this copy has uncommitted edits to.
+        let root = std::env::temp_dir().join(format!("gitagent-autostash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |cmd: &str| {
+            let out = std::process::Command::new("sh")
+                .args(["-c", cmd])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{cmd}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let ident = "git config user.name t && git config user.email t@t";
+        sh("git init -q --bare -b main origin.git");
+        sh(&format!(
+            "git clone -q origin.git here && cd here && {ident} && echo a > f && \
+             git add f && git commit -q -m init && git push -q -u origin main"
+        ));
+        sh(&format!(
+            "git clone -q origin.git forge && cd forge && {ident} && echo b > f && \
+             git commit -q -am theirs && git push -q"
+        ));
+        sh("cd here && echo mine > f");
+        let repo = root.join("here");
+        let repo = repo.to_str().unwrap();
+        let mut state = RunState::default();
+        state.artifacts.insert("pr_base".into(), "main".into());
+
+        let failure = sync(repo, &state).await.expect_err("edits in the way");
+        let fix = &failure.remedies[0];
+        sh(&format!("cd here && git {}", fix.args.join(" ")));
+        assert_eq!(git::unmerged_paths(repo).await, ["f"], "the edits clashed");
+
+        let done = sync(repo, &state).await.expect("the retry finishes");
+        assert!(
+            done.summary.contains("1 file to resolve"),
+            "{}",
+            done.summary
+        );
+        assert!(done.log.contains("git stash drop"));
+
+        let release = flow::catch_up(repo).await.expect_err("markers in f");
+        assert!(release.message.contains("  f"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn other_sync_merge_failures_stay_as_they_were() {
+        let failure = sync_merge_failure("main", "fatal: Not possible to fast-forward".into());
+        assert!(failure.remedies.is_empty());
+        assert_eq!(failure.message, "fatal: Not possible to fast-forward");
+    }
 
     const REF_RACE: &str = "error: cannot lock ref 'refs/remotes/origin/master': is at \
         841f7d89d678b65ba252d57fe179dd7b6162d07b but expected \

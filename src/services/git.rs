@@ -293,6 +293,42 @@ pub fn ref_moved_underneath(err: &str) -> bool {
     err.contains("cannot lock ref") || err.contains("unable to update local ref")
 }
 
+/// Whether a merge refused because uncommitted edits to tracked files are in
+/// its way — the case `--autostash` handles. Untracked files in the way read
+/// differently, and a stash would not take them, so they do not match.
+pub fn local_changes_in_the_way(err: &str) -> bool {
+    err.contains("Your local changes to the following files would be overwritten")
+}
+
+/// Files with unresolved conflicts — what an `--autostash` whose edits
+/// clashed with the update leaves behind. Git refuses to check out or merge
+/// anything until they are resolved.
+pub async fn unmerged_paths(repo: &str) -> Vec<String> {
+    status(repo)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| is_unmerged(&c.code))
+        .map(|c| c.path)
+        .collect()
+}
+
+/// The porcelain codes git uses for a conflicted path.
+fn is_unmerged(code: &str) -> bool {
+    matches!(code, "UU" | "AA" | "DD" | "AU" | "UA" | "DU" | "UD")
+}
+
+/// Whether `a` and `b` name the same commit.
+pub async fn same_commit(repo: &str, a: &str, b: &str) -> bool {
+    match (
+        run(repo, "git", &["rev-parse", "--verify", "--quiet", a]).await,
+        run(repo, "git", &["rev-parse", "--verify", "--quiet", b]).await,
+    ) {
+        (Ok(a), Ok(b)) => a.trim() == b.trim(),
+        _ => false,
+    }
+}
+
 /// Where the current branch stands against the branch it tracks on origin.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Upstream {

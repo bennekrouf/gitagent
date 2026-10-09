@@ -200,6 +200,24 @@ impl Layout {
 
 const LAYOUT_FILE: &str = "layout.json";
 
+/// Whether the repository list is folded to a strip. Its own file rather than
+/// a field of `Layout`, so folding never races a divider drag saving widths.
+#[derive(Default, Serialize, Deserialize)]
+struct SidebarPref {
+    #[serde(default)]
+    folded: bool,
+}
+
+const SIDEBAR_FILE: &str = "sidebar.json";
+
+pub fn sidebar_folded() -> bool {
+    read::<SidebarPref>(SIDEBAR_FILE).folded
+}
+
+pub fn save_sidebar_folded(folded: bool) {
+    write(SIDEBAR_FILE, &SidebarPref { folded });
+}
+
 pub fn load_layout() -> Layout {
     let content = std::fs::read_to_string(data_dir().join(LAYOUT_FILE)).unwrap_or_default();
     serde_json::from_str(&content).unwrap_or_default()

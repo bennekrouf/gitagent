@@ -171,6 +171,24 @@ body {
     background: var(--bg1);
     min-height: 0;
 }
+/* Folded to a strip of status dots, one per repository. */
+.sidebar-folded {
+    width: 40px; align-items: center;
+    padding-top: 8px; gap: 6px;
+}
+.sidebar-strip {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    overflow-y: auto; width: 100%; padding: 4px 0;
+}
+.strip-row {
+    width: 28px; height: 28px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid transparent; border-radius: 7px;
+    cursor: pointer;
+}
+.strip-row:hover { background: var(--bg2); }
+.strip-row-on { background: var(--bg2); border-color: var(--border); }
+.strip-row .dot { margin: 0; width: 10px; height: 10px; }
 .sidebar-head {
     display: flex; align-items: center; justify-content: space-between;
     /* Less top padding than the 11px this had: the action buttons below now
@@ -1362,7 +1380,18 @@ button.update-banner-link {
     mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
 }
 .run-stages::-webkit-scrollbar { display: none; }
-.run-foot-hint { font-size: 11px; color: var(--text3); white-space: nowrap; flex-shrink: 0; }
+.run-foot-hint {
+    font-size: 11px; color: var(--text3); white-space: nowrap;
+    /* The first thing to give way when the footer is crowded — far ahead of
+       the pills and the replay speed — and it goes whole, never cut to "Click
+       a step to s…": a zero-width item sits in front of the text, so once the
+       text no longer fits beside it, it wraps to a second line, and the one
+       line of height shown hides it. */
+    flex: 0 1000 auto; min-width: 0;
+    display: flex; flex-wrap: wrap; align-items: center;
+    height: 1.4em; line-height: 1.4em; overflow: hidden;
+}
+.run-foot-hint::before { content: ''; width: 0; height: 1.4em; }
 
 .run-stage {
     display: inline-flex; align-items: center; gap: 8px;
