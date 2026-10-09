@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::components::dag_view::layers_of;
-use crate::services::graph::{Graph, NodeKind, NodeStatus, RunState, Step};
+use crate::services::graph::{live_subtitle, Graph, NodeKind, NodeStatus, RunState, Step};
 use crate::services::llm::Lenses;
 use crate::services::probe::{Checks, PrBrief};
 use crate::services::review::LENSES;
@@ -50,7 +50,10 @@ const LOOP_ROOM: f64 = 90.0;
 /// Tallest a revise loop rises above the higher of its two stations.
 const LOOP_MAX: f64 = 80.0;
 const LOOP_MIN: f64 = 34.0;
-const PAD_BOTTOM: f64 = 120.0;
+const PAD_BOTTOM: f64 = 136.0;
+/// Lines a step's description may take under its name: three, so a real
+/// branch name broken across lines still reads whole.
+const META_LINES: usize = 3;
 /// One line of a test step's progress bars: unit, integration, and so on.
 const TIER_ROW: f64 = 32.0;
 /// Room under the map for the review circle and its reviewers.
@@ -230,8 +233,13 @@ enum Fill {
     /// The step it leads to was rejected.
     SentBack,
     Failed,
-    /// The step it leads to will not run: skipped, bypassed or blocked.
+    /// The step it leads to will not run: skipped or blocked, or bypassed
+    /// with nothing beyond it that will.
     Idle,
+    /// Into a step you skipped, with the run under way beyond it: the train
+    /// passes straight through, blue, and waits at the next real step
+    /// instead of at the one it is not stopping at.
+    Through,
 }
 
 impl Fill {
@@ -243,6 +251,7 @@ impl Fill {
             Fill::SentBack => "back",
             Fill::Failed => "failed",
             Fill::Idle => "idle",
+            Fill::Through => "moving",
         }
     }
 
@@ -253,6 +262,7 @@ impl Fill {
             Fill::SentBack => "run-fill run-fill-back",
             Fill::Failed => "run-fill run-fill-failed",
             Fill::Idle => "run-fill run-fill-idle",
+            Fill::Through => "run-fill run-fill-moving",
         }
     }
 }
@@ -293,8 +303,8 @@ impl Phase {
     fn head(self, fill: Fill) -> Option<&'static str> {
         match (self, fill) {
             (Phase::Approach, _) => Some("run-dot run-dot-approach"),
-            (Phase::Finish, Fill::Arrived) => Some("run-dot run-dot-finish"),
-            (Phase::Draw, Fill::Arrived) => Some("run-dot run-dot-draw"),
+            (Phase::Finish, Fill::Arrived | Fill::Through) => Some("run-dot run-dot-finish"),
+            (Phase::Draw, Fill::Arrived | Fill::Through) => Some("run-dot run-dot-draw"),
             (Phase::Finish, _) => Some("run-dot run-dot-stop"),
             (Phase::Draw, _) => None,
         }
@@ -302,8 +312,10 @@ impl Phase {
 }
 
 /// `to` is `None` for the track into the end bar, which is reached as soon as
-/// the step before it is done.
-fn fill(departed: bool, to: Option<NodeStatus>) -> Option<Fill> {
+/// the step before it is done. `beyond` is, for a step you skipped, where the
+/// run stands past it — see `beyond_skipped` — since the run does not stop
+/// there and neither should the track.
+fn fill(departed: bool, to: Option<NodeStatus>, beyond: Option<NodeStatus>) -> Option<Fill> {
     if !departed {
         return None;
     }
@@ -314,8 +326,53 @@ fn fill(departed: bool, to: Option<NodeStatus>) -> Option<Fill> {
         }
         Some(NodeStatus::Rejected) => Fill::SentBack,
         Some(NodeStatus::Failed) => Fill::Failed,
-        Some(NodeStatus::Skipped | NodeStatus::Bypassed | NodeStatus::Blocked) => Fill::Idle,
+        Some(NodeStatus::Bypassed) => match beyond {
+            Some(NodeStatus::Pending | NodeStatus::Running | NodeStatus::AwaitingApproval) => {
+                Fill::Through
+            }
+            None | Some(NodeStatus::Done) => Fill::Arrived,
+            Some(NodeStatus::Failed) => Fill::Failed,
+            Some(NodeStatus::Rejected) => Fill::SentBack,
+            _ => Fill::Idle,
+        },
+        Some(NodeStatus::Skipped | NodeStatus::Blocked) => Fill::Idle,
     })
+}
+
+/// Where the run stands past `id`, a step you skipped: the status of the
+/// next steps that were not skipped too, following `edges` on through any
+/// that were. The liveliest of them when it forks — under way, then failed,
+/// then sent back, then done — and `None` when nothing follows, the end of
+/// the line being reached.
+fn beyond_skipped(
+    id: &str,
+    edges: &[(String, String)],
+    status: &dyn Fn(&str) -> NodeStatus,
+) -> Option<NodeStatus> {
+    fn rank(s: NodeStatus) -> u8 {
+        match s {
+            NodeStatus::Running | NodeStatus::AwaitingApproval | NodeStatus::Pending => 0,
+            NodeStatus::Failed => 1,
+            NodeStatus::Rejected => 2,
+            NodeStatus::Done => 3,
+            _ => 4,
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = vec![id.to_string()];
+    let mut found: Vec<NodeStatus> = vec![];
+    while let Some(at) = queue.pop() {
+        if !seen.insert(at.clone()) {
+            continue;
+        }
+        for (_, next) in edges.iter().filter(|(from, _)| *from == at) {
+            match status(next) {
+                NodeStatus::Bypassed => queue.push(next.clone()),
+                other => found.push(other),
+            }
+        }
+    }
+    found.into_iter().min_by_key(|s| rank(*s))
 }
 
 /// A step lets the run through once it is done, or once you said to go on
@@ -336,7 +393,7 @@ fn wrap(text: &str, width: usize, lines: usize) -> Vec<String> {
     let width = width.max(4);
     let mut out: Vec<String> = vec![];
     let mut line = String::new();
-    for word in text.split_whitespace() {
+    for word in text.split_whitespace().flat_map(|w| pieces(w, width)) {
         let fits = line.is_empty() || line.chars().count() + 1 + word.chars().count() <= width;
         if !fits {
             out.push(std::mem::take(&mut line));
@@ -344,7 +401,7 @@ fn wrap(text: &str, width: usize, lines: usize) -> Vec<String> {
         if !line.is_empty() {
             line.push(' ');
         }
-        line.push_str(word);
+        line.push_str(&word);
     }
     if !line.is_empty() {
         out.push(line);
@@ -358,6 +415,27 @@ fn wrap(text: &str, width: usize, lines: usize) -> Vec<String> {
             *l = format!("{}\u{2026}", cut.trim_end());
         }
     }
+    out
+}
+
+/// A word too long for a line, in pieces that each fit: broken just after a
+/// `/` or `-` where there is one — `feat/run-view-` and `branches` — so a
+/// branch name is split where it reads naturally, and cut anywhere only when
+/// it has nowhere better. Its end is usually what tells one branch from the
+/// next, so it is kept rather than lost to an ellipsis.
+fn pieces(word: &str, width: usize) -> Vec<String> {
+    let mut rest: Vec<char> = word.chars().collect();
+    let mut out = vec![];
+    while rest.len() > width {
+        let cut = rest[..width]
+            .iter()
+            .rposition(|c| *c == '/' || *c == '-')
+            .map(|i| i + 1)
+            .filter(|i| *i > width / 3)
+            .unwrap_or(width);
+        out.push(rest.drain(..cut).collect());
+    }
+    out.push(rest.into_iter().collect());
     out
 }
 
@@ -817,6 +895,10 @@ pub struct RunViewProps {
     /// cannot — the list view's Start button, asked the same questions.
     pub can_start: bool,
     pub start_note: String,
+    /// What starting it would do, as the list view's Start button says it —
+    /// "Commit 5 files again" — shown on Play when Play would start a run.
+    #[props(default)]
+    pub start_label: String,
     /// Before anything has run there is nothing to replay, so Play starts
     /// the flow instead, exactly as Start does in the list view.
     pub on_start: EventHandler<()>,
@@ -868,6 +950,17 @@ pub fn RunView(props: RunViewProps) -> Element {
     let live = at.is_none();
     // Nothing has happened in this run yet: no history to play back.
     let fresh = len == 0 && !props.state.started;
+    // Or it has all happened: every step settled, nothing left running. Then
+    // too Play starts the flow — again, as the list view's Start does —
+    // rather than standing pressed over a run that has nothing left to play.
+    // Restart still replays the one that finished.
+    let over = props.state.started
+        && props
+            .graph
+            .nodes
+            .iter()
+            .all(|n| props.state.status(&n.id).is_terminal());
+    let startable = fresh || (over && at.is_none());
     // Read by the timer below, which outlives any one render's props.
     let history_len = use_hook(|| Rc::new(Cell::new(0usize)));
     history_len.set(len);
@@ -987,7 +1080,11 @@ pub fn RunView(props: RunViewProps) -> Element {
             tracks.push(Track {
                 key: format!("start->{root}"),
                 d: curve(start_x, bar_y, s.x - R, s.y),
-                fill: fill(started, Some(to)),
+                fill: fill(
+                    started,
+                    Some(to),
+                    beyond_skipped(root, &plan.edges, &status),
+                ),
             });
         }
     }
@@ -997,7 +1094,11 @@ pub fn RunView(props: RunViewProps) -> Element {
             tracks.push(Track {
                 key: format!("{from}->{to}"),
                 d: curve(a.x + R, a.y, b.x - R, b.y),
-                fill: fill(departed(status(from)), Some(target)),
+                fill: fill(
+                    departed(status(from)),
+                    Some(target),
+                    beyond_skipped(to, &plan.edges, &status),
+                ),
             });
         }
     }
@@ -1006,7 +1107,7 @@ pub fn RunView(props: RunViewProps) -> Element {
             tracks.push(Track {
                 key: format!("{leaf}->end"),
                 d: curve(s.x + R, s.y, end_x, bar_y),
-                fill: fill(departed(status(leaf)), None),
+                fill: fill(departed(status(leaf)), None, None),
             });
         }
     }
@@ -1093,25 +1194,32 @@ pub fn RunView(props: RunViewProps) -> Element {
                 div { class: "run-player",
                     // Two buttons, not one that changes its label: the one
                     // in effect stays pressed, so the state reads at a glance.
-                    if fresh {
-                        // Nothing has run, so there is nothing to play back:
-                        // Play starts the flow, and stops at every approval
-                        // just as Start in the list view does.
+                    if startable {
+                        // Nothing has run, or all of it has, so there is
+                        // nothing to play back: Play starts the flow, and
+                        // stops at every approval just as Start in the list
+                        // view does.
                         button {
                             class: "run-ctl",
                             disabled: !props.can_start,
-                            title: if props.can_start {
-                                "Start this flow \u{2014} the same as Start in the list view. It stops for you at every approval.".to_string()
-                            } else {
-                                props.start_note.clone()
+                            title: match (props.can_start, fresh) {
+                                (false, _) => props.start_note.clone(),
+                                (true, true) => "Start this flow \u{2014} the same as Start in the list view. It stops for you at every approval.".to_string(),
+                                (true, false) => "Run this flow again from the start \u{2014} the same as Start in the list view. Restart replays the run that finished.".to_string(),
                             },
                             onclick: move |_| props.on_start.call(()),
-                            "\u{25b6} Play"
+                            // Plain "Play" says nothing about what is about to
+                            // happen; the list view's words do.
+                            if props.start_label.is_empty() {
+                                "\u{25b6} Play"
+                            } else {
+                                "\u{25b6} {props.start_label}"
+                            }
                         }
                         button {
                             class: "run-ctl",
                             disabled: true,
-                            title: "Nothing is running yet.",
+                            title: if fresh { "Nothing is running yet." } else { "Nothing is running: the run has finished." },
                             "\u{275a}\u{275a} Pause"
                         }
                     } else {
@@ -1154,17 +1262,6 @@ pub fn RunView(props: RunViewProps) -> Element {
                             playing.set(true);
                         },
                         "\u{21bb} Restart"
-                    }
-                    div { class: "run-speeds",
-                        for v in SPEEDS {
-                            button {
-                                key: "{v}",
-                                class: if *speed.read() == v { "run-speed run-speed-on" } else { "run-speed" },
-                                title: "Replay and animate at {v}\u{d7}",
-                                onclick: move |_| speed.set(v),
-                                "{v}\u{d7}"
-                            }
-                        }
                     }
                     span { class: if live && !fresh { "run-mode run-mode-live" } else { "run-mode" },
                         if fresh { "not started" }
@@ -1407,7 +1504,8 @@ pub fn RunView(props: RunViewProps) -> Element {
                                     );
                                     let kind = if spec.kind == NodeKind::Model { "model" } else { "code" };
                                     let name = wrap(&spec.title, name_chars, 2);
-                                    let meta = wrap(&spec.subtitle, meta_chars, 2);
+                                    let described = live_subtitle(spec.step, &spec.subtitle, state);
+                                    let meta = wrap(&described, meta_chars, META_LINES);
                                     let meta_y = s.y + R + 26.0 + name.len() as f64 * NAME_PX * 1.2 + 2.0;
                                     let bars = tiers
                                         .iter()
@@ -1425,7 +1523,7 @@ pub fn RunView(props: RunViewProps) -> Element {
                                             key: "{s.id}",
                                             class: "{class}",
                                             onclick: move |_| props.on_select.call(id.clone()),
-                                            title { "{spec.title} — {spec.subtitle}\nClick to open this step." }
+                                            title { "{spec.title} — {described}\nClick to open this step." }
                                             if matches!(st, NodeStatus::Running | NodeStatus::AwaitingApproval) {
                                                 circle { class: "run-halo", cx: "{s.x}", cy: "{s.y}", r: "{R}" }
                                             }
@@ -1518,6 +1616,25 @@ pub fn RunView(props: RunViewProps) -> Element {
                         }
                     }
                 }
+                div { class: "run-foot-speed",
+                    // Named, since three numbers alone read as anything: how
+                    // fast a replay steps through the run, and how fast the
+                    // map animates. Never how fast the run itself goes. Down
+                    // here rather than in the header, which they crowded: they
+                    // only matter while a replay is playing.
+                    span { class: "run-speeds-label", "Replay speed" }
+                    div { class: "run-speeds",
+                        for v in SPEEDS {
+                            button {
+                                key: "{v}",
+                                class: if *speed.read() == v { "run-speed run-speed-on" } else { "run-speed" },
+                                title: "Replay and animate at {v}\u{d7}",
+                                onclick: move |_| speed.set(v),
+                                "{v}\u{d7}"
+                            }
+                        }
+                    }
+                }
                 span { class: "run-foot-hint",
                     if started {
                         "Click a step to see it and act on it"
@@ -1546,19 +1663,28 @@ mod tests {
 
     #[test]
     fn a_track_stays_empty_until_its_start_is_done() {
-        assert_eq!(fill(false, Some(NodeStatus::Running)), None);
-        assert_eq!(fill(true, Some(NodeStatus::Running)), Some(Fill::Moving));
+        assert_eq!(fill(false, Some(NodeStatus::Running), None), None);
+        assert_eq!(
+            fill(true, Some(NodeStatus::Running), None),
+            Some(Fill::Moving)
+        );
     }
 
     #[test]
     fn a_track_turns_green_when_both_ends_are_done() {
-        assert_eq!(fill(true, Some(NodeStatus::Done)), Some(Fill::Arrived));
-        assert_eq!(fill(true, None), Some(Fill::Arrived));
+        assert_eq!(
+            fill(true, Some(NodeStatus::Done), None),
+            Some(Fill::Arrived)
+        );
+        assert_eq!(fill(true, None, None), Some(Fill::Arrived));
     }
 
     #[test]
     fn a_rejection_is_drawn_as_sent_back() {
-        assert_eq!(fill(true, Some(NodeStatus::Rejected)), Some(Fill::SentBack));
+        assert_eq!(
+            fill(true, Some(NodeStatus::Rejected), None),
+            Some(Fill::SentBack)
+        );
     }
 
     #[test]
@@ -1581,6 +1707,55 @@ mod tests {
         );
         assert_eq!(Phase::Draw.head(Fill::Failed), None);
         assert!(Phase::Approach.head(Fill::Moving).is_some());
+    }
+
+    #[test]
+    fn a_long_branch_name_breaks_at_its_slashes_and_dashes_rather_than_being_cut() {
+        let lines = wrap("on feat/run-view-branches", 20, 3);
+        assert_eq!(lines, vec!["on feat/run-view-", "branches"]);
+        // With nowhere to break, it is cut at the width — still all there.
+        assert_eq!(pieces("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        // Short words are left alone.
+        assert_eq!(pieces("main", 20), vec!["main"]);
+    }
+
+    #[test]
+    fn a_track_into_a_step_you_skipped_runs_on_blue_to_the_next_one() {
+        // The run is under way past it: through, not idle, and drawn whole.
+        let f = fill(true, Some(NodeStatus::Bypassed), Some(NodeStatus::Running)).unwrap();
+        assert_eq!(f, Fill::Through);
+        assert_eq!(f.css(), "run-fill run-fill-moving");
+        assert_eq!(Phase::of(f, false), Phase::Draw, "no stopping short of it");
+        assert!(Phase::Draw.head(f).is_some(), "the dot runs through");
+        // Done beyond it: green. Nothing beyond: the end, reached.
+        assert_eq!(
+            fill(true, Some(NodeStatus::Bypassed), Some(NodeStatus::Done)),
+            Some(Fill::Arrived)
+        );
+        assert_eq!(
+            fill(true, Some(NodeStatus::Bypassed), None),
+            Some(Fill::Arrived)
+        );
+    }
+
+    #[test]
+    fn beyond_a_skipped_step_is_the_next_one_not_skipped() {
+        let edges = vec![
+            ("a".to_string(), "b".to_string()),
+            ("b".to_string(), "c".to_string()),
+            ("c".to_string(), "d".to_string()),
+        ];
+        let status = |id: &str| match id {
+            "b" | "c" => NodeStatus::Bypassed,
+            "d" => NodeStatus::Running,
+            _ => NodeStatus::Done,
+        };
+        // b and c were both skipped: past b, the run is at d.
+        assert_eq!(
+            beyond_skipped("b", &edges, &status),
+            Some(NodeStatus::Running)
+        );
+        assert_eq!(beyond_skipped("d", &edges, &status), None);
     }
 
     #[test]

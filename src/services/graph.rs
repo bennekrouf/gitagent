@@ -545,8 +545,105 @@ impl RunState {
     }
 }
 
+/// A step's description, on the map and on its card in the list view, with the run's real branches and pull
+/// request in it once the run knows them — `git push -u origin feat/x`
+/// rather than `git push -u origin <branch>`. The catalogue's own words until
+/// then, and for every step these names say nothing about.
+pub fn live_subtitle(step: Step, catalogue: &str, state: &RunState) -> String {
+    let art = |key: &str| state.artifact(key).trim().to_string();
+    let known = |key: &str| !art(key).is_empty();
+    // The branch the work goes out on: the one committed to once it is,
+    // the one about to be made before that.
+    let branch = if known("work_branch") {
+        art("work_branch")
+    } else {
+        art("branch_name")
+    };
+    match step {
+        Step::Commit if !branch.is_empty() => format!("on {branch}"),
+        Step::Push if !branch.is_empty() => format!("git push -u origin {branch}"),
+        Step::OpenPr if !branch.is_empty() && known("base") => {
+            format!("{branch} \u{2192} {}", art("base"))
+        }
+        Step::FindPr if known("pr_number") && known("pr_head") => {
+            format!("#{} \u{00b7} {}", art("pr_number"), art("pr_head"))
+        }
+        Step::PrDiff if known("pr_base") && known("pr_head") => {
+            format!("git diff {}...{}", art("pr_base"), art("pr_head"))
+        }
+        Step::Merge if known("pr_number") && known("pr_base") => {
+            format!("squash #{} into {}", art("pr_number"), art("pr_base"))
+        }
+        Step::Sync if known("pr_base") => format!("checkout {} and pull", art("pr_base")),
+        _ => catalogue.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_step_names_the_real_branch_once_the_run_knows_it() {
+        let mut state = RunState::default();
+        assert_eq!(
+            live_subtitle(Step::Push, "git push -u origin <branch>", &state),
+            "git push -u origin <branch>",
+            "the catalogue's words until then"
+        );
+        state
+            .artifacts
+            .insert("branch_name".into(), "feat/run-diff".into());
+        state.artifacts.insert("base".into(), "main".into());
+        assert_eq!(
+            live_subtitle(Step::Push, "git push -u origin <branch>", &state),
+            "git push -u origin feat/run-diff"
+        );
+        assert_eq!(
+            live_subtitle(Step::OpenPr, "gh pr create", &state),
+            "feat/run-diff \u{2192} main"
+        );
+        // Once committed, the branch it really went on wins over the plan.
+        state
+            .artifacts
+            .insert("work_branch".into(), "feat/run-diff-2".into());
+        assert_eq!(
+            live_subtitle(Step::Commit, "Branch if needed", &state),
+            "on feat/run-diff-2"
+        );
+    }
+
+    #[test]
+    fn a_review_names_its_pull_request_and_branches() {
+        let mut state = RunState::default();
+        for (k, v) in [
+            ("pr_number", "104"),
+            ("pr_base", "main"),
+            ("pr_head", "feat/x"),
+        ] {
+            state.artifacts.insert(k.into(), v.into());
+        }
+        assert_eq!(
+            live_subtitle(Step::FindPr, "", &state),
+            "#104 \u{00b7} feat/x"
+        );
+        assert_eq!(
+            live_subtitle(Step::PrDiff, "", &state),
+            "git diff main...feat/x"
+        );
+        assert_eq!(
+            live_subtitle(Step::Merge, "", &state),
+            "squash #104 into main"
+        );
+        assert_eq!(
+            live_subtitle(Step::Sync, "", &state),
+            "checkout main and pull"
+        );
+        // A step these names say nothing about keeps its own words.
+        assert_eq!(
+            live_subtitle(Step::Analyse, "Model call", &state),
+            "Model call"
+        );
+    }
+
     use super::*;
 
     fn node(id: &str, deps: &[&str]) -> NodeSpec {

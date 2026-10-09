@@ -26,7 +26,9 @@ use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
-use crate::services::graph::{Graph, NodeKind, NodeRun, NodeStatus, Remedy, RunState, Step};
+use crate::services::graph::{
+    live_subtitle, Graph, NodeKind, NodeRun, NodeSpec, NodeStatus, Remedy, RunState, Step,
+};
 use crate::services::licence;
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
@@ -1159,6 +1161,23 @@ fn flow_run(states: &States, repo: &str, flow: &str, graph: &Graph) -> Option<Fl
         pr: key.2.clone(),
         step,
     })
+}
+
+/// What a Refresh clears besides re-reading the repositories: runs that have
+/// ended with nothing left to act on — done, nothing to do, or declined — in
+/// `repo`, or in every repository when it is `None`. A finished run left on
+/// screen reads as the repository's present; after a refresh the map should
+/// show where things stand now, ready to start. Runs still going, waiting
+/// for you, or failed with a retry or a fix on offer are kept.
+fn forget_finished(states: &mut States, running: &BTreeSet<Key>, repo: Option<&str>) {
+    states.retain(|key, state| {
+        let here = repo.is_none_or(|r| key.0 == r);
+        let ended = matches!(
+            phase_of(state),
+            Phase::Done | Phase::Nothing | Phase::Declined
+        );
+        !(here && ended && !running.contains(key))
+    });
 }
 
 /// Which flow a run starts on, as `(flow, pull request)`. The one on screen —
@@ -2333,11 +2352,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     on_refresh: {
                         let workspace = workspace.clone();
                         move |_| {
+                            forget_finished(&mut states.write(), &running.read(), None);
                             refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots, true);
                         }
                     },
                     on_reprobe: move |path: String| {
                         if !licence::is_locked(&licence_status.read(), &free_slots.read(), &path) {
+                            forget_finished(&mut states.write(), &running.read(), Some(&path));
                             reprobe(path, statuses);
                         }
                     },
@@ -2435,6 +2456,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let can_start = !running.read().contains(&key)
                             && other_run.is_none()
                             && can_run.enabled;
+                        // What starting it would do, in the list view's own
+                        // words: "Commit 5 files again", "Review #104".
+                        let start_label = can_run.label.clone();
                         let start_note = other_run.unwrap_or(can_run.reason);
                         // The step whose panel is open, if it is still a step
                         // of the flow on screen.
@@ -2475,6 +2499,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             RunView {
                                 can_start,
                                 start_note,
+                                start_label,
                                 on_start: move |_| begin(false),
                                 graph: graph.clone(),
                                 state: run_state.clone(),
@@ -2830,7 +2855,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     for node in graph.nodes.iter().cloned() {
                                         NodeCard {
                                             key: "{node.id}",
-                                            spec: node.clone(),
+                                            // Its real branches and pull request in
+                                            // its description once the run knows
+                                            // them, as on the run view's map.
+                                            spec: NodeSpec {
+                                                subtitle: live_subtitle(node.step, &node.subtitle, &state),
+                                                ..node.clone()
+                                            },
                                             run: state.runs.get(&node.id).cloned().unwrap_or_default(),
                                             selected: node.id == node_id,
                                             on_select: move |id: String| selected_node.set(id),
@@ -3236,6 +3267,40 @@ mod tests {
         let mut states = States::new();
         states.insert(("repo".into(), flow.into(), pr.into()), state);
         states
+    }
+
+    #[test]
+    fn a_refresh_clears_runs_that_ended_and_keeps_the_rest() {
+        let graph = commit_and_pr().to_graph();
+        let mut done = RunState::fresh(&graph);
+        done.started = true;
+        for n in &graph.nodes {
+            done.set_status(&n.id, NodeStatus::Done);
+        }
+        let mut failed = RunState::fresh(&graph);
+        failed.started = true;
+        failed.set_status("push", NodeStatus::Failed);
+        let mut waiting = RunState::fresh(&graph);
+        waiting.started = true;
+        waiting.set_status("push", NodeStatus::AwaitingApproval);
+
+        let key = |repo: &str, flow: &str| -> Key { (repo.into(), flow.into(), String::new()) };
+        let mut states = States::new();
+        states.insert(key("a", "commit_and_pr"), done.clone());
+        states.insert(key("a", "review_and_merge"), failed);
+        states.insert(key("a", "release"), waiting);
+        states.insert(key("b", "commit_and_pr"), done);
+
+        forget_finished(&mut states, &BTreeSet::new(), Some("a"));
+        // a's finished run is gone; its failed and waiting ones stay, and
+        // b — not refreshed — is untouched.
+        assert!(!states.contains_key(&key("a", "commit_and_pr")));
+        assert!(states.contains_key(&key("a", "review_and_merge")));
+        assert!(states.contains_key(&key("a", "release")));
+        assert!(states.contains_key(&key("b", "commit_and_pr")));
+
+        forget_finished(&mut states, &BTreeSet::new(), None);
+        assert!(!states.contains_key(&key("b", "commit_and_pr")));
     }
 
     #[test]

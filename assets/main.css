@@ -1765,3 +1765,28 @@ button.update-banner-link {
     margin: 0 0 12px; padding: 8px 10px;
     background: var(--bg1); border: 1px solid var(--border2); border-radius: 6px;
 }
+.run-speeds-label { font-size: 11px; color: var(--text3); white-space: nowrap; }
+
+/* The replay speed, at the footer's right end: out of the header, which it
+   crowded, and beside the pills that scroll to make room for it. */
+.run-foot-speed { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.run-foot-speed .run-speed { padding: 4px 9px; font-size: 11px; }
+
+/* Repository list folded to a strip of status dots. */
+.sidebar-folded {
+    width: 40px; align-items: center;
+    padding-top: 8px; gap: 6px;
+}
+.sidebar-strip {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    overflow-y: auto; width: 100%; padding: 4px 0;
+}
+.strip-row {
+    width: 28px; height: 28px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid transparent; border-radius: 7px;
+    cursor: pointer;
+}
+.strip-row:hover { background: var(--bg2); }
+.strip-row-on { background: var(--bg2); border-color: var(--border); }
+.strip-row .dot { margin: 0; }
