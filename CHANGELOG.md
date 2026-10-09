@@ -17,6 +17,40 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Steps describe what they do with the run's real branches and pull request
+  once it knows them, in the Run view and on the list view's step cards alike:
+  **Push branch** reads `git push -u origin feat/your-branch` instead of
+  `<branch>`, **Open pull request** reads `feat/your-branch → main`, and the
+  review flow names its pull request and base. On the Run view's map a long
+  branch name breaks across lines at its slashes and dashes rather than being
+  cut off, and hovering a step shows it in full.
+- The 0.5× / 1× / 2× buttons are labelled **Replay speed** and moved from
+  the Run view's header to its bottom bar, beside the step pills, leaving the
+  header to the controls that start and pause a run. They set how fast a
+  replay steps through the run and how fast the map animates, never how fast
+  the run itself goes.
+- Refreshing a repository, or the whole list, also clears its runs that have
+  ended — done, nothing to do, or declined — so the Run view shows where the
+  repository stands now instead of the last run's steps all marked done.
+  Runs still going, waiting for you, or failed with a fix to try are kept.
+
+### Fixed
+
+- In the Run view, Play starts the flow again once its last run has
+  finished, as Start does in the list view. Before, a finished run left Play
+  pressed and unusable, with no way to run the flow again from the Run view;
+  Restart still replays the run that finished. When it would start a run,
+  the button says what it will do in the list view's words — "Commit 5 files
+  again", "Review #104" — instead of a bare "Play".
+- In the Run view, a step you skip no longer looks like the place the run is
+  waiting. The track into it went grey and its dot stopped short of it; now
+  the run passes straight through in blue and waits at the next step that
+  was not skipped, or turns green once everything past it is done.
+
 ## [0.1.89] - 2026-10-09
 
 ### Changed
