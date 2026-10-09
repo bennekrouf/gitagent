@@ -83,6 +83,67 @@ fn zoom_wheel(zoom: f64, delta_y: f64) -> f64 {
     (zoom * (-delta_y * 0.0015).exp()).clamp(ZOOM_MIN, ZOOM_MAX)
 }
 
+/// The step the run is at, for following it across a map wider than the
+/// screen: the one that most recently started running, stopped for your
+/// approval, or failed, and is still in that state — looking only at the
+/// first `upto` changes, so a replay follows the replay. `None` once the run
+/// has nothing in progress.
+fn progress_focus(state: &RunState, upto: usize) -> Option<String> {
+    state
+        .history
+        .iter()
+        .take(upto)
+        .rev()
+        .find(|(id, status)| {
+            matches!(
+                status,
+                NodeStatus::Running | NodeStatus::AwaitingApproval | NodeStatus::Failed
+            ) && state.status(id) == *status
+        })
+        .map(|(id, _)| id.clone())
+}
+
+/// Scrolls the map to `left`, smoothly unless motion is reduced — and only
+/// when there is anywhere to scroll, the map being wider than its window.
+fn follow_js(left: f64) -> String {
+    format!(
+        "(() => {{\
+           const c = document.querySelector('.run-canvas');\
+           if (!c || c.scrollWidth <= c.clientWidth + 1) return;\
+           const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;\
+           c.scrollTo({{ left: {left}, behavior: calm ? 'auto' : 'smooth' }});\
+         }})()"
+    )
+}
+
+/// The zoom a keyboard shortcut asks for: `in` for ⌘+, `out` for ⌘−, `reset`
+/// for ⌘0 — the same keys a browser zooms with.
+fn zoom_key(zoom: f64, key: &str) -> f64 {
+    match key {
+        "in" => zoom_step(zoom, true),
+        "out" => zoom_step(zoom, false),
+        "reset" => 1.0,
+        _ => zoom,
+    }
+}
+
+/// Listens on the window for ⌘+ / ⌘− / ⌘0 (Ctrl on other systems) and says
+/// which was pressed. Only while a run map is on screen: in the list view the
+/// keys are left to whatever else wants them. The handler is kept on
+/// `window` and replaced on each mount, so two never stack.
+const ZOOM_KEYS_JS: &str = "\
+    if (window._gaZoomKeys) window.removeEventListener('keydown', window._gaZoomKeys);\
+    window._gaZoomKeys = (e) => {\
+        if (!(e.metaKey || e.ctrlKey) || e.altKey) return;\
+        if (!document.querySelector('.run-canvas')) return;\
+        const k = e.key;\
+        const what = (k === '=' || k === '+') ? 'in' : (k === '-' || k === '_') ? 'out' : (k === '0') ? 'reset' : null;\
+        if (!what) return;\
+        e.preventDefault();\
+        dioxus.send(what);\
+    };\
+    window.addEventListener('keydown', window._gaZoomKeys);";
+
 /// Keeps the point under the cursor — `at`, in window coordinates — where it
 /// is while the map is redrawn at another zoom, or the middle of the visible
 /// map when there is no cursor to follow (the − and + buttons).
@@ -993,9 +1054,30 @@ pub fn RunView(props: RunViewProps) -> Element {
     // so a big flow fits zoomed out, and zoomed in everything grows, scrolls,
     // and stays sharp, being drawn rather than magnified.
     let mut zoom = use_signal(|| store::run_zoom().clamp(ZOOM_MIN, ZOOM_MAX));
+    // ⌘+ / ⌘− / ⌘0, around the middle of the view as the buttons do.
+    use_future(move || async move {
+        let mut keys = document::eval(ZOOM_KEYS_JS);
+        while let Ok(key) = keys.recv::<String>().await {
+            let now = *zoom.peek();
+            let next = zoom_key(now, &key);
+            if next != now {
+                document::eval(&zoom_anchor_js(None));
+                zoom.set(next);
+            }
+        }
+    });
+    // Each change of zoom flashes its percentage over the map for a moment:
+    // the count re-keys the label, which restarts its fade. Not on opening —
+    // only when the zoom actually moves.
+    let mut zoom_flash = use_signal(|| 0u32);
+    let last_zoom = use_hook(|| Rc::new(Cell::new(f64::NAN)));
     // Saved once it settles, not on every tick of a scroll or pinch.
     use_effect(move || {
         let level = *zoom.read();
+        let before = last_zoom.replace(level);
+        if !before.is_nan() && before != level {
+            *zoom_flash.write() += 1;
+        }
         spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
             if *zoom.peek() == level {
@@ -1099,14 +1181,58 @@ pub fn RunView(props: RunViewProps) -> Element {
     // clear of it, and back when it closes.
     // Worked out on screen, where the panel is: the station and its labels at
     // their zoomed size, against the panel's own width.
-    let slide = if props.panel_open {
-        let area_w = (*area.read()).map(|(w, _)| w).unwrap_or(plan.width * z);
+    let area_w = (*area.read()).map(|(w, _)| w).unwrap_or(plan.width * z);
+    // A map wider than its window scrolls, and scrolling does the moving:
+    // sliding it as well would add the two together. One that fits slides.
+    let overflows = plan.width * z > area_w + 0.5;
+    let slide = if props.panel_open && !overflows {
         plan.find(&props.selected)
             .map(|s| slide_for(s.x * z, plan.col_w * z, area_w, props.panel_folded))
             .unwrap_or(0.0)
     } else {
         0.0
     };
+
+    // On a map that does not fit across, keep the run in sight: scroll to
+    // the step it is at whenever that changes — or, with a step's panel open,
+    // to that step, left of the panel. A third of the way in, so the steps
+    // still to come show to its right. Only when the step changes, never on a
+    // zoom or a scroll of your own, so it does not fight you.
+    let focus = if props.panel_open {
+        Some(props.selected.clone()).filter(|id| plan.find(id).is_some())
+    } else {
+        progress_focus(&shown, at.unwrap_or(len))
+    };
+    let follow_left = focus.as_ref().and_then(|id| plan.find(id)).map(|s| {
+        let visible = if props.panel_open {
+            area_w - panel_width(area_w, props.panel_folded)
+        } else {
+            area_w
+        };
+        (s.x * z - visible * 0.35).max(0.0)
+    });
+    let follow_key = focus.map(|id| (id, props.panel_open, props.panel_folded));
+    let measured = area.read().is_some();
+    let followed = use_hook(|| Rc::new(RefCell::new(None::<(String, bool, bool)>)));
+    use_effect(use_reactive!(|(
+        follow_key,
+        follow_left,
+        overflows,
+        measured,
+    )| {
+        // Not before the window has been measured: the first guess at its
+        // width would scroll to the wrong place and count as followed.
+        if !measured || !overflows {
+            return;
+        }
+        if *followed.borrow() == follow_key {
+            return;
+        }
+        *followed.borrow_mut() = follow_key.clone();
+        if let Some(left) = follow_left {
+            document::eval(&follow_js(left));
+        }
+    }));
     let name_chars = chars_across(plan.col_w, NAME_PX);
     let meta_chars = chars_across(plan.col_w, META_PX);
     let state = &shown;
@@ -1715,7 +1841,7 @@ pub fn RunView(props: RunViewProps) -> Element {
                     div { class: "run-speeds",
                         button {
                             class: "run-speed",
-                            title: "Zoom out (\u{2318} + scroll down, or pinch)",
+                            title: "Zoom out (\u{2318}\u{2212}, \u{2318} + scroll down, or pinch)",
                             disabled: z <= ZOOM_MIN + 1e-9,
                             onclick: move |_| {
                                 let now = *zoom.peek();
@@ -1726,7 +1852,7 @@ pub fn RunView(props: RunViewProps) -> Element {
                         }
                         button {
                             class: "run-speed run-zoom-level",
-                            title: "Back to 100%",
+                            title: "Back to 100% (\u{2318}0)",
                             onclick: move |_| {
                                 document::eval(&zoom_anchor_js(None));
                                 zoom.set(1.0);
@@ -1735,7 +1861,7 @@ pub fn RunView(props: RunViewProps) -> Element {
                         }
                         button {
                             class: "run-speed",
-                            title: "Zoom in (\u{2318} + scroll up, or pinch)",
+                            title: "Zoom in (\u{2318}+, \u{2318} + scroll up, or pinch)",
                             disabled: z >= ZOOM_MAX - 1e-9,
                             onclick: move |_| {
                                 let now = *zoom.peek();
@@ -1771,6 +1897,13 @@ pub fn RunView(props: RunViewProps) -> Element {
                     } else {
                         "Press Play to start this flow and watch it fill in"
                     }
+                }
+            }
+            if *zoom_flash.read() > 0 {
+                div {
+                    key: "zoom-flash-{zoom_flash}",
+                    class: "run-zoom-flash",
+                    "{(z * 100.0).round()}%"
                 }
             }
             {props.children}
@@ -2285,6 +2418,48 @@ mod tests {
         assert_eq!(zoom_step(1.04, true), 1.1);
         assert_eq!(zoom_step(ZOOM_MAX, true), ZOOM_MAX);
         assert_eq!(zoom_step(ZOOM_MIN, false), ZOOM_MIN);
+    }
+
+    #[test]
+    fn the_run_is_followed_to_the_step_it_is_at() {
+        let graph = FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph();
+        let mut s = RunState::fresh(&graph);
+        s.started = true;
+        assert_eq!(progress_focus(&s, s.history.len()), None);
+        s.set_status("preflight", NodeStatus::Running);
+        s.set_status("preflight", NodeStatus::Done);
+        s.set_status("scan", NodeStatus::Running);
+        assert_eq!(progress_focus(&s, s.history.len()).as_deref(), Some("scan"));
+        s.set_status("scan", NodeStatus::AwaitingApproval);
+        assert_eq!(progress_focus(&s, s.history.len()).as_deref(), Some("scan"));
+        // A replay one change in follows what was going on then: the view
+        // hands it the run rewound to that point.
+        assert_eq!(
+            progress_focus(&s.replayed(1), 1).as_deref(),
+            Some("preflight")
+        );
+        // Nothing in progress, nothing to follow.
+        s.set_status("scan", NodeStatus::Done);
+        assert_eq!(progress_focus(&s, s.history.len()), None);
+    }
+
+    #[test]
+    fn following_only_scrolls_a_map_wider_than_its_window() {
+        let js = follow_js(420.0);
+        assert!(js.contains("scrollWidth <= c.clientWidth"));
+        assert!(js.contains("left: 420"));
+    }
+
+    #[test]
+    fn the_browser_zoom_keys_step_the_map_and_command_zero_resets_it() {
+        assert_eq!(zoom_key(1.0, "in"), 1.1);
+        assert_eq!(zoom_key(1.0, "out"), 0.9);
+        assert_eq!(zoom_key(1.7, "reset"), 1.0);
+        assert_eq!(zoom_key(ZOOM_MAX, "in"), ZOOM_MAX);
+        assert_eq!(zoom_key(1.3, "anything else"), 1.3);
     }
 
     #[test]

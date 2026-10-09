@@ -1825,3 +1825,23 @@ button.update-banner-link {
 .run-foot-zoom .run-speed { padding: 4px 9px; font-size: 11px; }
 .run-foot-zoom .run-speed:disabled { opacity: 0.4; cursor: default; }
 .run-zoom-level { min-width: 46px; }
+
+/* The zoom percentage, shown for a moment in the middle of the map whenever
+   it changes, then faded away. Never in the way of a click. */
+.run-zoom-flash {
+    position: absolute; top: 42%; left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 8px 16px; border-radius: 10px;
+    background: var(--bg1);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border);
+    color: var(--text1); font-size: 20px; font-weight: 700;
+    pointer-events: none; z-index: 4;
+    animation: run-zoom-flash 0.55s ease-out forwards;
+}
+@keyframes run-zoom-flash {
+    0%   { opacity: 0; }
+    10%  { opacity: 1; }
+    45%  { opacity: 1; }
+    100% { opacity: 0; }
+}

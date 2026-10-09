@@ -17,6 +17,23 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Keyboard shortcuts for the Run view's map zoom, the ones a browser uses:
+  **⌘+** zooms in, **⌘−** zooms out and **⌘0** goes back to 100% (Ctrl on
+  Windows and Linux), around the middle of the view. They only act while the
+  Run view is on screen.
+- Zooming the Run view's map shows the new percentage for a moment in the
+  middle of the map, however you zoomed — buttons, shortcuts, ⌘ + scroll or
+  pinch — so you can tell where you are without looking down at the bar.
+- When a flow's map is wider than the Run view, the view now scrolls along
+  with the run: as each step starts, waits for you or fails, the map glides
+  sideways to keep it in sight, and with the step panel open it keeps the
+  step you picked clear of the panel. It only moves when the run moves on,
+  so it never pulls the map away while you scroll around it yourself.
+
 ## [0.1.92] - 2026-10-09
 
 ### Changed
