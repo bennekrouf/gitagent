@@ -17,6 +17,19 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Each flow tab now says where its run stands in the repository, under its
+  name: "running · 3/8", "needs you · Merge", "failed · Open pull request",
+  "done". Following a pull request through Commit → PR and Review → Merge no
+  longer means opening each tab to find out where it got to.
+- When a flow other than the one on screen needs you — waiting for an
+  approval, failed, or running — a line under the tabs says which, for which
+  pull request and at which step, with a **Show** button that goes straight
+  there.
+
 ## [0.1.88] - 2026-10-08
 
 ### Added

@@ -1104,6 +1104,63 @@ fn needs_a_person(status: NodeStatus) -> bool {
     matches!(status, NodeStatus::AwaitingApproval | NodeStatus::Failed)
 }
 
+/// Where a flow's run in one repository stands, for its tab and for the line
+/// that points to whatever needs you.
+#[derive(Clone, PartialEq, Debug)]
+struct FlowRun {
+    phase: Phase,
+    /// "running · 3/8", "needs you · Merge", "failed · Open pull request".
+    note: String,
+    /// Which pull request's run it is, empty for a flow not about one.
+    pr: String,
+    /// The step that needs you, for a run that waits or failed.
+    step: String,
+}
+
+/// The most urgent of a flow's runs in `repo` — one per pull request it was
+/// run for — or `None` when it has not run there. `graph` is the flow's, for
+/// step names and the count of steps.
+fn flow_run(states: &States, repo: &str, flow: &str, graph: &Graph) -> Option<FlowRun> {
+    let (key, state) = states
+        .iter()
+        .filter(|((r, f, _), s)| r == repo && f == flow && s.started)
+        .min_by_key(|(_, s)| phase_of(s).priority())?;
+    let phase = phase_of(state);
+    let step = match phase {
+        Phase::NeedsApproval | Phase::Failed => state
+            .newest_for_a_person()
+            .map(|(id, _)| id)
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let title = graph
+        .get(&step)
+        .map(|spec| spec.title.clone())
+        .unwrap_or_else(|| step.clone());
+    let settled = graph
+        .nodes
+        .iter()
+        .filter(|n| {
+            matches!(
+                state.status(&n.id),
+                NodeStatus::Done | NodeStatus::Skipped | NodeStatus::Bypassed
+            )
+        })
+        .count();
+    let note = match phase {
+        Phase::NeedsApproval => format!("needs you \u{00b7} {title}"),
+        Phase::Failed => format!("failed \u{00b7} {title}"),
+        Phase::Running => format!("running \u{00b7} {settled}/{}", graph.nodes.len()),
+        other => other.note().to_string(),
+    };
+    Some(FlowRun {
+        phase,
+        note,
+        pr: key.2.clone(),
+        step,
+    })
+}
+
 /// Which flow a run starts on, as `(flow, pull request)`. The one on screen —
 /// what Start and Play mean — unless the Trusted run button asked for the
 /// flow to be chosen for it, when it is whatever the repository most `needs`,
@@ -1898,6 +1955,36 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 .filter(|(id, _, _)| hidden_here.contains(id) && !elsewhere.contains(id))
                 .count();
             let offered = elsewhere.len();
+            // Where each flow's run stands here, so the tabs answer "what is
+            // going on" without opening each one.
+            let runs: BTreeMap<String, FlowRun> = visible_tabs
+                .iter()
+                .filter_map(|(id, _, _)| {
+                    let graph = flows.get(id)?.to_graph();
+                    flow_run(&states_snapshot, &repo, id, &graph).map(|run| (id.clone(), run))
+                })
+                .collect();
+            // The most urgent run in another flow than the one on screen —
+            // waiting for you, failed, or under way — pointed to under the
+            // tabs, since its tab alone is easy to miss.
+            let pointer = runs
+                .iter()
+                .filter(|(id, run)| {
+                    **id != flow_id
+                        && matches!(
+                            run.phase,
+                            Phase::NeedsApproval | Phase::Failed | Phase::Running
+                        )
+                })
+                .min_by_key(|(_, run)| run.phase.priority())
+                .map(|(id, run)| {
+                    let name = visible_tabs
+                        .iter()
+                        .find(|(t, _, _)| t == id)
+                        .map(|(_, l, _)| l.clone())
+                        .unwrap_or_else(|| id.clone());
+                    (id.clone(), name, run.clone())
+                });
             rsx! {
                 div { class: "flow-tabs",
                     for (id, label, problems) in visible_tabs.iter().cloned() {
@@ -1948,8 +2035,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     span { class: "flow-tab-warn", "\u{26a0}" }
                                 }
                                 "{label}"
-                                if running.read().iter().any(|(r, f, _)| r == &repo && f == &id) {
-                                    span { class: "flow-tab-dot" }
+                                // The name on one line, where its run stands
+                                // on the next — dot first, so a narrow tab
+                                // never strands the dot on a line of its own.
+                                if let Some(run) = runs.get(&id) {
+                                    span { class: "flow-tab-note status-{run.phase.css()}", title: "{run.note}",
+                                        span { class: "flow-tab-state flow-tab-state-{run.phase.css()}" }
+                                        "{run.note}"
+                                    }
                                 }
                             }
                             button {
@@ -2052,6 +2145,28 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             div { class: "flow-picker-note",
                                 "Only this repository is affected. Flows themselves are edited in Setup."
                             }
+                        }
+                    }
+                }
+                if let Some((flow, name, run)) = pointer {
+                    div { class: "flow-elsewhere flow-elsewhere-{run.phase.css()}",
+                        span { class: "flow-elsewhere-mark", {run.phase.icon()} }
+                        span { class: "flow-elsewhere-text",
+                            "{name}"
+                            if !run.pr.is_empty() { " #{run.pr}" }
+                            " \u{2014} {run.note}"
+                        }
+                        button {
+                            class: "btn flow-elsewhere-go",
+                            title: "Switch to this flow, at the step where it is",
+                            onclick: move |_| {
+                                selected_flow.set(flow.clone());
+                                selected_pr.set(run.pr.clone());
+                                selected_node.set(run.step.clone());
+                                drawer.set(None);
+                                diff_panel.set(None);
+                            },
+                            "Show"
                         }
                     }
                 }
@@ -3115,6 +3230,79 @@ mod tests {
             first_with_work(vec![("a".to_string(), probe::Wants::Nothing)]),
             None
         );
+    }
+
+    fn states_with(flow: &str, pr: &str, state: RunState) -> States {
+        let mut states = States::new();
+        states.insert(("repo".into(), flow.into(), pr.into()), state);
+        states
+    }
+
+    #[test]
+    fn a_flow_that_has_not_run_says_nothing() {
+        let graph = commit_and_pr().to_graph();
+        assert_eq!(
+            flow_run(&States::new(), "repo", "commit_and_pr", &graph),
+            None
+        );
+    }
+
+    #[test]
+    fn a_running_flow_says_how_far_it_has_got() {
+        let graph = commit_and_pr().to_graph();
+        let mut s = RunState::fresh(&graph);
+        s.started = true;
+        s.set_status("preflight", NodeStatus::Done);
+        s.set_status("scan", NodeStatus::Done);
+        s.set_status("draft_commit", NodeStatus::Running);
+        let run = flow_run(
+            &states_with("commit_and_pr", "", s),
+            "repo",
+            "commit_and_pr",
+            &graph,
+        )
+        .unwrap();
+        assert_eq!(run.phase, Phase::Running);
+        assert_eq!(
+            run.note,
+            format!("running \u{00b7} 2/{}", graph.nodes.len())
+        );
+    }
+
+    #[test]
+    fn a_flow_waiting_for_you_names_the_step_and_its_pull_request() {
+        let graph = commit_and_pr().to_graph();
+        let mut s = RunState::fresh(&graph);
+        s.started = true;
+        s.set_status("open_pr", NodeStatus::AwaitingApproval);
+        let run = flow_run(
+            &states_with("commit_and_pr", "7", s),
+            "repo",
+            "commit_and_pr",
+            &graph,
+        )
+        .unwrap();
+        assert_eq!(run.phase, Phase::NeedsApproval);
+        assert_eq!(run.step, "open_pr");
+        assert_eq!(run.pr, "7");
+        assert!(run.note.starts_with("needs you \u{00b7} "));
+    }
+
+    #[test]
+    fn of_two_runs_of_one_flow_the_one_that_needs_you_wins() {
+        let graph = commit_and_pr().to_graph();
+        let mut done = RunState::fresh(&graph);
+        done.started = true;
+        for n in &graph.nodes {
+            done.set_status(&n.id, NodeStatus::Done);
+        }
+        let mut waiting = RunState::fresh(&graph);
+        waiting.started = true;
+        waiting.set_status("push", NodeStatus::AwaitingApproval);
+        let mut states = states_with("commit_and_pr", "5", done);
+        states.insert(("repo".into(), "commit_and_pr".into(), "6".into()), waiting);
+        let run = flow_run(&states, "repo", "commit_and_pr", &graph).unwrap();
+        assert_eq!((run.phase, run.pr.as_str()), (Phase::NeedsApproval, "6"));
     }
 
     #[test]
