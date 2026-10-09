@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The Run view's map now zooms, from 50% to 200%, using **− / +** in its bottom
+  bar, or ⌘ + scroll and pinch on the map; click the percentage to go back to
+  100%. Zoomed out, a big flow such as Review → Merge with its review circle
+  fits on one screen; zoomed in, everything grows and stays sharp, and the map
+  scrolls. The rest of the window keeps its size, and GitAgent remembers the
+  zoom.
+
 ## [0.1.90] - 2026-10-09
 
 ### Added
