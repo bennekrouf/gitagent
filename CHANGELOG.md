@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The button at the end of the flow tabs that chooses which flows a
+  repository shows always says what it is — **0 hidden** when nothing is
+  hidden — instead of a bare "⋯".
+
 ## [0.1.93] - 2026-10-09
 
 ### Added
