@@ -2079,10 +2079,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             }
                         }
                     }
-                    // Always there, even with nothing hidden:
-                    // the × only appears on hover, so this is
-                    // how someone learns the strip is theirs
-                    // to edit at all.
+                    // Always there, and always saying what it is —
+                    // "0 hidden" rather than a bare "⋯": the × only
+                    // appears on hover, so this is how someone learns
+                    // the strip is theirs to edit at all.
                     button {
                         class: if showing_picker {
                             "flow-tab-picker flow-tab-picker-on"
@@ -2101,10 +2101,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             "{hidden_count} hidden · {offered} more"
                         } else if offered > 0 {
                             "{offered} more"
-                        } else if hidden_count > 0 {
-                            "{hidden_count} hidden"
                         } else {
-                            "\u{22ef}"
+                            "{hidden_count} hidden"
                         }
                     }
                     if showing_picker {
