@@ -1729,6 +1729,31 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 let finished = snapshot(&states, &key);
                 statuses.write().insert(repo.clone(), status.clone());
 
+                // A review that has ended — merged, nothing to do, or
+                // declined — is not run again: move the screen on to the next
+                // open pull request, if there is one and the screen is still
+                // on this one. With none left the finished run stays, its
+                // button saying so.
+                let on_screen = selected_repo.read().as_deref() == Some(repo.as_str())
+                    && *selected_flow.read() == id
+                    && *selected_pr.read() == pr;
+                if id == probe::REVIEW_FLOW
+                    && on_screen
+                    && matches!(
+                        phase_of(&finished),
+                        Phase::Done | Phase::Nothing | Phase::Declined
+                    )
+                {
+                    let reviewed = match finished.artifact("pr_number") {
+                        "" => pr.as_str(),
+                        n => n,
+                    };
+                    if let Some(next) = status.next_to_review(reviewed) {
+                        selected_pr.set(next);
+                        selected_node.set(def.first_node());
+                    }
+                }
+
                 if !trusting || !trusted::may_continue(&finished, &graph) {
                     break;
                 }

@@ -273,6 +273,22 @@ impl RepoStatus {
         })
     }
 
+    /// The open pull request to move on to once `reviewed` has been through
+    /// the review flow, ranked the same way as `pr_to_act_on`. `None` when it
+    /// was the only one.
+    pub fn next_to_review(&self, reviewed: &str) -> Option<String> {
+        self.pr
+            .iter()
+            .chain(self.prs.iter())
+            .filter(|pr| pr.number != reviewed)
+            .min_by_key(|pr| match pr.checks {
+                Checks::Passing | Checks::Unknown => 0,
+                Checks::Failing => 1,
+                Checks::Pending => 2,
+            })
+            .map(|pr| pr.number.clone())
+    }
+
     /// The pull request to open a review on, when nothing else has said.
     pub fn default_pr(&self) -> String {
         self.pr_to_act_on()
@@ -425,19 +441,37 @@ pub fn affordance(
             (n, _) => Affordance::go(again(format!("Commit {n} files"))),
         },
 
+        // A review that has run is not offered again: merged, the pull
+        // request is gone; declined, reviewing the same diff twice says
+        // nothing new. The workspace moves on to the next open one when there
+        // is one, so this is what is left when there is not.
+        REVIEW_FLOW if already_ran => {
+            let reviewed = match (selected_pr, &status.pr) {
+                ("", Some(pr)) => pr.number.as_str(),
+                (picked, _) => picked,
+            };
+            match status.next_to_review(reviewed) {
+                None => Affordance::stop(
+                    "Nothing else to review",
+                    "No other pull request is open in this repository",
+                ),
+                Some(next) => Affordance::stop(
+                    "Reviewed",
+                    format!("Pick #{next} from the list to review it next"),
+                ),
+            }
+        }
         // A PR picked from the sidebar's list always enables the run — it
         // does not have to be the one for the checked-out branch. Only fall
         // back to "does the checked-out branch have one" when nothing was
         // explicitly picked, which keeps the old single-PR behaviour intact.
-        REVIEW_FLOW if !selected_pr.is_empty() => {
-            Affordance::go(again(format!("Review #{selected_pr}")))
-        }
+        REVIEW_FLOW if !selected_pr.is_empty() => Affordance::go(format!("Review #{selected_pr}")),
         REVIEW_FLOW => match &status.pr {
             None => Affordance::stop(
                 "No pull request",
                 format!("No open pull request for `{}`", status.branch),
             ),
-            Some(pr) => Affordance::go(again(format!("Review #{}", pr.number))),
+            Some(pr) => Affordance::go(format!("Review #{}", pr.number)),
         },
         // A flow from Setup: its author knows the precondition, not this code.
         _ => Affordance::go(again("Start run".into())),
@@ -1325,6 +1359,51 @@ mod tests {
             affordance(COMMIT_FLOW, Some(&dirty), false, true, "", &[]).label,
             "Commit 2 files again"
         );
+    }
+
+    #[test]
+    fn a_review_that_has_run_is_never_offered_again() {
+        // #2 is the checked-out branch's own, just reviewed and declined.
+        let mut s = status(0, Some(Checks::Passing));
+        let a = affordance(REVIEW_FLOW, Some(&s), false, true, "", &[]);
+        assert!(!a.enabled);
+        assert_eq!(a.label, "Nothing else to review");
+
+        // Another is open: that is where to go, not round again.
+        let mut other = s.pr.clone().unwrap();
+        other.number = "5".into();
+        s.prs = vec![s.pr.clone().unwrap(), other];
+        assert_eq!(s.next_to_review("2").as_deref(), Some("5"));
+        let b = affordance(REVIEW_FLOW, Some(&s), false, true, "2", &[]);
+        assert!(!b.enabled);
+        assert!(b.reason.contains("#5"), "{}", b.reason);
+        assert!(!b.label.contains("again"));
+    }
+
+    #[test]
+    fn the_next_review_skips_the_one_just_done_and_prefers_green() {
+        let mut s = status(0, None);
+        let base = status(0, Some(Checks::Passing)).pr.unwrap();
+        s.prs = [
+            ("3", Checks::Pending),
+            ("4", Checks::Failing),
+            ("7", Checks::Passing),
+        ]
+        .into_iter()
+        .map(|(n, checks)| PrBrief {
+            number: n.into(),
+            checks,
+            ..base.clone()
+        })
+        .collect();
+        assert_eq!(s.next_to_review("3").as_deref(), Some("7"));
+        assert_eq!(
+            s.next_to_review("7").as_deref(),
+            Some("4"),
+            "red before running"
+        );
+        s.prs.retain(|p| p.number == "7");
+        assert_eq!(s.next_to_review("7"), None);
     }
 
     #[test]
