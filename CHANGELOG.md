@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A repository with uncommitted changes now opens on **Commit → PR** even when
+  colleagues have pull requests open in it. Before, any open pull request with
+  passing checks marked the repository as ready to merge and opened it on
+  **Review → Merge**, so your changes were never offered for commit. A pull
+  request from the branch you have checked out still comes first.
+
 ## [0.1.94] - 2026-10-11
 
 ### Changed
