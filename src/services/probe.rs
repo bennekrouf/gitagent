@@ -222,13 +222,19 @@ impl RepoStatus {
         }
 
         let acting = self.pr_to_act_on();
-        let from_pr = acting.and_then(|pr| match pr.checks {
-            Checks::Passing | Checks::Unknown => Some(Wants::Merge),
-            Checks::Failing => Some(Wants::Attention),
-            // Nothing to decide yet — but that is not the same as nothing to
-            // do, so this contributes no candidate rather than winning.
-            Checks::Pending => None,
-        });
+        // Someone else's pull request — one the checked-out branch does not
+        // own — never outranks your own uncommitted work. In a shared
+        // repository there is nearly always one open, and letting it win
+        // meant a dirty tree was never offered a commit at all.
+        let from_pr = acting
+            .filter(|_| self.pr.is_some() || self.changes == 0)
+            .and_then(|pr| match pr.checks {
+                Checks::Passing | Checks::Unknown => Some(Wants::Merge),
+                Checks::Failing => Some(Wants::Attention),
+                // Nothing to decide yet — but that is not the same as nothing
+                // to do, so this contributes no candidate rather than winning.
+                Checks::Pending => None,
+            });
 
         [
             from_pr,
@@ -867,6 +873,24 @@ mod default_pr_tests {
         let synced = status(None, &["3", "9"]);
         assert_eq!(synced.wants(), Wants::Merge, "not Nothing");
         assert_eq!(synced.default_pr(), "3");
+    }
+
+    #[test]
+    fn someone_elses_pull_request_does_not_hide_your_uncommitted_work() {
+        // ais_tom_platform: on develop with 14 changed files, and two
+        // colleagues' pull requests open against it. The repository read as
+        // ready to merge and opened on Review -> Merge; the commit was never
+        // offered.
+        let mut shared = status(None, &["3", "9"]);
+        shared.changes = 14;
+        assert_eq!(shared.wants(), Wants::Commit);
+        assert_eq!(shared.default_pr(), "3", "still there to review");
+
+        // The checked-out branch's own pull request is a different matter:
+        // finishing it still beats starting something new.
+        let mut own = status(Some("7"), &["7"]);
+        own.changes = 2;
+        assert_eq!(own.wants(), Wants::Merge);
     }
 
     #[test]
