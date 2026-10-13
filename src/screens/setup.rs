@@ -11,9 +11,11 @@
 use dioxus::prelude::*;
 
 use crate::components::dag_view::DagView;
+use crate::components::settings_panel::SettingsPanel;
 use crate::services::catalogue::{self, CATALOGUE};
 use crate::services::flowdef::{can_depend_on, default_deps, validate, FlowBook, NodeDef};
-use crate::services::graph::NodeKind;
+use crate::services::graph::{NodeKind, Step};
+use crate::services::llm::LlmConfig;
 use crate::services::probe::Need;
 use crate::services::remote;
 use crate::services::store::{self, Layout};
@@ -24,6 +26,9 @@ pub struct SetupProps {
     /// it alone until another repository adds it from its flow list.
     #[props(default)]
     pub repo: Option<String>,
+    /// Read to tell whether a step just added has anything to run with, and
+    /// handed to Settings when you go and set that up from here.
+    pub llm_config: Signal<LlmConfig>,
     pub on_close: EventHandler<()>,
 }
 
@@ -53,6 +58,7 @@ pub fn Setup(props: SetupProps) -> Element {
     let mut confirm_restore = use_signal(|| false);
     let mut confirm_discard = use_signal(|| false);
     let mut testing = use_signal(|| false);
+    let mut settings_open = use_signal(|| false);
     let mut test_result = use_signal(|| Option::<Result<String, String>>::None);
     // Private keys found in ~/.ssh, offered as one-click picks for the
     // "Identity file" field on a run_remote step. Read once: a key added
@@ -535,6 +541,22 @@ pub fn Setup(props: SetupProps) -> Element {
                                                 match info {
                                                     Some(i) => rsx! {
                                                         p { class: "field-note", "{i.about}" }
+                                                        // Adding the step is not enough on its own: with
+                                                        // nothing chosen in Settings it is skipped on every
+                                                        // run. Said here, where it was just added, rather
+                                                        // than discovered on the first pull request.
+                                                        if let Some((why, action)) = unset_in_settings(i.step, &props.llm_config.read()) {
+                                                            div { class: "probe probe-warn",
+                                                                "{why}"
+                                                                div { class: "probe-actions",
+                                                                    button {
+                                                                        class: "btn",
+                                                                        onclick: move |_| settings_open.set(true),
+                                                                        "{action}"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
                                                         div { class: "contract",
                                                             div { class: "contract-col",
                                                                 div { class: "contract-label", "reads" }
@@ -859,6 +881,13 @@ pub fn Setup(props: SetupProps) -> Element {
             }
         }
 
+        if *settings_open.read() {
+            SettingsPanel {
+                llm_config: props.llm_config,
+                on_close: move |_| settings_open.set(false),
+            }
+        }
+
         if *confirm_discard.read() {
             div { class: "modal-backdrop", onclick: move |_| confirm_discard.set(false),
                 div {
@@ -970,5 +999,80 @@ pub fn Setup(props: SetupProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// Why a step will be skipped on every run because Settings gives it nothing
+/// to run with, and the button that goes and fixes that. `None` for a step
+/// that needs nothing from Settings, or already has it.
+///
+/// Mirrors the checks the run makes before such a step, so the notice here
+/// and the skip there cannot disagree.
+fn unset_in_settings(step: Step, cfg: &LlmConfig) -> Option<(&'static str, &'static str)> {
+    match step {
+        Step::SecondOpinion | Step::Lenses if !cfg.uses_model() => Some((
+            "No model is set up in Settings, so this step will be skipped on every \
+             run. Choose a model first.",
+            "Choose a model",
+        )),
+        Step::SecondOpinion if !cfg.second_config().uses_model() => Some((
+            "No second reviewer is chosen in Settings, so this step will be skipped \
+             on every run.",
+            "Choose a second reviewer",
+        )),
+        Step::Lenses if !cfg.lenses.any() => Some((
+            "No focused review is turned on in Settings, so this step will be skipped \
+             on every run.",
+            "Turn on a focused review",
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::llm::ProviderKind;
+
+    fn cfg(main: ProviderKind, second: ProviderKind, lens: bool) -> LlmConfig {
+        let mut c = LlmConfig {
+            kind: main,
+            ..Default::default()
+        };
+        c.second.kind = second;
+        c.lenses.security = lens;
+        c
+    }
+
+    #[test]
+    fn a_second_opinion_with_no_second_reviewer_says_so() {
+        let c = cfg(ProviderKind::Ollama, ProviderKind::Off, true);
+        let (_, action) = unset_in_settings(Step::SecondOpinion, &c).unwrap();
+        assert_eq!(action, "Choose a second reviewer");
+        assert!(unset_in_settings(Step::Lenses, &c).is_none());
+    }
+
+    #[test]
+    fn focused_reviews_with_no_lens_on_say_so() {
+        let c = cfg(ProviderKind::Ollama, ProviderKind::Remote, false);
+        let (_, action) = unset_in_settings(Step::Lenses, &c).unwrap();
+        assert_eq!(action, "Turn on a focused review");
+        assert!(unset_in_settings(Step::SecondOpinion, &c).is_none());
+    }
+
+    #[test]
+    fn with_no_model_at_all_the_model_comes_first() {
+        // Picking a second reviewer or a lens would not help: both are
+        // skipped while the install runs without a model.
+        let c = cfg(ProviderKind::Off, ProviderKind::Remote, true);
+        for step in [Step::SecondOpinion, Step::Lenses] {
+            assert_eq!(unset_in_settings(step, &c).unwrap().1, "Choose a model");
+        }
+    }
+
+    #[test]
+    fn other_steps_need_nothing_from_here() {
+        let c = cfg(ProviderKind::Off, ProviderKind::Off, false);
+        assert!(unset_in_settings(Step::Commit, &c).is_none());
     }
 }

@@ -125,6 +125,11 @@ pub enum NodeStatus {
     /// exist, so everything downstream reads those artifacts as empty. That is
     /// the cost, and it is the reason this is a deliberate button and never
     /// something a trusted run does on your behalf.
+    ///
+    /// The app also bypasses an optional step that Settings leaves nothing to
+    /// run with — no model, no second reviewer, no focused review turned on —
+    /// so the merge behind it is not held up. The run's summary says which of
+    /// these it was; the label does not claim to know.
     Bypassed,
     Failed,
     /// The human declined this node.
@@ -168,7 +173,7 @@ impl NodeStatus {
             NodeStatus::AwaitingApproval => "needs approval",
             NodeStatus::Done => "done",
             NodeStatus::Skipped => "skipped",
-            NodeStatus::Bypassed => "skipped by you",
+            NodeStatus::Bypassed => "skipped",
             NodeStatus::Failed => "failed",
             NodeStatus::Rejected => "rejected",
             NodeStatus::Blocked => "blocked",

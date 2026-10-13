@@ -119,7 +119,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let cfg = props.llm_config.read().clone();
 
     if *setup_open.read() {
-        return rsx! { Setup { on_close: move |_| setup_open.set(false) } };
+        return rsx! { Setup {
+            llm_config: props.llm_config,
+            on_close: move |_| setup_open.set(false),
+        } };
     }
 
     rsx! {
