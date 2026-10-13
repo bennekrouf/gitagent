@@ -17,6 +17,23 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Adding a **Second opinion** or **Focused reviews** step in Setup now tells
+  you straight away when Settings gives it nothing to run with — no second
+  reviewer chosen, or no focused review turned on — rather than leaving you to
+  find the step skipped on your first pull request. A button on the notice
+  opens Settings on the spot, and the notice goes once that is set up.
+
+### Fixed
+
+- **Second opinion** and **Focused reviews** no longer say "skipped by you"
+  when they were skipped because nothing is set up for them in Settings. They
+  now say "skipped", with the reason underneath — no second reviewer chosen,
+  or no focused review turned on.
+
 ## [0.1.95] - 2026-10-13
 
 ### Fixed

@@ -2195,6 +2195,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         return rsx! {
             Setup {
                 repo: selected_repo.read().clone(),
+                llm_config: props.llm_config,
                 on_close: move |_| {
                     // Pick up whatever Setup wrote, without disturbing any run.
                     book.set(FlowBook::load());

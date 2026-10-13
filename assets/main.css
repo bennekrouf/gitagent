@@ -986,6 +986,8 @@ body {
 .probe { font-size: 11px; padding: 9px 11px; border-radius: 6px; line-height: 1.6; }
 .probe-ok { background: var(--bg2); color: var(--green); border: 1px solid var(--green); }
 .probe-bad { background: var(--bg2); color: var(--red); border: 1px solid var(--red); }
+.probe-warn { background: var(--bg2); color: var(--yellow); border: 1px solid var(--yellow); }
+.probe-actions { margin-top: 8px; }
 
 
 /* ══════════════════════════════════════════════
