@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Once a pull request has been through **Review → Merge** — merged, declined,
+  or nothing to do — the flow moves straight on to the next open pull request
+  instead of offering **Review #N again**. When none is left, the button says
+  **Nothing else to review**.
+
 ## [0.1.96] - 2026-10-13
 
 ### Added
