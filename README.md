@@ -1,5 +1,7 @@
 # GitAgent
 
+![GitAgent running Review → Merge on a pull request: the step graph, with the review fanning out to a second model and focused reviews](docs/screenshot.png)
+
 An agentic graph for commit and deploy workflows. Desktop app, Dioxus, same
 shape as the rest of the `ais-*` family.
 
