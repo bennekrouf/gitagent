@@ -25,6 +25,7 @@ use crate::components::repo_sidebar::{phase_of, Approval, Phase, RepoEntry, Repo
 use crate::components::run_view::{Gates, RunView};
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
+use crate::services::awake;
 use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{
@@ -1396,6 +1397,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // way a run does: no flow starts there until it is done, and the other
     // way round.
     let mut branches_busy = use_signal(|| Option::<(String, String)>::None);
+    // While anything in this window is running, hold off App Nap, so a hidden
+    // window keeps driving it instead of pausing until it is shown again. See
+    // `services::awake`. Per window: closing one never releases another's.
+    let mut awake = use_signal(|| Option::<awake::Activity>::None);
+    use_effect(move || {
+        let busy = !running.read().is_empty() || branches_busy.read().is_some();
+        if busy != awake.peek().is_some() {
+            awake.set(if busy { awake::Activity::begin() } else { None });
+        }
+    });
     let mut base_editor_open = use_signal(|| Option::<String>::None);
     let mut base_editor_value = use_signal(String::new);
     // Which repository's flow picker is open, rather than a single flag for
