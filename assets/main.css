@@ -348,6 +348,32 @@ body {
 .row-reprobe:hover { color: var(--text1); }
 .sidebar-row:hover .row-status { display: none; }
 .sidebar-row:hover .row-reprobe { display: inline-block; }
+/* A step waiting on a plain yes: the row answers it itself. Never swapped out
+   on hover like the status slot — hover is when the pointer is on its way. */
+.row-approve {
+    flex-shrink: 0;
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: inherit; font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+    padding: 3px 9px 3px 7px; border-radius: 999px; cursor: pointer;
+    color: #fff; background: var(--green-bg); border: 1px solid var(--green-bg);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent);
+    animation: approve-ask 2.4s ease-out infinite;
+    transition: background 0.12s, border-color 0.12s, transform 0.08s;
+}
+.row-approve:hover {
+    background: var(--green); border-color: var(--green);
+    animation: none;
+}
+.row-approve:active { transform: scale(0.95); }
+.row-approve-icon { font-size: 11px; line-height: 1; }
+/* A slow ring outward, so a waiting row is findable in a long list without
+   anything on it blinking. */
+@keyframes approve-ask {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent); }
+    70%  { box-shadow: 0 0 0 5px color-mix(in srgb, var(--green) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .row-approve { animation: none; } }
 .sidebar-detail {
     font-size: 10px; color: var(--text3);
     background: var(--bg3); border-radius: 9px; padding: 1px 6px;
