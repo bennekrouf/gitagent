@@ -386,11 +386,19 @@ impl Affordance {
     }
 }
 
-pub const COMMIT_FLOW: &str = "commit_and_pr";
-pub const REVIEW_FLOW: &str = "review_and_merge";
+/// What a flow does, as far as the Start button is concerned. Decided from
+/// the flow's contents rather than its id, so a flow copied in Setup behaves
+/// like the shipped one it was copied from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FlowKind {
+    Commit,
+    Review,
+    /// A flow from Setup: its author knows the precondition, not this code.
+    Other,
+}
 
 pub fn affordance(
-    flow_id: &str,
+    flow: FlowKind,
     status: Option<&RepoStatus>,
     probing: bool,
     already_ran: bool,
@@ -426,8 +434,8 @@ pub fn affordance(
         }
     };
 
-    match flow_id {
-        COMMIT_FLOW => match (status.changes, status.unmerged) {
+    match flow {
+        FlowKind::Commit => match (status.changes, status.unmerged) {
             // Clean tree, but commits sitting on a branch with no pull
             // request: the flow can still push them and propose them.
             (0, 0) => Affordance::stop(
@@ -445,7 +453,7 @@ pub fn affordance(
         // request is gone; declined, reviewing the same diff twice says
         // nothing new. The workspace moves on to the next open one when there
         // is one, so this is what is left when there is not.
-        REVIEW_FLOW if already_ran => {
+        FlowKind::Review if already_ran => {
             let reviewed = match (selected_pr, &status.pr) {
                 ("", Some(pr)) => pr.number.as_str(),
                 (picked, _) => picked,
@@ -465,16 +473,17 @@ pub fn affordance(
         // does not have to be the one for the checked-out branch. Only fall
         // back to "does the checked-out branch have one" when nothing was
         // explicitly picked, which keeps the old single-PR behaviour intact.
-        REVIEW_FLOW if !selected_pr.is_empty() => Affordance::go(format!("Review #{selected_pr}")),
-        REVIEW_FLOW => match &status.pr {
+        FlowKind::Review if !selected_pr.is_empty() => {
+            Affordance::go(format!("Review #{selected_pr}"))
+        }
+        FlowKind::Review => match &status.pr {
             None => Affordance::stop(
                 "No pull request",
                 format!("No open pull request for `{}`", status.branch),
             ),
             Some(pr) => Affordance::go(format!("Review #{}", pr.number)),
         },
-        // A flow from Setup: its author knows the precondition, not this code.
-        _ => Affordance::go(again("Start run".into())),
+        FlowKind::Other => Affordance::go(again("Start run".into())),
     }
 }
 
@@ -1133,7 +1142,7 @@ mod tests {
     fn that_branch_can_actually_be_acted_on() {
         let mut s = status(0, None);
         s.unmerged = 1;
-        let a = affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]);
+        let a = affordance(FlowKind::Commit, Some(&s), false, false, "", &[]);
         assert!(a.enabled, "the button must not be dead");
         assert_eq!(a.label, "Push 1 commit & open PR");
     }
@@ -1144,7 +1153,7 @@ mod tests {
         s.unmerged = 1;
         assert_eq!(s.wants(), Wants::Commit);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).label,
+            affordance(FlowKind::Commit, Some(&s), false, false, "", &[]).label,
             "Commit 3 files"
         );
     }
@@ -1153,7 +1162,7 @@ mod tests {
     fn a_branch_already_on_the_base_is_still_nothing_to_do() {
         let s = status(0, None);
         assert_eq!(s.wants(), Wants::Nothing);
-        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).enabled);
+        assert!(!affordance(FlowKind::Commit, Some(&s), false, false, "", &[]).enabled);
     }
 
     #[test]
@@ -1258,10 +1267,10 @@ mod tests {
     #[test]
     fn committing_is_offered_only_when_there_is_something_to_commit() {
         let clean = status(0, None);
-        assert!(!affordance(COMMIT_FLOW, Some(&clean), false, false, "", &[]).enabled);
+        assert!(!affordance(FlowKind::Commit, Some(&clean), false, false, "", &[]).enabled);
 
         let dirty = status(3, None);
-        let a = affordance(COMMIT_FLOW, Some(&dirty), false, false, "", &[]);
+        let a = affordance(FlowKind::Commit, Some(&dirty), false, false, "", &[]);
         assert!(a.enabled);
         assert_eq!(a.label, "Commit 3 files");
     }
@@ -1270,7 +1279,7 @@ mod tests {
     fn the_button_counts_one_file_in_the_singular() {
         let one = status(1, None);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&one), false, false, "", &[]).label,
+            affordance(FlowKind::Commit, Some(&one), false, false, "", &[]).label,
             "Commit 1 file"
         );
     }
@@ -1278,12 +1287,12 @@ mod tests {
     #[test]
     fn reviewing_is_offered_only_when_a_pull_request_exists() {
         let none = status(0, None);
-        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "", &[]);
+        let a = affordance(FlowKind::Review, Some(&none), false, false, "", &[]);
         assert!(!a.enabled);
         assert!(a.reason.contains("master"), "says which branch");
 
         let open = status(0, Some(Checks::Passing));
-        let b = affordance(REVIEW_FLOW, Some(&open), false, false, "", &[]);
+        let b = affordance(FlowKind::Review, Some(&open), false, false, "", &[]);
         assert!(b.enabled);
         assert_eq!(b.label, "Review #2");
     }
@@ -1294,7 +1303,7 @@ mod tests {
         // explicitly picked from the sidebar's list — Start must not stay
         // disabled just because HEAD points somewhere else.
         let none = status(0, None);
-        let a = affordance(REVIEW_FLOW, Some(&none), false, false, "9", &[]);
+        let a = affordance(FlowKind::Review, Some(&none), false, false, "9", &[]);
         assert!(a.enabled);
         assert_eq!(a.label, "Review #9");
     }
@@ -1303,13 +1312,13 @@ mod tests {
     fn the_same_repository_can_offer_one_flow_and_refuse_the_other() {
         // Committed and pushed: nothing left to commit, a PR now to review.
         let after = status(0, Some(Checks::Passing));
-        assert!(!affordance(COMMIT_FLOW, Some(&after), false, false, "", &[]).enabled);
-        assert!(affordance(REVIEW_FLOW, Some(&after), false, false, "", &[]).enabled);
+        assert!(!affordance(FlowKind::Commit, Some(&after), false, false, "", &[]).enabled);
+        assert!(affordance(FlowKind::Review, Some(&after), false, false, "", &[]).enabled);
 
         // And the other way round, before any of that happened.
         let before = status(4, None);
-        assert!(affordance(COMMIT_FLOW, Some(&before), false, false, "", &[]).enabled);
-        assert!(!affordance(REVIEW_FLOW, Some(&before), false, false, "", &[]).enabled);
+        assert!(affordance(FlowKind::Commit, Some(&before), false, false, "", &[]).enabled);
+        assert!(!affordance(FlowKind::Review, Some(&before), false, false, "", &[]).enabled);
     }
 
     #[test]
@@ -1319,7 +1328,7 @@ mod tests {
         // otherwise perfectly ready to run this flow.
         let dirty = status(3, None);
         let problems = vec!["`push` depends on `commit`, which is not in this flow.".to_string()];
-        let a = affordance(COMMIT_FLOW, Some(&dirty), false, false, "", &problems);
+        let a = affordance(FlowKind::Commit, Some(&dirty), false, false, "", &problems);
         assert!(!a.enabled);
         assert_eq!(a.label, "Flow is broken");
         assert!(
@@ -1333,7 +1342,7 @@ mod tests {
     fn several_problems_name_the_first_and_count_the_rest() {
         let problems = vec!["One is wrong.".to_string(), "Two is wrong.".to_string()];
         let a = affordance(
-            COMMIT_FLOW,
+            FlowKind::Commit,
             Some(&status(3, None)),
             false,
             false,
@@ -1347,16 +1356,16 @@ mod tests {
     fn a_broken_flow_outranks_even_a_pull_request_waiting_to_be_reviewed() {
         let open = status(0, Some(Checks::Passing));
         let problems = vec!["This flow has no steps.".to_string()];
-        assert!(!affordance(REVIEW_FLOW, Some(&open), false, false, "7", &problems).enabled);
+        assert!(!affordance(FlowKind::Review, Some(&open), false, false, "7", &problems).enabled);
         // And without the problems it is offered as before.
-        assert!(affordance(REVIEW_FLOW, Some(&open), false, false, "7", &[]).enabled);
+        assert!(affordance(FlowKind::Review, Some(&open), false, false, "7", &[]).enabled);
     }
 
     #[test]
     fn a_second_run_says_again() {
         let dirty = status(2, None);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&dirty), false, true, "", &[]).label,
+            affordance(FlowKind::Commit, Some(&dirty), false, true, "", &[]).label,
             "Commit 2 files again"
         );
     }
@@ -1365,7 +1374,7 @@ mod tests {
     fn a_review_that_has_run_is_never_offered_again() {
         // #2 is the checked-out branch's own, just reviewed and declined.
         let mut s = status(0, Some(Checks::Passing));
-        let a = affordance(REVIEW_FLOW, Some(&s), false, true, "", &[]);
+        let a = affordance(FlowKind::Review, Some(&s), false, true, "", &[]);
         assert!(!a.enabled);
         assert_eq!(a.label, "Nothing else to review");
 
@@ -1374,7 +1383,7 @@ mod tests {
         other.number = "5".into();
         s.prs = vec![s.pr.clone().unwrap(), other];
         assert_eq!(s.next_to_review("2").as_deref(), Some("5"));
-        let b = affordance(REVIEW_FLOW, Some(&s), false, true, "2", &[]);
+        let b = affordance(FlowKind::Review, Some(&s), false, true, "2", &[]);
         assert!(!b.enabled);
         assert!(b.reason.contains("#5"), "{}", b.reason);
         assert!(!b.label.contains("again"));
@@ -1409,7 +1418,7 @@ mod tests {
     #[test]
     fn a_flow_built_in_setup_is_never_second_guessed() {
         let clean = status(0, None);
-        let a = affordance("release", Some(&clean), false, false, "", &[]);
+        let a = affordance(FlowKind::Other, Some(&clean), false, false, "", &[]);
         assert!(
             a.enabled,
             "only its author knows when a custom flow applies"
@@ -1418,9 +1427,9 @@ mod tests {
 
     #[test]
     fn an_unprobed_repository_waits_rather_than_guessing() {
-        assert!(!affordance(COMMIT_FLOW, None, true, false, "", &[]).enabled);
+        assert!(!affordance(FlowKind::Commit, None, true, false, "", &[]).enabled);
         // But a probe that never returned must not lock the button forever.
-        assert!(affordance(COMMIT_FLOW, None, false, false, "", &[]).enabled);
+        assert!(affordance(FlowKind::Commit, None, false, false, "", &[]).enabled);
     }
 
     #[test]
@@ -1478,7 +1487,7 @@ mod tests {
         s.unmerged = 1536;
         assert_eq!(s.wants(), Wants::OpenPr);
         assert_eq!(
-            affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).label,
+            affordance(FlowKind::Commit, Some(&s), false, false, "", &[]).label,
             "Push 1536 commits & open PR"
         );
 
@@ -1486,7 +1495,7 @@ mod tests {
         // nothing to offer.
         s.unmerged = 0;
         assert_eq!(s.wants(), Wants::Nothing);
-        assert!(!affordance(COMMIT_FLOW, Some(&s), false, false, "", &[]).enabled);
+        assert!(!affordance(FlowKind::Commit, Some(&s), false, false, "", &[]).enabled);
     }
 
     #[test]

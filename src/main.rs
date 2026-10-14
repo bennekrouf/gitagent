@@ -5,6 +5,7 @@
 //! engine underneath it is not.
 
 mod components;
+mod mcp;
 mod notice;
 mod screens;
 mod services;
@@ -113,6 +114,12 @@ fn main() {
     // inherit the terminal's PATH, so gh, az and cargo would all read as
     // "not installed".
     services::env::adopt_login_path();
+    // `gitagent mcp`: the flows over stdio for an MCP client, and no window.
+    // Before the notification bundle is claimed, which needs one.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        services::env::adopt_login_env();
+        return mcp::serve();
+    }
     // Claim the notification bundle before any run can raise one — see
     // services::notify for why an unclaimed one is worse than silence.
     services::notify::init();

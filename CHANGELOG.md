@@ -17,6 +17,27 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent can now be driven from Claude, or any other assistant that speaks
+  MCP: point it at `gitagent mcp` and it can list your repositories, run a
+  flow, and stop at every approval with the exact files and commands, so
+  nothing touches history or the remote until you say yes in the chat. It
+  uses the same flows, settings and sign-ins as the app.
+
+### Changed
+
+- Review flows you copied or built in Setup now work like **Review → Merge**:
+  they show the list of open pull requests to pick from, and once a pull
+  request has been through, they move on to the next one rather than offering
+  to run again.
+- Commit flows you copied or built in Setup now work like **Commit → PR**:
+  the Start button says what it will do — **Commit 5 files**, **Push 2
+  commits & open PR** — and reads **Nothing to commit** on a clean tree,
+  instead of a plain **Start run** that would find nothing to do.
+
 ## [0.1.97] - 2026-10-13
 
 ### Changed

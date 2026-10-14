@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::catalogue;
 use super::graph::{Graph, NodeSpec};
+use super::probe::{FlowKind, Need};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct NodeDef {
@@ -163,8 +164,29 @@ impl FlowDef {
         }
     }
 
+    /// What this flow does, for the Start button and for what happens once a
+    /// run of it ends. Read from what the flow declares and contains, never
+    /// its id, so a copy made in Setup counts whatever it is called: a commit
+    /// flow answers uncommitted work or commits; a review flow answers an
+    /// open pull request, or reads or merges one. Commit is checked first — a
+    /// flow that does both starts from a dirty tree.
+    pub fn kind(&self) -> FlowKind {
+        if self.answers(Need::Uncommitted) || self.nodes.iter().any(|n| n.step == "commit") {
+            FlowKind::Commit
+        } else if self.answers(Need::OpenPullRequest)
+            || self
+                .nodes
+                .iter()
+                .any(|n| n.step == "pr_diff" || n.step == "merge")
+        {
+            FlowKind::Review
+        } else {
+            FlowKind::Other
+        }
+    }
+
     /// Whether this flow says it answers `need`.
-    pub fn answers(&self, need: crate::services::probe::Need) -> bool {
+    pub fn answers(&self, need: Need) -> bool {
         self.handles.iter().any(|h| h == need.key())
     }
 
@@ -1054,6 +1076,39 @@ mod tests {
         let review = book.get("review_and_merge").unwrap();
         assert!(review.answers(Need::OpenPullRequest));
         assert!(!review.answers(Need::Release));
+    }
+
+    #[test]
+    fn a_flow_copied_in_setup_keeps_its_kind() {
+        let shipped = FlowBook::defaults();
+        let review = shipped.get("review_and_merge").unwrap();
+        assert_eq!(review.kind(), FlowKind::Review);
+        assert_eq!(
+            shipped.get("commit_and_pr").unwrap().kind(),
+            FlowKind::Commit
+        );
+
+        // A copy under another id, even one that no longer declares what it
+        // answers: it still reads and merges a pull request, or commits.
+        let mut copy = review.clone();
+        copy.id = "review_and_merge_copy".into();
+        copy.handles.clear();
+        assert_eq!(copy.kind(), FlowKind::Review);
+
+        let mut commit_copy = shipped.get("commit_and_pr").unwrap().clone();
+        commit_copy.id = "commit_and_pr_copy".into();
+        commit_copy.handles.clear();
+        assert_eq!(commit_copy.kind(), FlowKind::Commit);
+
+        // The release copies in the wild share the "review_and_merge_copy"
+        // prefix but merge nothing; the name must not decide it.
+        let release = FlowDef {
+            id: "review_and_merge_copy_2".into(),
+            label: "Release".into(),
+            handles: vec!["release".into()],
+            nodes: vec![],
+        };
+        assert_eq!(release.kind(), FlowKind::Other);
     }
 
     #[test]
