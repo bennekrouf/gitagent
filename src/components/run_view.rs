@@ -1040,6 +1040,9 @@ pub struct RunViewProps {
     /// cannot, and the pull request it acts on — every open one to pick from
     /// for a review — so the one being validated is in sight here too.
     pub context: Element,
+    /// The repository's own controls — Branches, Base, Trusted run — the
+    /// same buttons the list view's header has.
+    pub actions: Element,
     pub on_select: EventHandler<String>,
 }
 
@@ -1393,6 +1396,7 @@ pub fn RunView(props: RunViewProps) -> Element {
                         }
                     }
                 }
+                div { class: "run-actions", {props.actions} }
                 div { class: "run-player",
                     // Two buttons, not one that changes its label: the one
                     // in effect stays pressed, so the state reads at a glance.
