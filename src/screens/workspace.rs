@@ -1042,12 +1042,30 @@ fn step_detail(
                         set_remedy(states, &key, &node, index, |r| {
                             r.running = false;
                             r.done = ok;
+                            r.failed = !ok;
                             r.output = if output.is_empty() && ok {
                                 "done".into()
                             } else {
                                 output.clone()
                             };
                         });
+                        // Bringing the base in that stopped on conflicts is not a
+                        // dead end but the next step: the step says so, and
+                        // offers to finish or abandon the merge it started.
+                        let merging = retry_graph.get(&node).is_some_and(|n| n.step == Step::Merge);
+                        if !ok && merging {
+                            let mut w = states.write();
+                            if let Some(entry) = w.get_mut(&key) {
+                                let number = entry.artifact("pr_number").to_string();
+                                let base = entry.artifact("pr_base").to_string();
+                                if let Some(next) = crate::services::review::conflict_followup(&number, &base, &output) {
+                                    if let Some(run) = entry.runs.get_mut(&node) {
+                                        run.log = next.message;
+                                        run.remedies = next.remedies;
+                                    }
+                                }
+                            }
+                        }
                         if ok && !remedy.sets.is_empty() {
                             let mut w = states.write();
                             let entry = w.entry(key.clone()).or_default();

@@ -240,6 +240,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                     },
                                     if remedy.running { "Running…" }
                                     else if remedy.done { "Done" }
+                                    else if remedy.failed { "Run again" }
                                     else if remedy.abandons { "Abandon" }
                                     else { "Run" }
                                 }
@@ -247,7 +248,10 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                 }
                             }
                             if !remedy.output.is_empty() {
-                                pre { class: "remedy-out", "{remedy.output}" }
+                                if remedy.failed {
+                                    div { class: "remedy-stopped", "That stopped before finishing:" }
+                                }
+                                pre { class: if remedy.failed { "remedy-out remedy-out-failed" } else { "remedy-out" }, "{remedy.output}" }
                             }
                         }
                     }
