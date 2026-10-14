@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A new **MCP** button in the top bar shows how to use GitAgent from Claude
+  Desktop or Claude Code: the text to paste, with a Copy button, already
+  pointing at where GitAgent is installed on your computer. Claude in the
+  browser can't connect to it, and the window says so.
+
 ## [0.1.101] - 2026-10-14
 
 ### Added
