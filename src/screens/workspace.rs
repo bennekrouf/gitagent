@@ -18,6 +18,7 @@ use crate::components::detail_pane::DetailPane;
 use crate::components::diff_view::DiffView;
 use crate::components::forge_icon::ForgeIcon;
 use crate::components::licence_panel::LicencePanel;
+use crate::components::mcp_panel::McpPanel;
 use crate::components::node_card::NodeCard;
 use crate::components::pr_card::PrCard;
 use crate::components::repo_sidebar::{phase_of, Approval, Phase, RepoEntry, RepoSidebar};
@@ -1373,6 +1374,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     };
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
+    let mut mcp_open = use_signal(|| false);
     // GitAgent Pro. `licence_open` holds the repository a refused run was
     // for, when that is why the window opened.
     let licence_status = use_signal(licence::current);
@@ -2488,6 +2490,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     }
                     button {
                         class: "btn btn-ghost",
+                        title: "Use GitAgent from Claude Desktop or Claude Code",
+                        onclick: move |_| mcp_open.set(true),
+                        "MCP"
+                    }
+                    button {
+                        class: "btn btn-ghost",
                         onclick: move |_| settings_open.set(true),
                         "{cfg.active_model()}"
                     }
@@ -3221,6 +3229,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     }
                 }
             }
+        }
+
+        if *mcp_open.read() {
+            McpPanel { on_close: move |_| mcp_open.set(false) }
         }
 
         if let Some(repo) = base_editor_open.read().clone() {
