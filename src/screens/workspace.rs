@@ -3352,7 +3352,10 @@ mod tests {
         let states = states_with("commit_and_pr", "", waiting_at_push());
         let approval = approval_for(&states, &FlowBook::defaults(), "repo").unwrap();
         assert_eq!(approval.node, "push");
-        assert_eq!(approval.run, ("repo".into(), "commit_and_pr".into(), String::new()));
+        assert_eq!(
+            approval.run,
+            ("repo".into(), "commit_and_pr".into(), String::new())
+        );
         assert!(approval.tooltip().contains("git push -u origin feat/x"));
         // Only for its own repository.
         assert!(approval_for(&states, &FlowBook::defaults(), "other").is_none());
@@ -3549,6 +3552,7 @@ mod tests {
             commits: 1,
             base: String::new(),
             head: String::new(),
+            failed: vec![],
         }
     }
 

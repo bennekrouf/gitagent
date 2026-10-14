@@ -240,7 +240,11 @@ async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result
                 "approve" => {
                     let exclude: Vec<String> = args["exclude"]
                         .as_array()
-                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     decide(run, true, &exclude).await
                 }
@@ -335,20 +339,26 @@ async fn run_flow(
         .into_iter()
         .find(|f| f.id == flow_id)
         .cloned()
-        .ok_or(format!("no flow {flow_id} for this repository; see list_flows"))?;
+        .ok_or(format!(
+            "no flow {flow_id} for this repository; see list_flows"
+        ))?;
 
     if !licence::may_run(&licence::current(), &repo) {
         telemetry::record(telemetry::Event::LicenceWallHit);
-        return Err("The free version runs flows in 5 repositories, and this would be a sixth. \
+        return Err(
+            "The free version runs flows in 5 repositories, and this would be a sixth. \
                     Give one back or add a GitAgent Pro licence from the app (Get Pro\u{2026})."
-            .into());
+                .into(),
+        );
     }
 
     let graph = def.to_graph();
     let mut state = RunState::fresh(&graph);
     state.started = true;
     if !pr.is_empty() {
-        state.artifacts.insert("selected_pr_number".into(), pr.into());
+        state
+            .artifacts
+            .insert("selected_pr_number".into(), pr.into());
     }
     let id = state.run;
     runs.insert(
@@ -367,7 +377,9 @@ async fn run_flow(
 
 /// The person's answer to the step a run is waiting on, then on to the next.
 async fn decide(run: &mut Run, approved: bool, exclude: &[String]) -> Result<Value, String> {
-    let node = run.waiting().ok_or("this run is not waiting on an approval")?;
+    let node = run
+        .waiting()
+        .ok_or("this run is not waiting on an approval")?;
     // An exclusion that matches nothing on offer is refused rather than
     // dropped: the user unchecked that file, and approving anyway would commit
     // it. Scan is where this bites — its files are only offered at the commit
@@ -389,7 +401,11 @@ async fn decide(run: &mut Run, approved: bool, exclude: &[String]) -> Result<Val
         } else {
             format!(
                 "not offered here: {}; nothing was approved. The files are: {}",
-                unknown.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", "),
+                unknown
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 offered.join(", ")
             )
         });
@@ -413,8 +429,9 @@ async fn decide(run: &mut Run, approved: bool, exclude: &[String]) -> Result<Val
             }
         }
         if entry.has_nothing_selected() {
-            return Err("every file is excluded, so there is nothing to commit; reject instead"
-                .into());
+            return Err(
+                "every file is excluded, so there is nothing to commit; reject instead".into(),
+            );
         }
     }
     run.state.decisions.insert(node.id.clone(), true);
@@ -628,7 +645,11 @@ fn head(text: &str, cap: usize) -> String {
     while !text.is_char_boundary(cut) {
         cut -= 1;
     }
-    format!("{}\n\u{2026} ({} more bytes)", &text[..cut], text.len() - cut)
+    format!(
+        "{}\n\u{2026} ({} more bytes)",
+        &text[..cut],
+        text.len() - cut
+    )
 }
 
 fn tail(text: &str, cap: usize) -> String {
