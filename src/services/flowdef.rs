@@ -624,6 +624,32 @@ pub struct FlowBook {
 /// Names the one-time adoption that adds the test step to an existing book.
 pub const ADOPTED_TEST_STEP: &str = "run_tests";
 
+/// Names the one-time adoption that gives every flow you made an id read
+/// from its name.
+pub const ADOPTED_IDS_FROM_LABELS: &str = "flow_ids_from_labels";
+
+/// A flow id from its name: "Deploy api0 landing" → `deploy_api0_landing`.
+///
+/// What a flow is called is what anything reading its id should see. An id
+/// left as `review_and_merge_copy_copy_copy` on a deploy flow told a safety
+/// check reading a `run_flow` call that it was about to merge without review.
+pub fn id_from_label(label: &str) -> String {
+    let mut id = String::new();
+    for c in label.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            id.push(c);
+        } else if !id.ends_with('_') && !id.is_empty() {
+            id.push('_');
+        }
+    }
+    let id = id.trim_end_matches('_').to_string();
+    if id.is_empty() {
+        "flow".into()
+    } else {
+        id
+    }
+}
+
 /// Names the one-time adoption that adds the release-notes steps.
 pub const ADOPTED_NOTES_STEPS: &str = "release_notes";
 
@@ -643,6 +669,7 @@ impl FlowBook {
             adopted: vec![
                 ADOPTED_TEST_STEP.to_string(),
                 ADOPTED_NOTES_STEPS.to_string(),
+                ADOPTED_IDS_FROM_LABELS.to_string(),
             ],
             flows: vec![
                 FlowDef {
@@ -726,11 +753,23 @@ impl FlowBook {
         match toml::from_str::<FlowBook>(&text) {
             Ok(mut book) if !book.flows.is_empty() => {
                 book.adopt_missing_declarations();
+                // Before anything else reads an id. The per-repository lists
+                // name flows by id too, so they follow the renames in the
+                // same breath — a hidden flow must not come back as new.
+                let renamed = book.adopt_ids_from_labels();
+                if let Some(renames) = renamed.as_ref().filter(|r| !r.is_empty()) {
+                    let mut shown = super::store::load_repo_flows();
+                    for (old, new) in renames {
+                        shown.rename_flow(old, new);
+                    }
+                    super::store::save_repo_flows(&shown);
+                }
                 // `|` rather than `||`: each adoption must get its turn.
                 if book.adopt_missing_test_step()
                     | book.adopt_notes_steps()
                     | book.adopt_second_opinion()
                     | book.adopt_lenses()
+                    | renamed.is_some()
                 {
                     book.save();
                 }
@@ -831,6 +870,53 @@ impl FlowBook {
         true
     }
 
+    /// Gives every flow you made the id its name reads as, and returns each
+    /// rename as `(old, new)` so whatever stores flow ids can follow. The
+    /// shipped flows keep theirs: other code and other people's notes name
+    /// them. A second flow of the same name gets `_2`, and an id already
+    /// right — including a `_2` — is left alone.
+    pub fn ids_from_labels(&mut self) -> Vec<(String, String)> {
+        let shipped = Self::defaults();
+        let mut renames = vec![];
+        for i in 0..self.flows.len() {
+            let id = self.flows[i].id.clone();
+            if shipped.get(&id).is_some() {
+                continue;
+            }
+            let want = id_from_label(&self.flows[i].label);
+            let taken = |candidate: &str| {
+                shipped.get(candidate).is_some()
+                    || self
+                        .flows
+                        .iter()
+                        .enumerate()
+                        .any(|(j, f)| j != i && f.id == candidate)
+            };
+            let new = if !taken(&want) {
+                want.clone()
+            } else {
+                (2..)
+                    .map(|n| format!("{want}_{n}"))
+                    .find(|c| c == &id || !taken(c))
+                    .unwrap_or(want.clone())
+            };
+            if new != id {
+                self.flows[i].id = new.clone();
+                renames.push((id, new));
+            }
+        }
+        renames
+    }
+
+    /// Once per book: see `ids_from_labels`. Returns the renames it made.
+    pub fn adopt_ids_from_labels(&mut self) -> Option<Vec<(String, String)>> {
+        if self.adopted.iter().any(|a| a == ADOPTED_IDS_FROM_LABELS) {
+            return None;
+        }
+        self.adopted.push(ADOPTED_IDS_FROM_LABELS.to_string());
+        Some(self.ids_from_labels())
+    }
+
     pub fn get(&self, id: &str) -> Option<&FlowDef> {
         self.flows.iter().find(|f| f.id == id)
     }
@@ -903,6 +989,55 @@ fn dep(mut node: NodeDef, deps: &[&str]) -> NodeDef {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_flow_id_reads_as_its_name() {
+        assert_eq!(id_from_label("Deploy api0 landing"), "deploy_api0_landing");
+        assert_eq!(id_from_label("Deploy VPS"), "deploy_vps");
+        assert_eq!(id_from_label("Commit → PR"), "commit_pr");
+        assert_eq!(id_from_label("  Release!  "), "release");
+        assert_eq!(id_from_label("→"), "flow");
+    }
+
+    #[test]
+    fn flows_you_made_take_their_names_and_the_shipped_ones_keep_theirs() {
+        let mut book = FlowBook::defaults();
+        let copy = |id: &str, label: &str| FlowDef {
+            id: id.into(),
+            label: label.into(),
+            handles: vec![],
+            nodes: vec![NodeDef::from_catalogue("preflight", "preflight")],
+        };
+        book.flows.push(copy("review_and_merge_copy", "Release"));
+        book.flows
+            .push(copy("review_and_merge_copy_copy", "Deploy cvenom"));
+        book.flows
+            .push(copy("review_and_merge_copy_copy_2", "Deploy cvenom"));
+        let renames = book.ids_from_labels();
+        assert_eq!(
+            renames,
+            vec![
+                ("review_and_merge_copy".to_string(), "release".to_string()),
+                (
+                    "review_and_merge_copy_copy".to_string(),
+                    "deploy_cvenom".to_string()
+                ),
+                (
+                    "review_and_merge_copy_copy_2".to_string(),
+                    "deploy_cvenom_2".to_string()
+                ),
+            ]
+        );
+        assert!(book.get("commit_and_pr").is_some() && book.get("review_and_merge").is_some());
+        assert!(
+            book.ids_from_labels().is_empty(),
+            "a second pass changes nothing"
+        );
+        assert!(
+            book.adopted.iter().any(|a| a == ADOPTED_IDS_FROM_LABELS),
+            "a new book starts adopted"
+        );
+    }
+
     fn review_without_second_opinion() -> FlowDef {
         let mut flow = FlowBook::defaults()
             .get("review_and_merge")

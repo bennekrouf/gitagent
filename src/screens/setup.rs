@@ -136,7 +136,7 @@ pub fn Setup(props: SetupProps) -> Element {
                         onclick: {
                             let origin = props.repo.clone();
                             move |_| {
-                                let book_now = book.read().clone();
+                                let mut book_now = book.read().clone();
                                 let mut scoped = scopes.read().clone();
                                 if let Some(repo) = origin.as_deref() {
                                     let shipped = FlowBook::defaults();
@@ -147,6 +147,11 @@ pub fn Setup(props: SetupProps) -> Element {
                                             scoped.only_on(&flow.id, repo);
                                         }
                                     }
+                                }
+                                // Scoped under the id it was made with, then
+                                // renamed with everything else that names it.
+                                for (old, new) in book_now.ids_from_labels() {
+                                    scoped.rename_flow(&old, &new);
                                 }
                                 book_now.save();
                                 store::save_repo_flows(&scoped);

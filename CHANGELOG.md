@@ -17,6 +17,50 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Settings lists the models your local ollama has installed, with their size,
+  under the Model field — and under the second opinion's, when it runs on
+  ollama too: click one to use it instead of typing its name exactly. Typing
+  still works, for a model you are about to pull. If ollama is not running,
+  Settings says so.
+- A flow Claude runs through GitAgent's MCP server shows up in the open
+  window, live: under the flow tabs of that repository, "Claude is running
+  Commit → PR here", each step with where it stands, and the step waiting for
+  approval with exactly what it would do. It is read-only — answer approvals
+  in Claude, where the run was started — and it goes away once that session
+  ends.
+- The repository list keeps itself current: a commit, push, pull, branch
+  switch or merge made outside the window — from a terminal, or by GitAgent's
+  MCP server — updates that repository's row and tab counts within a couple
+  of seconds, without a Refresh. Plain file edits still need one.
+
+### Changed
+
+- A flow you made now has an id that reads as its name — **Deploy cvenom** is
+  `deploy_cvenom`, not `review_and_merge_copy_copy_copy_copy_2` — so anything
+  that sees the id, such as an assistant starting the flow through GitAgent's
+  MCP tools, sees what the flow does rather than what it was copied from.
+  Existing flows are renamed once, on the first launch, and the flows each
+  repository shows or hides follow; Setup keeps the id in step with the name
+  from then on. The built-in Commit → PR and Review → Merge keep theirs.
+- The button that re-checks one repository, shown when you hover its row in
+  the repository list, is now a proper green button with the same icon as
+  Refresh, instead of a tiny grey glyph that was easy to miss.
+
+### Fixed
+
+- A local model that thinks before it answers, such as MiniCPM5, no longer
+  comes back empty. It used to spend the whole answer on thinking about a
+  medium-sized diff and return nothing, so the step failed with "model did not
+  return JSON"; GitAgent now asks for the answer only.
+- A review finding whose quote is the right code, but written without the
+  diff's `+`/`-` line markers or with two lines joined, is no longer thrown
+  out as "quoted evidence was not in the diff". A quote that is not in the
+  diff is still dropped.
+
 ## [0.1.102] - 2026-10-14
 
 ### Added

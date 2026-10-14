@@ -1537,6 +1537,54 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         }
     });
 
+    // Runs GitAgent's MCP server is driving for a client such as Claude, read
+    // from the file it writes after every step — see `services::live`. Read
+    // when the file changes, and now and then regardless, so a run whose
+    // server went away drops off.
+    let mut live_runs = use_signal(crate::services::live::load);
+    use_future(move || async move {
+        let mut stamp = crate::services::live::changed_at();
+        let mut ticks = 0u32;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            ticks = ticks.wrapping_add(1);
+            let now = crate::services::live::changed_at();
+            if now != stamp || ticks.is_multiple_of(15) {
+                stamp = now;
+                let runs = crate::services::live::load();
+                if *live_runs.peek() != runs {
+                    live_runs.set(runs);
+                }
+            }
+        }
+    });
+
+    // Something outside this window changed a repository — a commit from a
+    // terminal, a push, GitAgent's own MCP server running a flow — and its row
+    // and tabs should say so without a Refresh. A run of this window's own is
+    // left alone: it re-reads the repository when it settles.
+    use_future(move || async move {
+        let mut seen: BTreeMap<String, u64> = BTreeMap::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let paths: Vec<String> = repos.read().iter().map(|r| r.path.clone()).collect();
+            for path in paths {
+                if licence::is_locked(&licence_status.peek(), &free_slots.peek(), &path)
+                    || running.peek().iter().any(|k| k.0 == path)
+                {
+                    continue;
+                }
+                let now = git::change_fingerprint(&path);
+                if seen
+                    .insert(path.clone(), now)
+                    .is_some_and(|before| before != now)
+                {
+                    reprobe(path, statuses);
+                }
+            }
+        }
+    });
+
     let llm_config = props.llm_config;
     let wiring = Wiring {
         states,
@@ -1994,7 +2042,51 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         None => rsx! {},
         Some(repo) => {
             let pr_id = selected_pr.read().clone();
+            // The MCP server names a repository by its resolved path.
+            let resolved = std::fs::canonicalize(&repo)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| repo.clone());
+            let live = live_runs
+                .read()
+                .iter()
+                .find(|r| r.repo == resolved || r.repo == repo)
+                .cloned();
             rsx! {
+            // A run Claude started through GitAgent's MCP server, as it goes.
+            // Read-only: its approvals are answered where it was started.
+            if let Some(live) = live {
+                div { class: "live-run",
+                    div { class: "live-run-head",
+                        span { class: if live.finished { "live-dot live-dot-done" } else { "live-dot" } }
+                        if live.finished {
+                            "Claude ran {live.flow_label} here"
+                        } else {
+                            "Claude is running {live.flow_label} here"
+                        }
+                        span { class: "live-run-via", "through GitAgent\u{2019}s MCP server" }
+                    }
+                    div { class: "live-run-steps",
+                        for (i, step) in live.steps.iter().cloned().enumerate() {
+                            div { key: "{i}", class: "live-step",
+                                span { class: "dot dot-{step.status}" }
+                                span { class: "live-step-title", "{step.title}" }
+                                span { class: "live-step-summary",
+                                    if step.summary.is_empty() { "{step.status_label}" } else { "{step.summary}" }
+                                }
+                            }
+                        }
+                    }
+                    if let Some((title, proposal)) = live.waiting.clone() {
+                        div { class: "live-run-wait",
+                            "{title} is waiting for approval \u{2014} answer it in Claude, where the run was started."
+                        }
+                        if !proposal.trim().is_empty() {
+                            pre { class: "live-run-proposal", "{proposal}" }
+                        }
+                    }
+                }
+            }
+
             // A tooltip on the tab is not enough once the
             // broken flow is the one you are looking at:
             // the graph below is drawn from a definition
@@ -2436,8 +2528,20 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 llm_config: props.llm_config,
                 on_close: move |_| {
                     // Pick up whatever Setup wrote, without disturbing any run.
+                    let before = book.read().clone();
                     book.set(FlowBook::load());
                     repo_flows.set(store::load_repo_flows());
+                    // A flow renamed in Setup changes id with its name: stay on
+                    // it rather than on an id that no longer exists.
+                    let shown = selected_flow.read().clone();
+                    if book.read().get(&shown).is_none() {
+                        let label = before.get(&shown).map(|f| f.label.clone());
+                        let now = label
+                            .and_then(|l| book.read().flows.iter().find(|f| f.label == l).map(|f| f.id.clone()))
+                            .or_else(|| book.read().flows.first().map(|f| f.id.clone()))
+                            .unwrap_or_default();
+                        selected_flow.set(now);
+                    }
                     setup_open.set(false);
                 },
             }

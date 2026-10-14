@@ -649,6 +649,11 @@ async fn call_ollama(
     let body = json!({
         "model": cfg.ollama_model,
         "stream": false,
+        // Every call here wants the answer, never the reasoning. A model that
+        // thinks by default — MiniCPM5 does — spent the whole answer budget
+        // thinking about a 5 KB diff and returned nothing at all. Models that
+        // cannot think accept the flag and ignore it.
+        "think": false,
         "format": schema,
         "options": {
             // Deterministic on purpose: the same diff should produce the same
@@ -789,6 +794,53 @@ async fn call_openai_compatible(
                 preset.label
             )
         })
+}
+
+/// A model ollama has on disk.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LocalModel {
+    pub name: String,
+    /// Bytes on disk.
+    pub size: u64,
+}
+
+impl LocalModel {
+    /// "9.0 GB", "1.6 GB" — ollama's own way of saying it.
+    pub fn size_label(&self) -> String {
+        format!("{:.1} GB", self.size as f64 / 1e9)
+    }
+}
+
+/// The models in an `/api/tags` reply, by name.
+fn parse_tags(reply: &Value) -> Vec<LocalModel> {
+    let mut models: Vec<LocalModel> = reply["models"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    Some(LocalModel {
+                        name: m["name"].as_str()?.to_string(),
+                        size: m["size"].as_u64().unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    models.sort_by(|a, b| a.name.cmp(&b.name));
+    models
+}
+
+/// Every model the ollama at `url` has pulled, so Settings can offer them
+/// instead of asking for a name to be typed exactly right.
+pub async fn local_models(url: &str) -> Result<Vec<LocalModel>, String> {
+    let url = format!("{}/api/tags", url.trim_end_matches('/'));
+    let resp = client(PROBE_TIMEOUT)?
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("ollama is not answering at {url} ({e})"))?;
+    let value: Value = resp.json().await.map_err(|e| format!("bad reply: {e}"))?;
+    Ok(parse_tags(&value))
 }
 
 /// Cheap reachability check for the settings panel.
@@ -1099,6 +1151,23 @@ mod tests {
     fn the_default_context_is_large_enough_for_a_real_diff() {
         // Guards against regressing to ollama's 4096 default.
         assert!(LlmConfig::default().ollama_num_ctx >= 16384);
+    }
+
+    #[test]
+    fn installed_models_are_read_by_name_with_their_size() {
+        let reply = serde_json::json!({ "models": [
+            { "name": "qwen2.5-coder:14b", "size": 8_988_124_298u64 },
+            { "name": "openbmb/minicpm5-2b:latest", "size": 1_600_000_000u64 },
+            { "size": 5 }
+        ]});
+        let models = parse_tags(&reply);
+        assert_eq!(models.len(), 2, "an entry with no name is skipped");
+        assert_eq!(
+            models[0].name, "openbmb/minicpm5-2b:latest",
+            "sorted by name"
+        );
+        assert_eq!(models[1].size_label(), "9.0 GB");
+        assert!(parse_tags(&serde_json::json!({})).is_empty());
     }
 
     #[test]

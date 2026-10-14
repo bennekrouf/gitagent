@@ -326,6 +326,18 @@ impl RepoFlows {
         self.only.get(flow_id).map(Vec::as_slice)
     }
 
+    /// Follows a flow whose id changed, everywhere this file names it.
+    pub fn rename_flow(&mut self, old: &str, new: &str) {
+        for ids in self.hidden.values_mut() {
+            for id in ids.iter_mut().filter(|id| *id == old) {
+                *id = new.to_string();
+            }
+        }
+        if let Some(repos) = self.only.remove(old) {
+            self.only.insert(new.to_string(), repos);
+        }
+    }
+
     /// Every flow not shown on `repo`, for whatever reason.
     pub fn hidden_for(&self, repo: &str) -> Vec<String> {
         let mut ids: Vec<String> = self.hidden.get(repo).cloned().unwrap_or_default();
@@ -613,6 +625,19 @@ mod tests {
 
         f.everywhere("deploy_solanize");
         assert!(!f.is_hidden("/cloned-tomorrow", "deploy_solanize"));
+    }
+
+    #[test]
+    fn a_renamed_flow_stays_hidden_and_scoped_where_it_was() {
+        let mut f = RepoFlows::default();
+        f.hide("/a", "review_and_merge_copy");
+        f.only_on("review_and_merge_copy_copy", "/cvenom");
+        f.rename_flow("review_and_merge_copy", "release");
+        f.rename_flow("review_and_merge_copy_copy", "deploy_cvenom");
+        assert!(f.is_hidden("/a", "release"));
+        assert!(!f.is_hidden("/cvenom", "deploy_cvenom"));
+        assert!(f.is_hidden("/a", "deploy_cvenom"));
+        assert!(f.shown_only_on("review_and_merge_copy_copy").is_none());
     }
 
     #[test]
