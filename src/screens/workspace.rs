@@ -20,7 +20,7 @@ use crate::components::forge_icon::ForgeIcon;
 use crate::components::licence_panel::LicencePanel;
 use crate::components::node_card::NodeCard;
 use crate::components::pr_card::PrCard;
-use crate::components::repo_sidebar::{phase_of, Phase, RepoEntry, RepoSidebar};
+use crate::components::repo_sidebar::{phase_of, Approval, Phase, RepoEntry, RepoSidebar};
 use crate::components::run_view::{Gates, RunView};
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
@@ -112,6 +112,35 @@ fn announce(status: NodeStatus, repo_path: &str, node_title: &str, detail: &str)
 
     let (summary, body) = notify::message(status, &repo, node_title, detail);
     notify::raise(summary, body);
+}
+
+/// The approval a repository's row can offer as a button, if any.
+///
+/// Only one that needs nothing more than a yes. A step a trusted run held back
+/// has a reason waiting to be read, and one with every file unchecked has
+/// nothing to commit; both keep the plain "needs you" and send you to the run.
+fn approval_for(states: &States, book: &FlowBook, repo: &str) -> Option<Approval> {
+    states
+        .iter()
+        .filter(|((r, _, _), _)| r == repo)
+        .find_map(|(key, state)| {
+            let def = book.get(&key.1)?;
+            let graph = def.to_graph();
+            let node = graph.nodes.iter().find(|n| {
+                state.status(&n.id) == NodeStatus::AwaitingApproval
+                    && !state.decisions.contains_key(&n.id)
+            })?;
+            let run = state.runs.get(&node.id)?;
+            if !run.held.is_empty() || run.has_nothing_selected() {
+                return None;
+            }
+            Some(Approval {
+                run: key.clone(),
+                node: node.id.clone(),
+                title: node.title.clone(),
+                proposal: run.proposal.clone(),
+            })
+        })
 }
 
 fn snapshot(states: &Signal<States>, key: &Key) -> RunState {
@@ -1569,6 +1598,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
             prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
             locked: licence::is_locked(&licence_status.read(), &free_slots.read(), &repo.path),
+            approval: approval_for(&states_snapshot, &flows, &repo.path),
         })
         .collect();
 
@@ -2382,6 +2412,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         move |_| {
                             forget_finished(&mut states.write(), &running.read(), None);
                             refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots, true);
+                        }
+                    },
+                    on_approve: move |approval: Approval| {
+                        // The same decision the detail pane's button writes,
+                        // and only if the step is still the one waiting: the
+                        // list can be a render behind a run that moved on.
+                        let mut w = states.write();
+                        if let Some(state) = w.get_mut(&approval.run) {
+                            if state.status(&approval.node) == NodeStatus::AwaitingApproval {
+                                state.decisions.insert(approval.node, true);
+                                approvals().notify_waiters();
+                            }
                         }
                     },
                     on_reprobe: move |path: String| {
@@ -3295,6 +3337,49 @@ mod tests {
         let mut states = States::new();
         states.insert(("repo".into(), flow.into(), pr.into()), state);
         states
+    }
+
+    fn waiting_at_push() -> RunState {
+        let mut s = RunState::fresh(&commit_and_pr().to_graph());
+        s.started = true;
+        s.set_status("push", NodeStatus::AwaitingApproval);
+        s.runs.get_mut("push").unwrap().proposal = "git push -u origin feat/x".into();
+        s
+    }
+
+    #[test]
+    fn a_step_waiting_on_a_plain_yes_is_offered_in_the_list() {
+        let states = states_with("commit_and_pr", "", waiting_at_push());
+        let approval = approval_for(&states, &FlowBook::defaults(), "repo").unwrap();
+        assert_eq!(approval.node, "push");
+        assert_eq!(approval.run, ("repo".into(), "commit_and_pr".into(), String::new()));
+        assert!(approval.tooltip().contains("git push -u origin feat/x"));
+        // Only for its own repository.
+        assert!(approval_for(&states, &FlowBook::defaults(), "other").is_none());
+    }
+
+    #[test]
+    fn an_approval_that_wants_a_look_first_is_not_offered_in_the_list() {
+        let book = FlowBook::defaults();
+
+        let mut held = waiting_at_push();
+        held.runs.get_mut("push").unwrap().held = "CI is failing".into();
+        assert!(approval_for(&states_with("commit_and_pr", "", held), &book, "repo").is_none());
+
+        let mut empty = waiting_at_push();
+        empty.runs.get_mut("push").unwrap().items = vec![crate::services::graph::ProposalItem {
+            key: "a.rs".into(),
+            label: "a.rs".into(),
+            note: "modified".into(),
+            included: false,
+        }];
+        assert!(approval_for(&states_with("commit_and_pr", "", empty), &book, "repo").is_none());
+
+        // Already answered, and the run has not caught up yet: a second click
+        // has nothing to approve.
+        let mut answered = waiting_at_push();
+        answered.decisions.insert("push".into(), true);
+        assert!(approval_for(&states_with("commit_and_pr", "", answered), &book, "repo").is_none());
     }
 
     #[test]

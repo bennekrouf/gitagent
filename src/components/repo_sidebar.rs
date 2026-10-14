@@ -123,6 +123,38 @@ pub fn phase_of(state: &RunState) -> Phase {
     }
 }
 
+/// A step waiting on an approval that can be given from the list, without
+/// opening the repository: what it is, and exactly what it will run.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Approval {
+    /// The run it belongs to — repository, flow and pull request, as the
+    /// workspace keys runs.
+    pub run: (String, String, String),
+    pub node: String,
+    pub title: String,
+    pub proposal: String,
+}
+
+impl Approval {
+    /// The button's tooltip. Approving from the list skips the detail pane,
+    /// so the commands it shows have to be here instead — a hover away, the
+    /// same text the pane would have shown.
+    pub fn tooltip(&self) -> String {
+        const MOST_LINES: usize = 14;
+        let lines: Vec<&str> = self.proposal.trim().lines().collect();
+        let mut shown = lines
+            .iter()
+            .take(MOST_LINES)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        if lines.len() > MOST_LINES {
+            shown.push_str("\n\u{2026}");
+        }
+        format!("Approve \u{201c}{}\u{201d}. This will run:\n\n{shown}", self.title)
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct RepoEntry {
     pub path: String,
@@ -154,6 +186,11 @@ pub struct RepoEntry {
     /// The free version's repositories are taken and this is not one of them:
     /// listed, but not checked, and selecting it opens the Pro window.
     pub locked: bool,
+    /// Set when a run here is waiting on an approval that needs nothing more
+    /// than a yes: the row offers the button itself. `None` for an approval
+    /// that wants a look first — a trusted run held it back, or every file is
+    /// unchecked — which keeps the plain "needs you".
+    pub approval: Option<Approval>,
 }
 
 /// A locked row is never shown as selected: it can't be.
@@ -219,6 +256,8 @@ pub struct RepoSidebarProps {
     pub on_change_workspace: EventHandler<()>,
     /// Re-read one repository, without disturbing the others.
     pub on_reprobe: EventHandler<String>,
+    /// Approve the step a row is waiting on, from the list.
+    pub on_approve: EventHandler<Approval>,
     #[props(default = 224.0)]
     pub width: f64,
 }
@@ -410,6 +449,23 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 }
                             }
+                            if let Some(approval) = entry.approval.clone().filter(|_| !entry.locked) {
+                                // In place of "needs you", and of the re-check
+                                // button that would otherwise take the slot on
+                                // hover — which is exactly when you reach for it.
+                                button {
+                                    class: "row-approve",
+                                    title: "{approval.tooltip()}",
+                                    onclick: move |evt: Event<MouseData>| {
+                                        // Approving is not selecting: the run
+                                        // carries on wherever you are looking.
+                                        evt.stop_propagation();
+                                        props.on_approve.call(approval.clone());
+                                    },
+                                    span { class: "row-approve-icon", "\u{2713}" }
+                                    "Approve"
+                                }
+                            } else {
                             // The status slot, and — on hover — the button that
                             // re-reads this one repository instead of all of
                             // them. Re-checking after doing something in a
@@ -462,6 +518,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 },
                                 "\u{27f3}"
+                            }
                             }
                             }
                         }
@@ -580,6 +637,7 @@ mod tests {
             open_pr_count: 0,
             prs_error: None,
             locked: false,
+            approval: None,
         }
     }
 

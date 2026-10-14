@@ -26,6 +26,11 @@ were never released.
   flow, and stop at every approval with the exact files and commands, so
   nothing touches history or the remote until you say yes in the chat. It
   uses the same flows, settings and sign-ins as the app.
+- A repository waiting on an approval now has an **Approve** button right in
+  the repository list, in place of **needs you**, so you can answer it
+  without opening the repository first. Hover it to see exactly what it will
+  run. A step a trusted run held back, or a commit with every file
+  unchecked, still says **needs you** and wants a look first.
 
 ### Changed
 
