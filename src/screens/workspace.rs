@@ -2281,6 +2281,15 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     span { class: "flow-tab-warn", "\u{26a0}" }
                                 }
                                 "{label}"
+                                // What this flow would act on right now: files
+                                // to commit, pull requests to review, commits
+                                // to release. Nothing when there is nothing.
+                                if let Some((count, why)) = flows
+                                    .get(&id)
+                                    .and_then(|f| status_map.get(&repo).and_then(|s| s.count_for(&f.handles)))
+                                {
+                                    span { class: "flow-tab-count", title: "{why}", "{count}" }
+                                }
                                 // The name on one line, where its run stands
                                 // on the next — dot first, so a narrow tab
                                 // never strands the dot on a line of its own.

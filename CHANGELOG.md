@@ -19,6 +19,15 @@ were never released.
 
 ## [Unreleased]
 
+### Added
+
+- Flow tabs say what their flow would act on right now: **5 files** on the
+  commit flow when there are changes to commit (or **2 commits** with no pull
+  request yet), **3 PRs** on the review flow, **4 commits** on the release
+  flow since the last tag. Hover a count for what it is; a flow with nothing
+  to do shows none. It follows what each flow says it handles in Setup, so it
+  works whatever the flow is called.
+
 ### Fixed
 
 - A fix offered under a failed step that runs and stops no longer looks as if
