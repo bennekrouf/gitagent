@@ -944,7 +944,7 @@ mod failed_check_tests {
             ]
         );
         // The same reading as the overall verdict: red, even with one running.
-        assert_eq!(rollup_of(&rollup), Checks::Failing);
+        assert_eq!(super::rollup(&rollup), Checks::Failing);
     }
 
     #[test]
@@ -955,10 +955,6 @@ mod failed_check_tests {
         ]);
         assert!(failed_checks(&green).is_empty());
         assert!(failed_checks(&serde_json::Value::Null).is_empty());
-    }
-
-    fn rollup_of(value: &serde_json::Value) -> Checks {
-        rollup(value)
     }
 }
 
