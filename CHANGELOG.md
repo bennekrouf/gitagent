@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent now displays failed checks in the pull request brief, allowing you to
+  see which checks failed and navigate directly to their logs.
+- A repository waiting on an approval now has an **Approve** button right in the
+  repository list, so you can approve it without opening the repository first.
+  Hovering over the button shows exactly what it will run.
+
 ## [0.1.98] - 2026-10-14
 
 ### Added
