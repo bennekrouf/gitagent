@@ -215,6 +215,59 @@ pub struct RepoStatus {
 }
 
 impl RepoStatus {
+    /// What a flow's tab counts, given the needs the flow says it handles —
+    /// as `(on the tab, on hover)`. Keyed on the declared needs rather than
+    /// the flow's name, so a flow called anything shows what it would act on.
+    /// `None` when there is nothing to count.
+    pub fn count_for(&self, handles: &[String]) -> Option<(String, String)> {
+        let has = |need: Need| handles.iter().any(|h| h == need.key());
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        if has(Need::Uncommitted) && self.changes > 0 {
+            return Some((
+                plural(self.changes, "file", "files"),
+                format!(
+                    "{} to commit",
+                    plural(self.changes, "changed file", "changed files")
+                ),
+            ));
+        }
+        if has(Need::UnpushedBranch) && self.unmerged > 0 && self.pr.is_none() {
+            return Some((
+                plural(self.unmerged, "commit", "commits"),
+                format!(
+                    "{} on {} with no pull request yet",
+                    plural(self.unmerged, "commit", "commits"),
+                    self.branch
+                ),
+            ));
+        }
+        if has(Need::OpenPullRequest) && !self.prs.is_empty() {
+            return Some((
+                plural(self.prs.len(), "PR", "PRs"),
+                format!(
+                    "{} to review",
+                    plural(self.prs.len(), "open pull request", "open pull requests")
+                ),
+            ));
+        }
+        if has(Need::Release) && self.release.due() {
+            let since = self
+                .release
+                .last_tag
+                .clone()
+                .unwrap_or_else(|| "the first commit".into());
+            return Some((
+                plural(self.release.commits, "commit", "commits"),
+                format!(
+                    "{} since {since}, not released yet",
+                    plural(self.release.commits, "commit", "commits")
+                ),
+            ));
+        }
+        None
+    }
+
     /// Uncommitted work outranks a pull request that is merely running its
     /// checks, but never outranks one that is ready for a decision — finishing
     /// something beats starting something.
@@ -1136,6 +1189,50 @@ mod tests {
             ahead: 0,
             behind: 0,
         }
+    }
+
+    #[test]
+    fn a_tab_counts_what_its_flow_would_act_on() {
+        let handles = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        let commit = handles(&["uncommitted", "unpushed_branch"]);
+        let review = handles(&["open_pull_request"]);
+        let release = handles(&["release"]);
+
+        let mut s = status(5, None);
+        assert_eq!(s.count_for(&commit).unwrap().0, "5 files");
+        assert_eq!(
+            s.count_for(&review),
+            None,
+            "nothing open, nothing on the tab"
+        );
+
+        s.changes = 0;
+        s.unmerged = 1;
+        assert_eq!(s.count_for(&commit).unwrap().0, "1 commit");
+        s.pr = status(0, Some(Checks::Pending)).pr;
+        assert_eq!(
+            s.count_for(&commit),
+            None,
+            "already proposed: the review tab has it"
+        );
+
+        s.prs = vec![s.pr.clone().unwrap(), s.pr.clone().unwrap()];
+        assert_eq!(s.count_for(&review).unwrap().0, "2 PRs");
+
+        s.release = ReleaseState {
+            last_tag: Some("v1.2.0".into()),
+            commits: 3,
+            prs: vec![],
+            releases: true,
+        };
+        let (tab, hover) = s.count_for(&release).unwrap();
+        assert_eq!(tab, "3 commits");
+        assert!(hover.contains("since v1.2.0"));
+        assert_eq!(
+            s.count_for(&[]),
+            None,
+            "a flow declaring nothing counts nothing"
+        );
     }
 
     #[test]
