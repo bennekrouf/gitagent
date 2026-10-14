@@ -520,7 +520,20 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                         props.on_reprobe.call(path.clone());
                                     }
                                 },
-                                "\u{27f3}"
+                                // The same drawn icon as the header's Refresh:
+                                // the ⟳ glyph rendered at a few pixels wide.
+                                svg {
+                                    width: "15",
+                                    height: "15",
+                                    view_box: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    stroke_width: "2.4",
+                                    stroke_linecap: "round",
+                                    stroke_linejoin: "round",
+                                    path { d: "M20 12a8 8 0 1 1-2.34-5.66" }
+                                    path { d: "M20 4v5h-5" }
+                                }
                             }
                             }
                             }

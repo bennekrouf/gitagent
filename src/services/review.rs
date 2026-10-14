@@ -705,6 +705,41 @@ async fn lenses(
     })
 }
 
+/// Whether `evidence` is really text from `diff`. Models quote the code, not
+/// the diff around it: they leave off each line's `+`/`-`, join two lines
+/// into one, or re-indent. An exact match threw out correct findings for
+/// that, so both sides are compared without line markers and with every run
+/// of whitespace as one space. A quote that is not in the diff — invented, or
+/// garbled in the retelling — still does not match.
+fn quoted_from(diff: &str, evidence: &str) -> bool {
+    let evidence = evidence
+        .trim()
+        .trim_matches(|c| c == '`' || c == '"')
+        .trim();
+    if evidence.is_empty() {
+        return false;
+    }
+    if diff.contains(evidence) {
+        return true;
+    }
+    fn flatten(text: &str, is_diff: bool) -> String {
+        text.lines()
+            .filter(|l| !(is_diff && (l.starts_with("+++") || l.starts_with("---"))))
+            .map(|l| {
+                if is_diff {
+                    l.strip_prefix(['+', '-', ' ']).unwrap_or(l)
+                } else {
+                    l.trim_start().strip_prefix(['+', '-']).unwrap_or(l)
+                }
+            })
+            .flat_map(str::split_whitespace)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+    let wanted = flatten(evidence, false);
+    !wanted.is_empty() && flatten(diff, true).contains(&wanted)
+}
+
 async fn analyse(
     cfg: &LlmConfig,
     state: &RunState,
@@ -777,7 +812,7 @@ async fn analyse(
         let evidence = finding["evidence"].as_str().unwrap_or_default();
         // The cheapest hallucination filter there is: if the quote is not in
         // what we sent, the finding is about code that does not exist.
-        if evidence.trim().is_empty() || !diff.contains(evidence.trim()) {
+        if !quoted_from(diff, evidence) {
             dropped += 1;
             continue;
         }
@@ -1506,6 +1541,32 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
         );
         assert_eq!(next.remedies[1].args, ["merge", "--abort"]);
         assert!(conflict_followup("66", "master", "fatal: not a git repository").is_none());
+    }
+
+    #[test]
+    fn a_quote_matches_the_code_whatever_the_diff_markers_and_spacing() {
+        let diff = "--- a/x.rs\n+++ b/x.rs\n@@ -1,3 +1,2 @@\n-        !self.is_base\n-            && self.pr_state != PrState::Open\n+        self.pr_state != PrState::Open\n";
+        assert!(
+            quoted_from(diff, "!self.is_base && self.pr_state != PrState::Open"),
+            "two removed lines, joined"
+        );
+        assert!(
+            quoted_from(diff, "`self.pr_state != PrState::Open`"),
+            "in backticks"
+        );
+        assert!(
+            quoted_from(diff, "-        !self.is_base"),
+            "with its marker, exactly"
+        );
+        assert!(
+            !quoted_from(diff, "!self.is_base || true"),
+            "not what the diff says"
+        );
+        assert!(
+            !quoted_from(diff, "PrState::Open PrState::Open"),
+            "garbled by repetition"
+        );
+        assert!(!quoted_from(diff, "   "), "nothing quoted");
     }
 
     #[test]

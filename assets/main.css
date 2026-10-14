@@ -339,15 +339,27 @@ body {
 /* Hovering a row swaps its status for a button that re-reads just this
    repository. The two occupy the same slot, so nothing moves on hover. */
 .row-status { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+/* A 24px tinted target, like the header's Refresh: a bare 12px glyph in the
+   dimmest text colour was too small to see, let alone hit. */
 .row-reprobe {
     display: none;
-    background: none; border: 0; padding: 0 2px;
-    color: var(--text3); font-size: 12px; line-height: 1; cursor: pointer;
+    align-items: center; justify-content: center;
+    width: 24px; height: 24px; padding: 0; margin: -4px 0;
+    color: var(--green); cursor: pointer;
+    background: color-mix(in srgb, var(--green) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+    border-radius: 6px;
     flex-shrink: 0;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
 }
-.row-reprobe:hover { color: var(--text1); }
+.row-reprobe:hover {
+    background: color-mix(in srgb, var(--green) 22%, transparent);
+    border-color: var(--green);
+}
+.row-reprobe:active { transform: scale(0.92); }
+.row-reprobe svg { display: block; }
 .sidebar-row:hover .row-status { display: none; }
-.sidebar-row:hover .row-reprobe { display: inline-block; }
+.sidebar-row:hover .row-reprobe { display: inline-flex; }
 /* A step waiting on a plain yes: the row answers it itself. Never swapped out
    on hover like the status slot — hover is when the pointer is on its way. */
 .row-approve {
@@ -1932,3 +1944,40 @@ button.update-banner-link {
     color: var(--blue); white-space: nowrap;
 }
 .flow-tab-on .flow-tab-count { background: color-mix(in srgb, var(--blue) 24%, transparent); }
+
+/* Settings: the models ollama has installed, to pick from. */
+.model-choices { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 10px; }
+.model-choice {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    font-family: var(--mono); font-size: 11px;
+    padding: 4px 9px; border-radius: 999px; cursor: pointer;
+    background: var(--bg2); color: var(--text2); border: 1px solid var(--border2);
+}
+.model-choice:hover { color: var(--text1); border-color: var(--border); }
+.model-choice-on { color: var(--green); border-color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.model-choice-size { font-size: 10px; color: var(--text3); }
+
+/* A run GitAgent's MCP server is driving for Claude, shown read-only. */
+.live-run {
+    margin: 0 0 12px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--purple) 45%, var(--border));
+    background: color-mix(in srgb, var(--purple) 8%, var(--bg1));
+}
+.live-run-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--text1); }
+.live-run-via { font-weight: 400; font-size: 10.5px; color: var(--text3); }
+.live-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--purple); animation: pulse 1.2s ease-in-out infinite;
+}
+.live-dot-done { background: var(--green); animation: none; }
+.live-run-steps { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+.live-step { display: flex; align-items: baseline; gap: 8px; font-size: 11px; min-width: 0; }
+.live-step .dot { flex-shrink: 0; align-self: center; }
+.live-step-title { color: var(--text1); white-space: nowrap; }
+.live-step-summary { color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.live-run-wait { margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--yellow); }
+.live-run-proposal {
+    margin: 6px 0 0; padding: 6px 8px; max-height: 140px; overflow: auto;
+    font-family: var(--mono); font-size: 10.5px; color: var(--text2);
+    background: var(--bg0); border: 1px solid var(--border2); border-radius: 6px; white-space: pre-wrap;
+}

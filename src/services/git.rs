@@ -598,6 +598,70 @@ pub async fn diff_stat(repo: &str) -> Result<String, String> {
         .to_string())
 }
 
+/// A number that changes when what the repository says about itself does: a
+/// commit, a checkout, a push or fetch moving a ref, a merge or rebase
+/// starting or ending. Read from file timestamps under `.git`, so it costs a
+/// handful of `stat` calls — cheap enough to ask every couple of seconds for
+/// every repository, which is how a commit made from a terminal, or by
+/// GitAgent's own MCP server, reaches the window without a Refresh.
+///
+/// Not the index: `git status`, which every re-check runs, may rewrite it,
+/// and watching it would have each re-check set off the next. Staging changes
+/// nothing a re-check reports anyway.
+pub fn change_fingerprint(repo: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let root = std::path::Path::new(repo);
+    let dot_git = root.join(".git");
+    // A worktree or submodule has a `.git` file naming the real directory.
+    let git_dir = match std::fs::read_to_string(&dot_git) {
+        Ok(text) => text
+            .trim()
+            .strip_prefix("gitdir:")
+            .map(|p| root.join(p.trim()))
+            .unwrap_or(dot_git),
+        Err(_) => dot_git,
+    };
+    // Refs are shared between worktrees and live in the common directory.
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .map(|p| git_dir.join(p.trim()))
+        .unwrap_or_else(|_| git_dir.clone());
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut stamp = |path: &std::path::Path| {
+        let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        path.hash(&mut hasher);
+        modified.hash(&mut hasher);
+    };
+    for name in [
+        "HEAD",
+        "MERGE_HEAD",
+        "REBASE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "FETCH_HEAD",
+    ] {
+        stamp(&git_dir.join(name));
+    }
+    stamp(&common.join("packed-refs"));
+    fn walk(dir: &std::path::Path, depth: usize, stamp: &mut dyn FnMut(&std::path::Path)) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                if depth > 0 {
+                    walk(&path, depth - 1, stamp);
+                }
+            } else {
+                stamp(&path);
+            }
+        }
+    }
+    walk(&common.join("refs"), 6, &mut stamp);
+    hasher.finish()
+}
+
 pub fn cap(text: &str) -> String {
     fit(text, DIFF_CAP).text
 }
@@ -1277,6 +1341,38 @@ mod tests {
         };
         assert!(!modified.is_untracked());
         assert!(untracked.is_untracked());
+    }
+
+    #[test]
+    fn the_fingerprint_moves_with_a_commit_but_not_with_a_status() {
+        let dir = std::env::temp_dir().join(format!("gitagent-fp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        git(&["add", "a"]);
+        git(&["commit", "-qm", "one"]);
+        let repo = dir.to_string_lossy().to_string();
+        let before = change_fingerprint(&repo);
+        std::fs::write(dir.join("a"), "2").unwrap();
+        git(&["status", "--porcelain"]);
+        assert_eq!(change_fingerprint(&repo), before, "looking changes nothing");
+        // Timestamps can be coarse: make the commit land on a later tick.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        git(&["commit", "-qam", "two"]);
+        assert_ne!(change_fingerprint(&repo), before, "a commit is noticed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

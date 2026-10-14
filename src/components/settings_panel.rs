@@ -19,6 +19,16 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     let mut cfg = props.llm_config;
     let mut probe_result = use_signal(|| Option::<Result<String, String>>::None);
     let mut probing = use_signal(|| false);
+    // The models this ollama has, read again only when its address changes —
+    // not on every keystroke in the model field.
+    let ollama_url = use_memo(move || cfg.read().ollama_url.clone());
+    let mut installed = use_signal(|| Option::<Result<Vec<llm::LocalModel>, String>>::None);
+    use_effect(move || {
+        let url = ollama_url();
+        spawn(async move {
+            installed.set(Some(llm::local_models(&url).await));
+        });
+    });
     let mut second_probe = use_signal(|| Option::<Result<String, String>>::None);
     let mut second_probing = use_signal(|| false);
     // Read once when the panel opens; the buttons below write straight through
@@ -98,6 +108,17 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                 value: "{current.ollama_model}",
                                 oninput: move |e| cfg.write().ollama_model = e.value(),
                             }
+                        }
+                        // What this ollama actually has, to pick from rather
+                        // than type exactly right. Typing still works, for a
+                        // model about to be pulled.
+                        ModelChoices {
+                            installed: installed.read().clone(),
+                            selected: current.ollama_model.clone(),
+                            on_pick: move |name: String| {
+                                cfg.write().ollama_model = name;
+                                probe_result.set(None);
+                            },
                         }
                         label { class: "field",
                             span { "Context window" }
@@ -223,6 +244,20 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                 oninput: move |e| cfg.write().second.ollama_model = e.value(),
                             }
                         }
+                        // Same ollama, so the same list. Left empty, the
+                        // second opinion uses the main model — highlighted so.
+                        ModelChoices {
+                            installed: installed.read().clone(),
+                            selected: if second.ollama_model.trim().is_empty() {
+                                current.ollama_model.clone()
+                            } else {
+                                second.ollama_model.clone()
+                            },
+                            on_pick: move |name: String| {
+                                cfg.write().second.ollama_model = name;
+                                second_probe.set(None);
+                            },
+                        }
                     } else if second.kind == ProviderKind::Remote {
                         label { class: "field",
                             span { "Provider" }
@@ -333,5 +368,42 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// The models ollama has installed, as choices under a model field.
+#[component]
+fn ModelChoices(
+    installed: Option<Result<Vec<llm::LocalModel>, String>>,
+    selected: String,
+    on_pick: EventHandler<String>,
+) -> Element {
+    match installed {
+        None => rsx! { div { class: "field-note", "Looking for installed models\u{2026}" } },
+        Some(Err(e)) => rsx! { div { class: "field-note", "Couldn't list installed models: {e}" } },
+        Some(Ok(models)) if models.is_empty() => rsx! {
+            div { class: "field-note",
+                "No models installed yet. Pull one with "
+                code { "ollama pull <name>" }
+                ", then reopen Settings."
+            }
+        },
+        Some(Ok(models)) => rsx! {
+            div { class: "model-choices",
+                for m in models {
+                    button {
+                        key: "{m.name}",
+                        class: if m.name == selected { "model-choice model-choice-on" } else { "model-choice" },
+                        title: "Use {m.name}",
+                        onclick: {
+                            let name = m.name.clone();
+                            move |_| on_pick.call(name.clone())
+                        },
+                        span { class: "model-choice-name", "{m.name}" }
+                        span { class: "model-choice-size", "{m.size_label()}" }
+                    }
+                }
+            }
+        },
     }
 }

@@ -26,7 +26,7 @@ use crate::services::flow;
 use crate::services::flowdef::FlowBook;
 use crate::services::graph::{Graph, NodeKind, NodeSpec, NodeStatus, RunState, Step};
 use crate::services::llm::LlmConfig;
-use crate::services::{forge, git, licence, probe, store, trusted};
+use crate::services::{forge, git, licence, live, probe, store, trusted};
 use crate::telemetry;
 
 /// The newest protocol revision this server speaks. A client asking for an
@@ -440,6 +440,22 @@ async fn decide(run: &mut Run, approved: bool, exclude: &[String]) -> Result<Val
     Ok(report(run))
 }
 
+/// Tells an open window where this run stands — see `services::live`.
+fn publish(run: &Run) {
+    let label = FlowBook::load()
+        .get(&run.flow)
+        .map(|f| f.label.clone())
+        .unwrap_or_else(|| run.flow.clone());
+    live::publish(live::snapshot(
+        run.state.run,
+        &run.repo,
+        &run.flow,
+        &label,
+        &run.graph,
+        &run.state,
+    ));
+}
+
 /// Runs ready steps until the run ends or one stops for approval.
 async fn advance(run: &mut Run) {
     loop {
@@ -461,10 +477,12 @@ async fn advance(run: &mut Run) {
             entry.items = items;
             entry.preview_diff = preview_diff;
             run.state.set_status(&node.id, NodeStatus::AwaitingApproval);
+            publish(run);
             return;
         }
         run_node(run, &node).await;
     }
+    publish(run);
     report_finished(run).await;
 }
 
@@ -474,8 +492,9 @@ async fn run_node(run: &mut Run, node: &NodeSpec) {
     // Read each time: Settings may change in the window while a client holds
     // a run open, and the next step should use what is set now.
     let cfg: LlmConfig = store::load_settings();
+    run.state.set_status(&node.id, NodeStatus::Running);
+    publish(run);
     let state = &mut run.state;
-    state.set_status(&node.id, NodeStatus::Running);
 
     let bypass = |state: &mut RunState, summary: &str, log: &str| {
         state.set_status(&node.id, NodeStatus::Bypassed);
