@@ -1,3 +1,4 @@
+pub mod awake;
 pub mod branches;
 pub mod catalogue;
 pub mod diffview;

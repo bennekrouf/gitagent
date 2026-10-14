@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- On macOS, a run no longer stalls while GitAgent's window is hidden or
+  covered: it used to look stopped and only catch up once you showed the
+  window again. GitAgent now tells macOS it is busy while a flow or branch
+  action is running, and still lets your Mac go to sleep.
+
 ## [0.1.103] - 2026-10-14
 
 ### Added

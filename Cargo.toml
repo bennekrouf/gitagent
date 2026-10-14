@@ -30,5 +30,11 @@ base64 = "0.22"
 # other crates, so this names a dependency rather than adding one.
 getrandom = "0.3"
 
+# Holding off App Nap while a run is going (services::awake). Both already in
+# the tree through the window and notification crates, at these versions.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
