@@ -17,7 +17,7 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
-## [Unreleased]
+## [0.1.98] - 2026-10-14
 
 ### Added
 
@@ -31,10 +31,6 @@ were never released.
   without opening the repository first. Hover it to see exactly what it will
   run. A step a trusted run held back, or a commit with every file
   unchecked, still says **needs you** and wants a look first.
-- When a pull request's checks fail, its card now names each failing check,
-  and clicking one opens that check's log on GitHub. **Checks failing**
-  itself opens the pull request's checks, so you no longer have to go
-  looking for which one broke.
 
 ### Changed
 

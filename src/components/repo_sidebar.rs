@@ -151,10 +151,7 @@ impl Approval {
         if lines.len() > MOST_LINES {
             shown.push_str("\n\u{2026}");
         }
-        format!(
-            "Approve \u{201c}{}\u{201d}. This will run:\n\n{shown}",
-            self.title
-        )
+        format!("Approve \u{201c}{}\u{201d}. This will run:\n\n{shown}", self.title)
     }
 }
 
