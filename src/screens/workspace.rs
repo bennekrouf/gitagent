@@ -1528,6 +1528,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         .map(|(_, _, problems)| problems.clone())
         .unwrap_or_default();
     let current = flows.get(&flow_id).cloned();
+    let flow_kind = current
+        .as_ref()
+        .map(|f| f.kind())
+        .unwrap_or(probe::FlowKind::Other);
     let graph: Graph = current
         .as_ref()
         .map(|f| f.to_graph())
@@ -1737,7 +1741,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 let on_screen = selected_repo.read().as_deref() == Some(repo.as_str())
                     && *selected_flow.read() == id
                     && *selected_pr.read() == pr;
-                if id == probe::REVIEW_FLOW
+                if def.kind() == probe::FlowKind::Review
                     && on_screen
                     && matches!(
                         phase_of(&finished),
@@ -1819,7 +1823,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             // not just the one for whatever branch happens
             // to be checked out — so reviewing #7 today and
             // #5 tomorrow needs no `git checkout` between.
-            if flow_id == probe::REVIEW_FLOW {
+            if flow_kind == probe::FlowKind::Review {
                 {
                     let prs = status_map.get(&repo).map(|s| s.prs.clone()).unwrap_or_default();
                     let prs_error = status_map.get(&repo).and_then(|s| s.prs_error.clone());
@@ -2470,7 +2474,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     .map(|(_, branch)| branch_busy_note(branch))
                             });
                         let can_run = probe::affordance(
-                            &flow_id,
+                            flow_kind,
                             status_map.get(&repo),
                             *probing.read() > 0,
                             run_state.started,
@@ -2671,7 +2675,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             });
                         let other_running = other_run.is_some();
                         let can_run = probe::affordance(
-                            &flow_id,
+                            flow_kind,
                             status_map.get(&repo),
                             *probing.read() > 0,
                             state.started,
@@ -3482,7 +3486,7 @@ mod tests {
         let key = |r: &str, f: &str, p: &str| (r.to_string(), f.to_string(), p.to_string());
         let running: BTreeSet<Key> = [key("/a", "commit_and_pr", "")].into();
         // Merging a pull request while a commit is under way is refused…
-        let merge = key("/a", probe::REVIEW_FLOW, "7");
+        let merge = key("/a", "review_and_merge", "7");
         assert_eq!(
             other_run_in(&running, "/a", &merge),
             Some(&key("/a", "commit_and_pr", ""))
@@ -3494,7 +3498,7 @@ mod tests {
         );
         // …and another repository is unaffected.
         assert_eq!(
-            other_run_in(&running, "/b", &key("/b", probe::REVIEW_FLOW, "7")),
+            other_run_in(&running, "/b", &key("/b", "review_and_merge", "7")),
             None
         );
     }
