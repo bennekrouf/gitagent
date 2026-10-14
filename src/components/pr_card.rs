@@ -45,7 +45,20 @@ pub fn PrCard(props: PrCardProps) -> Element {
             }
             div { class: "pr-card-foot",
                 span { class: "dot dot-{css}" }
-                span { class: "status-{css}", "{label}" }
+                // Failing is the state you want to go and look at, so it is
+                // the one that goes somewhere: the pull request's Checks tab.
+                if pr.checks == Checks::Failing && !pr.url.is_empty() {
+                    a {
+                        class: "status-{css} pr-checks-link",
+                        href: "{checks_page(&pr.url)}",
+                        target: "_blank",
+                        title: "Open this pull request's checks",
+                        onclick: |evt: Event<MouseData>| evt.stop_propagation(),
+                        "{label}"
+                    }
+                } else {
+                    span { class: "status-{css}", "{label}" }
+                }
                 if !pr.url.is_empty() {
                     a {
                         class: "pr-link",
@@ -55,8 +68,47 @@ pub fn PrCard(props: PrCardProps) -> Element {
                     }
                 }
             }
+            // Which checks, each straight to its own log. Without this the
+            // card can only say that something is red, and finding what means
+            // leaving for the browser and hunting.
+            if !pr.failed.is_empty() {
+                div { class: "pr-failed",
+                    for check in pr.failed.iter().take(MOST_FAILED_SHOWN).cloned() {
+                        if check.url.is_empty() {
+                            span { key: "{check.name}", class: "pr-failed-check", "\u{2715} {check.name}" }
+                        } else {
+                            a {
+                                key: "{check.name}",
+                                class: "pr-failed-check",
+                                href: "{check.url}",
+                                target: "_blank",
+                                title: "Open the log of {check.name}",
+                                onclick: |evt: Event<MouseData>| evt.stop_propagation(),
+                                "\u{2715} {check.name} \u{2197}"
+                            }
+                        }
+                    }
+                    if pr.failed.len() > MOST_FAILED_SHOWN {
+                        a {
+                            class: "pr-failed-more",
+                            href: "{checks_page(&pr.url)}",
+                            target: "_blank",
+                            onclick: |evt: Event<MouseData>| evt.stop_propagation(),
+                            "+{pr.failed.len() - MOST_FAILED_SHOWN} more"
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+/// Enough to name what broke; a long matrix of red goes to the checks page.
+const MOST_FAILED_SHOWN: usize = 4;
+
+/// The Checks tab of a GitHub pull request, from its page.
+fn checks_page(pr_url: &str) -> String {
+    format!("{}/checks", pr_url.trim_end_matches('/'))
 }
 
 #[cfg(test)]
@@ -70,5 +122,17 @@ mod tests {
         assert_eq!(checks_label(Checks::Pending).0, "checks running");
         // Azure: never claim green for something nobody looked at.
         assert_eq!(checks_label(Checks::Unknown).0, "checks not read");
+    }
+
+    #[test]
+    fn the_checks_page_is_the_pull_request_page_plus_checks() {
+        assert_eq!(
+            checks_page("https://github.com/o/r/pull/117"),
+            "https://github.com/o/r/pull/117/checks"
+        );
+        assert_eq!(
+            checks_page("https://github.com/o/r/pull/117/"),
+            "https://github.com/o/r/pull/117/checks"
+        );
     }
 }

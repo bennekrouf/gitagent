@@ -1172,6 +1172,25 @@ body {
     text-transform: none; letter-spacing: 0;
 }
 .pr-link:hover { color: var(--green); text-decoration: underline; }
+.pr-checks-link { text-decoration: none; cursor: pointer; }
+.pr-checks-link:hover { text-decoration: underline; }
+/* The checks that failed, each a link to its log. */
+.pr-failed { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.pr-failed-check, .pr-failed-more {
+    font-size: 10px; text-decoration: none; white-space: nowrap;
+    padding: 1px 7px; border-radius: 999px;
+}
+.pr-failed-check {
+    color: var(--red);
+    background: color-mix(in srgb, var(--red) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+}
+a.pr-failed-check:hover {
+    background: color-mix(in srgb, var(--red) 24%, transparent);
+    border-color: var(--red);
+}
+.pr-failed-more { color: var(--text3); }
+.pr-failed-more:hover { color: var(--text1); text-decoration: underline; }
 
 
 /* ── Deselecting a file against its own diff ──────────────────────── */

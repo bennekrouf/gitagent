@@ -3549,6 +3549,7 @@ mod tests {
             commits: 1,
             base: String::new(),
             head: String::new(),
+            failed: vec![],
         }
     }
 

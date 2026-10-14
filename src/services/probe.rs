@@ -42,6 +42,18 @@ pub struct PrBrief {
     /// worked out between, locally, without asking the forge for it.
     pub base: String,
     pub head: String,
+    /// The checks behind a `Checks::Failing`, each with the page its log is
+    /// on — so "checks failing" can say which one and take you to why.
+    /// Empty for any other state, and on Azure, where checks are not read.
+    pub failed: Vec<FailedCheck>,
+}
+
+/// One check that did not pass.
+#[derive(Clone, PartialEq, Debug)]
+pub struct FailedCheck {
+    pub name: String,
+    /// Its run on the forge, where the log is. Empty when GitHub gave none.
+    pub url: String,
 }
 
 impl PrBrief {
@@ -673,6 +685,7 @@ fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> {
         title: value["title"].as_str().unwrap_or_default().to_string(),
         url: value["url"].as_str().unwrap_or_default().to_string(),
         checks: rollup(&value["statusCheckRollup"]),
+        failed: failed_checks(&value["statusCheckRollup"]),
         files: value["changedFiles"].as_u64().unwrap_or(0) as usize,
         additions: value["additions"].as_u64().unwrap_or(0) as usize,
         deletions: value["deletions"].as_u64().unwrap_or(0) as usize,
@@ -755,6 +768,7 @@ async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBrief>, String
                                 commits: 0,
                                 base: azure_branch(&pr["targetRefName"]),
                                 head: azure_branch(&pr["sourceRefName"]),
+                                failed: vec![],
                             })
                         })
                         .collect()
@@ -817,6 +831,7 @@ async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
                 commits: 0,
                 base: azure_branch(&pr["targetRefName"]),
                 head: azure_branch(&pr["sourceRefName"]),
+                failed: vec![],
             })
         }
         _ => None,
@@ -835,15 +850,9 @@ fn rollup(value: &serde_json::Value) -> Checks {
 
     let (mut failing, mut pending) = (false, false);
     for check in checks {
-        let status = check["status"].as_str().unwrap_or("");
-        let conclusion = check["conclusion"]
-            .as_str()
-            .or_else(|| check["state"].as_str())
-            .unwrap_or("");
-
-        if matches!(status, "IN_PROGRESS" | "QUEUED" | "PENDING") {
+        if is_pending(check) {
             pending = true;
-        } else if !matches!(conclusion, "SUCCESS" | "NEUTRAL" | "SKIPPED") {
+        } else if has_failed(check) {
             failing = true;
         }
     }
@@ -852,6 +861,100 @@ fn rollup(value: &serde_json::Value) -> Checks {
         (true, _) => Checks::Failing,
         (false, true) => Checks::Pending,
         _ => Checks::Passing,
+    }
+}
+
+/// One rollup entry is still going. Check runs say so in `status`; the older
+/// commit statuses put `PENDING` in `state`, which `has_failed` reads.
+fn is_pending(check: &serde_json::Value) -> bool {
+    matches!(
+        check["status"].as_str().unwrap_or(""),
+        "IN_PROGRESS" | "QUEUED" | "PENDING"
+    )
+}
+
+fn has_failed(check: &serde_json::Value) -> bool {
+    let conclusion = check["conclusion"]
+        .as_str()
+        .or_else(|| check["state"].as_str())
+        .unwrap_or("");
+    !is_pending(check) && !matches!(conclusion, "SUCCESS" | "NEUTRAL" | "SKIPPED")
+}
+
+/// The checks `rollup` counted as failing, by name, with their log pages.
+///
+/// The rollup holds two shapes: check runs (`name`, `detailsUrl`) from
+/// Actions and apps, and commit statuses (`context`, `targetUrl`) from older
+/// integrations. A name reported twice — a re-run, a matrix leg — is listed
+/// once, with the first link.
+fn failed_checks(value: &serde_json::Value) -> Vec<FailedCheck> {
+    let mut out: Vec<FailedCheck> = vec![];
+    for check in value.as_array().into_iter().flatten() {
+        if !has_failed(check) {
+            continue;
+        }
+        let name = check["name"]
+            .as_str()
+            .or_else(|| check["context"].as_str())
+            .unwrap_or("check")
+            .to_string();
+        if out.iter().any(|f| f.name == name) {
+            continue;
+        }
+        let url = check["detailsUrl"]
+            .as_str()
+            .or_else(|| check["targetUrl"].as_str())
+            .unwrap_or("")
+            .to_string();
+        out.push(FailedCheck { name, url });
+    }
+    out
+}
+
+#[cfg(test)]
+mod failed_check_tests {
+    use super::*;
+
+    #[test]
+    fn each_failing_check_is_named_once_with_its_log() {
+        let rollup = serde_json::json!([
+            { "name": "fmt", "status": "COMPLETED", "conclusion": "FAILURE",
+              "detailsUrl": "https://github.com/o/r/actions/runs/1/job/2" },
+            { "name": "changelog", "status": "COMPLETED", "conclusion": "SUCCESS",
+              "detailsUrl": "https://x/3" },
+            { "name": "test", "status": "IN_PROGRESS", "conclusion": "",
+              "detailsUrl": "https://x/4" },
+            // A re-run of the same check: one entry, not two.
+            { "name": "fmt", "status": "COMPLETED", "conclusion": "FAILURE",
+              "detailsUrl": "https://x/5" },
+            // The older commit-status shape.
+            { "context": "ci/legacy", "state": "ERROR", "targetUrl": "https://x/6" },
+        ]);
+        assert_eq!(
+            failed_checks(&rollup),
+            vec![
+                FailedCheck {
+                    name: "fmt".into(),
+                    url: "https://github.com/o/r/actions/runs/1/job/2".into(),
+                },
+                FailedCheck {
+                    name: "ci/legacy".into(),
+                    url: "https://x/6".into(),
+                },
+            ]
+        );
+        // The same reading as the overall verdict: red, even with one running.
+        assert_eq!(super::rollup(&rollup), Checks::Failing);
+    }
+
+    #[test]
+    fn nothing_failing_lists_nothing() {
+        let green = serde_json::json!([
+            { "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS" },
+            { "name": "lint", "status": "COMPLETED", "conclusion": "SKIPPED" },
+        ]);
+        assert!(failed_checks(&green).is_empty());
+        assert!(failed_checks(&serde_json::Value::Null).is_empty());
     }
 }
 
@@ -873,6 +976,7 @@ mod default_pr_tests {
             commits: 1,
             base: String::new(),
             head: String::new(),
+            failed: vec![],
         }
     }
 
@@ -1025,6 +1129,7 @@ mod tests {
                 commits: 1,
                 base: String::new(),
                 head: String::new(),
+                failed: vec![],
             }),
             prs: vec![],
             prs_error: None,
@@ -1460,6 +1565,7 @@ mod tests {
             commits: 1,
             base: String::new(),
             head: String::new(),
+            failed: vec![],
         };
         assert_eq!(pr.size(), "1 file  +2  −0");
         pr.files = 115;
