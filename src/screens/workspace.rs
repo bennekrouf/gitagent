@@ -1813,7 +1813,157 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         });
     };
     let start = move |_: Event<MouseData>| begin(false);
-    let start_trusted = move |_: Event<MouseData>| begin(true);
+
+    // Branches, Base and Trusted run: the repository's own controls. The same
+    // three in the list view's header and the run view's, built here once, so
+    // switching views never takes one away or shows a different rule.
+    let repo_actions = {
+        let status_map = status_map.clone();
+        let forge_map = forge_map.clone();
+        let flows = flows.clone();
+        move |repo: &str,
+              key: &Key,
+              can_run: &probe::Affordance,
+              other_run: &Option<String>|
+              -> Element {
+            let repo = repo.to_string();
+            let key = key.clone();
+            let is_running = running.read().contains(&key);
+            // Trust is granted per leg, but the chain moves between flows, so
+            // the button looks at the repository rather than this key alone.
+            let is_trusted = trusted.read().iter().any(|(r, _, _)| r == &repo);
+            // Flows hidden here: a trusted run must not start one the tab
+            // strip does not even show.
+            let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
+            // What a trusted run would start: the repository's most urgent
+            // need by preference — the point of the button — else the flow on
+            // screen when it can run. Requiring a need left the button dead on
+            // every tab whenever the probe said "nothing in particular", which
+            // read as "trusted runs only work on Commit → PR".
+            let trusted_start = status_map
+                .get(&repo)
+                .and_then(|status| trusted::next_flow(&flows, status, &hidden_here))
+                .or_else(|| can_run.enabled.then(|| (key.1.clone(), key.2.clone())));
+            let other_running = other_run.is_some();
+            rsx! {
+            button {
+                class: "btn btn-ghost",
+                title: "Local branches, and whether their pull request landed",
+                onclick: {
+                    let repo = repo.clone();
+                    let forge = forge_map.get(&repo).cloned().unwrap_or(crate::services::forge::Forge::None);
+                    move |_| {
+                        let repo = repo.clone();
+                        let forge = forge.clone();
+                        let override_base = repo_bases.read().get(&repo).map(str::to_string);
+                        branches_open.set(Some(repo.clone()));
+                        branches_data.set(None);
+                        branches_action_error.set(None);
+                        spawn(async move {
+                            let base = resolved_base(&repo, override_base).await;
+                            let result = crate::services::branches::list(&repo, &forge, &base).await;
+                            branches_data.set(Some(result));
+                        });
+                    }
+                },
+                "Branches"
+            }
+            button {
+                class: "btn btn-ghost",
+                title: "Which branch this repository's pull requests target",
+                onclick: {
+                    let repo = repo.clone();
+                    move |_| {
+                        base_editor_value.set(
+                            repo_bases.read().get(&repo).unwrap_or("").to_string()
+                        );
+                        base_editor_open.set(Some(repo.clone()));
+                    }
+                },
+                match repo_bases.read().get(&repo) {
+                    Some(base) => format!("Base: {base}"),
+                    None => "Base: auto".to_string(),
+                }
+            }
+            // Two ways to start the same run. The
+            // trusted one answers the approvals for
+            // you, in the open, and stops itself at
+            // anything `services::trusted` refuses.
+            if is_trusted {
+                button {
+                    class: "btn btn-trusted btn-trusted-on",
+                    title: "Stop clicking through the approvals. The run keeps going and asks you at the next one, and no further flow is started.",
+                    onclick: {
+                        let repo = repo.clone();
+                        move |_| {
+                            // Every leg for this repository, not just the
+                            // one on screen — the chain may already have
+                            // moved on to another flow's key.
+                            trusted.write().retain(|(r, _, _)| r != &repo);
+                            approvals().notify_waiters();
+                        }
+                    },
+                    span { class: "flow-tab-dot" }
+                    "Trusting…"
+                }
+            } else if is_running {
+                // A run is already going, and you are
+                // most likely reading this because it
+                // has stopped to ask you something.
+                // Adopting it is a different action
+                // from starting one: nothing is reset,
+                // the approval in front of you is
+                // answered, and every one after it in
+                // this repository is too. `drive` is
+                // already watching the trusted set on
+                // its approval wait, so putting the key
+                // in is the whole mechanism.
+                button {
+                    class: "btn btn-trusted",
+                    title: "Approve this step, and every step after it in this repository, without asking again. Still stops at a merge the analysis or CI is unhappy about.",
+                    onclick: {
+                        let key = key.clone();
+                        let mut trusted = trusted;
+                        move |_| {
+                            trusted.write().insert(key.clone());
+                            approvals().notify_waiters();
+                        }
+                    },
+                    "Stop asking me"
+                }
+            } else {
+                button {
+                    class: "btn btn-trusted",
+                    disabled: other_running || trusted_start.is_none(),
+                    title: match (&trusted_start, other_running) {
+                        (_, true) => other_run.clone().unwrap_or_default(),
+                        (None, _) => format!(
+                            "Nothing here needs a run, and this flow cannot start — {}.",
+                            if can_run.reason.is_empty() {
+                                status_map
+                                    .get(&repo)
+                                    .map(|s| s.wants().note())
+                                    .unwrap_or("still reading this repository")
+                                    .to_string()
+                            } else {
+                                can_run.reason.clone()
+                            }
+                        ),
+                        (Some((id, _)), _) => format!(
+                            "Work through what this repository needs, starting with \u{201c}{}\u{201d}, \
+                             approving each step for you as you watch. Moves on to the next flow \
+                             when one finishes, and stops for you at a merge the analysis or CI \
+                             is unhappy about.",
+                            flows.get(id).map(|f| f.label.clone()).unwrap_or_else(|| id.clone()),
+                        ),
+                    },
+                    onclick: move |_| begin(true),
+                    "Trusted run"
+                }
+            }
+            }
+        }
+    };
 
     // What the flow on screen is about, under its tabs: why it cannot run if
     // it cannot, and the pull request it acts on — every open one to pick from
@@ -2529,6 +2679,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         // What starting it would do, in the list view's own
                         // words: "Commit 5 files again", "Review #104".
                         let start_label = can_run.label.clone();
+                        let (can_run_actions, other_run_actions) = (can_run.clone(), other_run.clone());
                         let start_note = other_run.unwrap_or(can_run.reason);
                         // The step whose panel is open, if it is still a step
                         // of the flow on screen.
@@ -2599,6 +2750,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 panel_folded: folded,
                                 flows: flow_strip,
                                 context: flow_context,
+                                actions: repo_actions(&repo, &key, &can_run_actions, &other_run_actions),
                                 // Always there, open or not: a panel that is
                                 // only removed cannot slide away, and one that
                                 // is only added cannot slide in from where it
@@ -2687,21 +2839,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             .map(|r| r.label.clone())
                             .unwrap_or_else(|| repo.clone());
                         let is_running = running.read().contains(&key);
-                        // Trust is granted per leg, but the chain moves between
-                        // flows, so the button has to look at the repository
-                        // rather than at this tab's key alone.
-                        let is_trusted = trusted.read().iter().any(|(r, _, _)| r == &repo);
-                        // Flows this repository has hidden. Needed both for the
-                        // tab strip below and for the trusted-run hint just
-                        // under here, which must not offer a flow the strip
-                        // does not even show.
-                        let hidden_here = repo_flows.read().hidden_for(&repo).to_vec();
-                        // What a trusted run would take on, which is not
-                        // necessarily the flow on screen: a clean tree with a
-                        // release due offers one from the Commit → PR tab.
-                        let trusted_next = status_map
-                            .get(&repo)
-                            .and_then(|status| trusted::next_flow(&flows, status, &hidden_here));
                         // One run per repository: committing on one tab while
                         // merging a pull request on another, or reviewing #7
                         // while #5 is under way, would have two runs racing
@@ -2724,18 +2861,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             &pr_id,
                             &flow_problems,
                         );
-                        // What the trusted button will actually start. The
-                        // repository's most urgent need by preference — that
-                        // is the whole point of the button — but the flow on
-                        // screen when there is no such need and this flow can
-                        // run anyway. Requiring a need meant the button was
-                        // dead on every tab whenever the probe said "nothing
-                        // in particular", which reads as "trusted runs only
-                        // work on Commit → PR".
-                        let trusted_start = trusted_next
-                            .clone()
-                            .or_else(|| can_run.enabled.then(|| (flow_id.clone(), pr_id.clone())));
-
                         // Both flows end with a pull request worth linking to:
                         // the one just opened, or the one just merged.
                         let pr_url = state.artifact("pr_url").to_string();
@@ -2770,121 +2895,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             }
                                         }
                                     }
-                                    button {
-                                        class: "btn btn-ghost",
-                                        title: "Local branches, and whether their pull request landed",
-                                        onclick: {
-                                            let repo = repo.clone();
-                                            let forge = forge_map.get(&repo).cloned().unwrap_or(crate::services::forge::Forge::None);
-                                            move |_| {
-                                                let repo = repo.clone();
-                                                let forge = forge.clone();
-                                                let override_base = repo_bases.read().get(&repo).map(str::to_string);
-                                                branches_open.set(Some(repo.clone()));
-                                                branches_data.set(None);
-                                                branches_action_error.set(None);
-                                                spawn(async move {
-                                                    let base = resolved_base(&repo, override_base).await;
-                                                    let result = crate::services::branches::list(&repo, &forge, &base).await;
-                                                    branches_data.set(Some(result));
-                                                });
-                                            }
-                                        },
-                                        "Branches"
-                                    }
-                                    button {
-                                        class: "btn btn-ghost",
-                                        title: "Which branch this repository's pull requests target",
-                                        onclick: {
-                                            let repo = repo.clone();
-                                            move |_| {
-                                                base_editor_value.set(
-                                                    repo_bases.read().get(&repo).unwrap_or("").to_string()
-                                                );
-                                                base_editor_open.set(Some(repo.clone()));
-                                            }
-                                        },
-                                        match repo_bases.read().get(&repo) {
-                                            Some(base) => format!("Base: {base}"),
-                                            None => "Base: auto".to_string(),
-                                        }
-                                    }
-                                    // Two ways to start the same run. The
-                                    // trusted one answers the approvals for
-                                    // you, in the open, and stops itself at
-                                    // anything `services::trusted` refuses.
-                                    if is_trusted {
-                                        button {
-                                            class: "btn btn-trusted btn-trusted-on",
-                                            title: "Stop clicking through the approvals. The run keeps going and asks you at the next one, and no further flow is started.",
-                                            onclick: {
-                                                let repo = repo.clone();
-                                                move |_| {
-                                                    // Every leg for this repository, not just the
-                                                    // one on screen — the chain may already have
-                                                    // moved on to another flow's key.
-                                                    trusted.write().retain(|(r, _, _)| r != &repo);
-                                                    approvals().notify_waiters();
-                                                }
-                                            },
-                                            span { class: "flow-tab-dot" }
-                                            "Trusting…"
-                                        }
-                                    } else if is_running {
-                                        // A run is already going, and you are
-                                        // most likely reading this because it
-                                        // has stopped to ask you something.
-                                        // Adopting it is a different action
-                                        // from starting one: nothing is reset,
-                                        // the approval in front of you is
-                                        // answered, and every one after it in
-                                        // this repository is too. `drive` is
-                                        // already watching the trusted set on
-                                        // its approval wait, so putting the key
-                                        // in is the whole mechanism.
-                                        button {
-                                            class: "btn btn-trusted",
-                                            title: "Approve this step, and every step after it in this repository, without asking again. Still stops at a merge the analysis or CI is unhappy about.",
-                                            onclick: {
-                                                let key = key.clone();
-                                                let mut trusted = trusted;
-                                                move |_| {
-                                                    trusted.write().insert(key.clone());
-                                                    approvals().notify_waiters();
-                                                }
-                                            },
-                                            "Stop asking me"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "btn btn-trusted",
-                                            disabled: other_running || trusted_start.is_none(),
-                                            title: match (&trusted_start, other_running) {
-                                                (_, true) => other_run.clone().unwrap_or_default(),
-                                                (None, _) => format!(
-                                                    "Nothing here needs a run, and this flow cannot start — {}.",
-                                                    if can_run.reason.is_empty() {
-                                                        status_map
-                                                            .get(&repo)
-                                                            .map(|s| s.wants().note())
-                                                            .unwrap_or("still reading this repository")
-                                                            .to_string()
-                                                    } else {
-                                                        can_run.reason.clone()
-                                                    }
-                                                ),
-                                                (Some((id, _)), _) => format!(
-                                                    "Work through what this repository needs, starting with \u{201c}{}\u{201d}, \
-                                                     approving each step for you as you watch. Moves on to the next flow \
-                                                     when one finishes, and stops for you at a merge the analysis or CI \
-                                                     is unhappy about.",
-                                                    flows.get(id).map(|f| f.label.clone()).unwrap_or_else(|| id.clone()),
-                                                ),
-                                            },
-                                            onclick: start_trusted,
-                                            "Trusted run"
-                                        }
-                                    }
+                                    {repo_actions(&repo, &key, &can_run, &other_run)}
                                     button {
                                         class: "btn btn-primary",
                                         disabled: is_running || other_running || !can_run.enabled,
@@ -3352,7 +3363,10 @@ mod tests {
         let states = states_with("commit_and_pr", "", waiting_at_push());
         let approval = approval_for(&states, &FlowBook::defaults(), "repo").unwrap();
         assert_eq!(approval.node, "push");
-        assert_eq!(approval.run, ("repo".into(), "commit_and_pr".into(), String::new()));
+        assert_eq!(
+            approval.run,
+            ("repo".into(), "commit_and_pr".into(), String::new())
+        );
         assert!(approval.tooltip().contains("git push -u origin feat/x"));
         // Only for its own repository.
         assert!(approval_for(&states, &FlowBook::defaults(), "other").is_none());

@@ -1386,11 +1386,15 @@ button.update-banner-link {
 }
 .run-head {
     display: flex; align-items: center; gap: 16px;
+    /* Name, the repository's buttons, the player and the legend fill a wide
+       window's row; a narrow one moves the end of it to a second line rather
+       than squeezing the name to nothing. */
+    flex-wrap: wrap; row-gap: 8px;
     padding: 11px 16px;
     border-bottom: 1px solid var(--border2);
     flex-shrink: 0;
 }
-.run-head-main { flex: 1; min-width: 0; }
+.run-head-main { flex: 1; min-width: 160px; }
 .run-title {
     font-size: 13px; font-weight: 600;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1620,6 +1624,8 @@ button.update-banner-link {
 
 /* Play, restart and speed, top left of the run view. */
 .run-player { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* The repository's own controls, as in the list view's header. */
+.run-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .run-ctl, .run-restart, .run-speed {
     font-family: var(--mono); font-size: 12px;
     border-radius: 7px; cursor: pointer;

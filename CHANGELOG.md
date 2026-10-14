@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The run view now has the same **Branches**, **Base** and **Trusted run**
+  buttons as the list view, at the top next to Play, so you no longer have to
+  switch back to the list to open the branches, change the base branch, or
+  hand a run over to a trusted run. **Stop asking me** and **Trusting…**
+  show there too while a run is going.
+
 ## [0.1.99] - 2026-10-14
 
 ### Added
