@@ -226,6 +226,9 @@ pub struct Remedy {
     /// step is retried: renaming a branch has to rename it for every later
     /// step too, not only in git.
     pub sets: Vec<(String, String)>,
+    /// The last run of it did not finish. Its output says why; the button
+    /// says so too, rather than going back to looking untouched.
+    pub failed: bool,
 }
 
 impl Remedy {
@@ -241,6 +244,7 @@ impl Remedy {
             retry_after: true,
             abandons: false,
             sets: vec![],
+            failed: false,
         }
     }
 

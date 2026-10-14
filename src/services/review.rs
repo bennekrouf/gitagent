@@ -823,6 +823,83 @@ async fn analyse(
     })
 }
 
+/// After a push, GitHub works out mergeability a few seconds later and can
+/// still report the old conflict meanwhile — merging again straight away would
+/// fail on stale news. `$1` is the pull request number.
+const WAIT_FOR_GITHUB: &str = r#"for i in 1 2 3 4 5 6 7 8 9 10; do
+  sleep 3
+  state=$(gh pr view "$1" --json mergeable -q .mergeable)
+  [ "$state" = MERGEABLE ] && exit 0
+  if [ "$state" = CONFLICTING ] && [ "$i" -gt 3 ]; then
+    echo "Pushed, but GitHub still reports #$1 as conflicting."; exit 1
+  fi
+done
+echo "Pushed. GitHub has not finished rechecking #$1; merging anyway.""#;
+
+/// What the Merge step becomes once "Bring the base in" stopped on conflicts:
+/// the merge is half done in the working tree, and the next move is the
+/// person's — so the step says which files, and offers to finish or abandon
+/// right there instead of leaving the old message and a button that looks
+/// like it did nothing. `None` when the output is not a conflict.
+pub fn conflict_followup(number: &str, base: &str, output: &str) -> Option<StepFailure> {
+    let files: Vec<&str> = output
+        .lines()
+        .filter_map(|l| l.split_once("Merge conflict in ").map(|(_, f)| f.trim()))
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    let message = format!(
+        "{base} is merged into #{number}'s branch everywhere except where both sides \
+         changed the same lines. Nothing has been pushed.\n\n\
+         Fix {} in your editor — each conflict sits between <<<<<<< and >>>>>>>: \
+         keep what should stay, delete the markers, save:\n{}\n\n\
+         Then Finish below. It commits the merge, pushes, waits for GitHub to \
+         recheck #{number}, and tries the merge again. It refuses while any of \
+         these files still has a marker.\n\n\
+         Or abandon the merge to put the branch back as it was.",
+        if files.len() == 1 {
+            "this file"
+        } else {
+            "these files"
+        },
+        files
+            .iter()
+            .map(|f| format!("  {f}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let script = format!(
+        r#"left=$(git diff --name-only --diff-filter=U | while IFS= read -r f; do grep -l '^<<<<<<< ' "$f"; done)
+if [ -n "$left" ]; then printf 'Still has conflict markers, fix it first:\n%s\n' "$left"; exit 1; fi
+git diff --name-only --diff-filter=U | while IFS= read -r f; do git add -- "$f"; done
+git commit --no-edit && git push || exit 1
+{WAIT_FOR_GITHUB}"#
+    );
+    let finish = Remedy::new(
+        &format!("Finish the merge, push, and merge #{number} again"),
+        "sh",
+        &["-c", &script, "sh", number],
+    );
+    let finish = Remedy {
+        display: format!(
+            "git add <fixed files> && git commit --no-edit && git push   (then waits for GitHub to recheck #{number})"
+        ),
+        ..finish
+    };
+    Some(StepFailure {
+        message,
+        remedies: vec![
+            finish,
+            Remedy::terminal(
+                "Abandon the merge — put the branch back as it was",
+                "git",
+                &["merge", "--abort"],
+            ),
+        ],
+    })
+}
+
 /// "not mergeable: the merge commit cannot be cleanly created" means a real
 /// conflict against the base branch. Nothing here can resolve a content
 /// conflict for a person, but it can take them to the point where only that
@@ -854,21 +931,14 @@ fn merge_failure(number: &str, base: &str, message: String) -> StepFailure {
     // GitHub works out mergeability after a push, not during it, and for a few
     // seconds can still report the old conflict — merging again straight away
     // would fail on stale news. So the script waits for a fresh answer.
-    let script = r#"gh pr checkout "$1" && git fetch origin "$2" && git merge --no-edit "origin/$2" && git push || exit 1
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  sleep 3
-  state=$(gh pr view "$1" --json mergeable -q .mergeable)
-  [ "$state" = MERGEABLE ] && exit 0
-  if [ "$state" = CONFLICTING ] && [ "$i" -gt 3 ]; then
-    echo "Pushed, but GitHub still reports #$1 as conflicting."; exit 1
-  fi
-done
-echo "Pushed. GitHub has not finished rechecking #$1; merging anyway."
-"#;
+    let script = format!(
+        r#"gh pr checkout "$1" && git fetch origin "$2" && git merge --no-edit "origin/$2" && git push || exit 1
+{WAIT_FOR_GITHUB}"#
+    );
     let bring_in = Remedy::new(
         &format!("Bring {base} in — merge it into #{number}'s branch, push, and merge again"),
         "sh",
-        &["-c", script, "sh", number, base],
+        &["-c", &script, "sh", number, base],
     );
     let bring_in = Remedy {
         display: format!(
@@ -1409,6 +1479,33 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
         let failure = empty_pr(&Forge::AzureDevOps, "4", "main", "topic", 0);
         assert!(failure.message.contains("already in `main`"));
         assert_eq!(failure.remedies[0].program, "az");
+    }
+
+    #[test]
+    fn a_conflicted_bring_in_turns_into_finishing_or_abandoning_it() {
+        let out = "Switched to branch 'feat/x'\nAuto-merging Cargo.lock\n\
+                   CONFLICT (content): Merge conflict in Cargo.lock\n\
+                   CONFLICT (content): Merge conflict in src/api/config_upload.rs\n\
+                   Automatic merge failed; fix conflicts and then commit the result.";
+        let next = conflict_followup("66", "master", out).unwrap();
+        assert!(next
+            .message
+            .contains("  Cargo.lock\n  src/api/config_upload.rs"));
+        assert!(next.message.contains("Nothing has been pushed"));
+        let finish = &next.remedies[0];
+        assert!(
+            finish.retry_after,
+            "finishing leads straight back to the merge"
+        );
+        assert!(
+            finish.args[1].contains("<<<<<<<"),
+            "refuses while markers remain"
+        );
+        assert!(
+            finish.args[1].find("git commit").unwrap() < finish.args[1].find("git push").unwrap()
+        );
+        assert_eq!(next.remedies[1].args, ["merge", "--abort"]);
+        assert!(conflict_followup("66", "master", "fatal: not a git repository").is_none());
     }
 
     #[test]

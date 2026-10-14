@@ -17,6 +17,19 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A fix offered under a failed step that runs and stops no longer looks as if
+  nothing happened: its button reads **Run again**, and what it printed is
+  shown under "That stopped before finishing".
+- When **Bring the base in** stops on conflicts, the Merge step now moves on to
+  what comes next instead of keeping its old message. It names the files to
+  fix and offers **Finish the merge, push, and merge again** — which refuses
+  while a file still has conflict markers — or **Abandon the merge** to put the
+  branch back as it was.
+
 ## [0.1.100] - 2026-10-14
 
 ### Added
