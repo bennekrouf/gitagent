@@ -601,11 +601,18 @@ body {
 .first-run-actions { display: flex; align-items: center; gap: 12px; }
 .first-run-note { font-size: 11px; color: var(--text3); }
 
-/* Skip, offered on a step that is pending or still running — the two states
-   with no other control on them. */
-.step-actions {
-    padding: 10px 0 0; display: flex; gap: 8px;
-    border-top: 1px solid var(--border2); margin-top: 10px;
+/* The buttons that decide a step — Approve / Reject / Skip, Retry / Skip /
+   Cancel after a failure, or Skip on a step still pending or running —
+   pinned to the bottom of whichever pane is scrolling, so a long diff never
+   puts them out of reach. Pulled out over the pane's padding so it spans the
+   full width and sits flush with the bottom edge. */
+.detail-actions {
+    position: sticky; bottom: 0; z-index: 2;
+    display: flex; gap: 9px; flex-wrap: wrap;
+    margin: 16px -18px -16px; padding: 11px 18px;
+    background: var(--bg0);
+    border-top: 1px solid var(--border2);
+    box-shadow: 0 -8px 16px -10px rgba(0, 0, 0, 0.35);
 }
 
 /* Why a trusted run handed this approval back. */

@@ -33,6 +33,10 @@ were never released.
 
 - **Trust all** is remembered between launches, and shared with GitAgent's MCP
   server, instead of switching itself off every time the window opens.
+- Approve, Reject and Skip now stay pinned to the bottom of a step's panel, so
+  you can answer without scrolling past a long diff first. The same goes for
+  Retry, Skip and Cancel run after a step fails, and for skipping a step that
+  is still waiting or running.
 
 ### Fixed
 
