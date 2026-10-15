@@ -26,7 +26,7 @@ use crate::services::flow;
 use crate::services::flowdef::FlowBook;
 use crate::services::graph::{Graph, NodeKind, NodeSpec, NodeStatus, RunState, Step};
 use crate::services::llm::LlmConfig;
-use crate::services::{forge, git, licence, live, probe, store, trusted};
+use crate::services::{forge, git, licence, live, probe, release, store, trusted};
 use crate::telemetry;
 
 /// The newest protocol revision this server speaks. A client asking for an
@@ -43,7 +43,11 @@ const INSTRUCTIONS: &str = "GitAgent runs git work as flows of steps: commit and
 request, review and merge one, cut a release. Start with list_repos to see what each repository \
 needs, then run_flow. Any step that touches git history or the remote stops and returns what it \
 will do; show that to the user and call approve or reject with their answer. Never approve on \
-the user's behalf without asking them.";
+the user's behalf without asking them. Pass trusted: true to run_flow only when the user asks for \
+a trusted run: GitAgent then answers approvals itself by the rules of its Trusted run — it holds \
+at anything risky, any script or deploy, and release notes — and carries on into the next flow \
+the repository needs. If the user turned on Trust all in the GitAgent window, runs are trusted \
+already. Either way, report what was approved automatically and where it stopped.";
 
 /// One flow being run for one repository.
 struct Run {
@@ -51,6 +55,24 @@ struct Run {
     flow: String,
     graph: Graph,
     state: RunState,
+    /// Started as a trusted run: approvals it would let through are answered
+    /// here, by the same rules as the window's. Cleared at the first hold,
+    /// as there — from then on the run is the person's again.
+    trusted: bool,
+    /// Steps approved on the strength of trust, not a person — said in the
+    /// report, so the client can tell its user what went through.
+    approved_by_trust: Vec<String>,
+    /// Why a trusted run stopped where it did.
+    held: Option<String>,
+}
+
+impl Run {
+    /// Answered by trust: asked for when the run started, or "Trust all"
+    /// turned on in the window, re-read at every step so turning it off there
+    /// takes effect here too.
+    fn trusting(&self) -> bool {
+        self.held.is_none() && (self.trusted || store::trust_all())
+    }
 }
 
 impl Run {
@@ -182,6 +204,10 @@ fn tools() -> Value {
                     "flow": { "type": "string", "description": "Flow id from list_flows." },
                     "pr": { "type": "string", "description": "Pull request number, for a \
                                                               review flow." },
+                    "trusted": { "type": "boolean", "description": "Only when the user asked \
+                        for a trusted run: GitAgent approves what its Trusted run would, holds \
+                        at the rest, and continues into the next flow the repository needs. \
+                        Already on if the user turned on Trust all in the GitAgent window." },
                 },
                 "required": ["repo", "flow"],
             },
@@ -232,7 +258,10 @@ async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result
     match name {
         "list_repos" => list_repos(&text("folder")).await,
         "list_flows" => list_flows(&repo_path(&text("repo"))?),
-        "run_flow" => run_flow(&text("repo"), &text("flow"), &text("pr"), runs).await,
+        "run_flow" => {
+            let trusted = args["trusted"].as_bool().unwrap_or(false);
+            run_flow(&text("repo"), &text("flow"), &text("pr"), trusted, runs).await
+        }
         "approve" | "reject" | "run_status" => {
             let id = args["run_id"].as_u64().ok_or("run_id is required")?;
             let run = runs.get_mut(&id).ok_or(format!("no run {id}"))?;
@@ -317,8 +346,59 @@ async fn run_flow(
     repo: &str,
     flow_id: &str,
     pr: &str,
+    trusted: bool,
     runs: &mut BTreeMap<u64, Run>,
 ) -> Result<Value, String> {
+    let trusted = trusted || store::trust_all();
+    let mut legs: Vec<Value> = vec![];
+    let (mut flow_id, mut pr) = (flow_id.to_string(), pr.to_string());
+    // A trusted run goes on into the next flow the repository needs, as the
+    // window's does; anything else is one flow.
+    for _ in 0..trusted::MOST_FLOWS {
+        let id = start_flow(repo, &flow_id, &pr, trusted, runs).await?;
+        let run = runs.get(&id).expect("just started");
+        let report_now = report(run);
+        let carry_on = run.trusting()
+            && run.state.is_finished(&run.graph)
+            && trusted::may_continue(&run.state, &run.graph);
+        let repo_now = run.repo.clone();
+        let this = (run.flow.clone(), pr.clone());
+        legs.push(report_now);
+        if !carry_on {
+            break;
+        }
+        let status = probe::probe(&repo_now).await;
+        let hidden = store::load_repo_flows().hidden_for(&repo_now);
+        let Some(next) = trusted::next_flow(&FlowBook::load(), &status, &hidden) else {
+            if let Some(why) = trusted::why_stopped(&FlowBook::load(), &status, &hidden) {
+                if let Some(last) = legs.last_mut() {
+                    last["chain_stopped"] = json!(why);
+                }
+            }
+            break;
+        };
+        // The same flow again means the last one did not move the repository
+        // on; what is left needs a person.
+        if next == this {
+            break;
+        }
+        (flow_id, pr) = next;
+    }
+    let mut last = legs.pop().expect("at least one flow ran");
+    if !legs.is_empty() {
+        last["earlier_flows"] = json!(legs);
+    }
+    Ok(last)
+}
+
+/// One flow, started and run to its first stop. Returns the run's id.
+async fn start_flow(
+    repo: &str,
+    flow_id: &str,
+    pr: &str,
+    trusted: bool,
+    runs: &mut BTreeMap<u64, Run>,
+) -> Result<u64, String> {
     let repo = repo_path(repo)?;
     // One run per repository, as in the window: two flows sharing a working
     // tree is how a commit picks up a half-finished merge.
@@ -368,11 +448,14 @@ async fn run_flow(
             flow: def.id,
             graph,
             state,
+            trusted,
+            approved_by_trust: vec![],
+            held: None,
         },
     );
     let run = runs.get_mut(&id).expect("just inserted");
     advance(run).await;
-    Ok(report(run))
+    Ok(id)
 }
 
 /// The person's answer to the step a run is waiting on, then on to the next.
@@ -453,6 +536,7 @@ fn publish(run: &Run) {
         &label,
         &run.graph,
         &run.state,
+        run.trusting(),
     ));
 }
 
@@ -477,12 +561,35 @@ async fn advance(run: &mut Run) {
             entry.items = items;
             entry.preview_diff = preview_diff;
             run.state.set_status(&node.id, NodeStatus::AwaitingApproval);
+            // Trusted: the window's rules decide, not this server's leniency.
+            if run.trusting() {
+                match trusted::decide(&node, &resolved) {
+                    trusted::Verdict::Approve => {
+                        telemetry::record(telemetry::Event::ApprovalDecided {
+                            approved: true,
+                            trusted: true,
+                        });
+                        run.state.decisions.insert(node.id.clone(), true);
+                        run.approved_by_trust.push(node.title.clone());
+                        publish(run);
+                        run_node(run, &node).await;
+                        continue;
+                    }
+                    trusted::Verdict::Hold(why) => {
+                        if let Some(entry) = run.state.runs.get_mut(&node.id) {
+                            entry.held = why.clone();
+                        }
+                        run.held = Some(why);
+                    }
+                }
+            }
             publish(run);
             return;
         }
         run_node(run, &node).await;
     }
     publish(run);
+    release::record_shipped(&run.repo, &run.flow, &run.graph, &run.state).await;
     report_finished(run).await;
 }
 
@@ -645,7 +752,7 @@ fn report(run: &Run) -> Value {
         .filter(|(k, v)| !k.contains('.') && v.len() <= 300 && !v.trim().is_empty())
         .collect();
 
-    json!({
+    let mut out = json!({
         "run_id": state.run,
         "repo": run.repo,
         "flow": run.flow,
@@ -653,7 +760,15 @@ fn report(run: &Run) -> Value {
         "awaiting": awaiting,
         "steps": steps,
         "produced": produced,
-    })
+    });
+    if run.trusted || !run.approved_by_trust.is_empty() || run.held.is_some() {
+        out["trusted"] = json!(run.held.is_none() && run.trusting());
+        out["approved_automatically"] = json!(run.approved_by_trust);
+        if let Some(why) = &run.held {
+            out["held"] = json!(why);
+        }
+    }
+    out
 }
 
 fn head(text: &str, cap: usize) -> String {
@@ -680,4 +795,46 @@ fn tail(text: &str, cap: usize) -> String {
         cut += 1;
     }
     format!("\u{2026}\n{}", &text[cut..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(trusted: bool) -> Run {
+        let graph = FlowBook::defaults()
+            .get("commit_and_pr")
+            .expect("shipped")
+            .to_graph();
+        Run {
+            repo: "/r".into(),
+            flow: "commit_and_pr".into(),
+            state: RunState::fresh(&graph),
+            graph,
+            trusted,
+            approved_by_trust: vec![],
+            held: None,
+        }
+    }
+
+    #[test]
+    fn a_trusted_run_stops_trusting_at_its_first_hold() {
+        let mut r = run(true);
+        assert!(r.trusting());
+        r.held = Some("CI is still running".into());
+        assert!(!r.trusting(), "from the hold on, the run is the person's");
+        let out = report(&r);
+        assert_eq!(out["held"], "CI is still running");
+        assert_eq!(out["trusted"], false);
+    }
+
+    #[test]
+    fn an_ordinary_run_reports_nothing_about_trust() {
+        // Trust all lives on disk; this only holds while it is off.
+        if store::trust_all() {
+            return;
+        }
+        let out = report(&run(false));
+        assert!(out.get("trusted").is_none() && out.get("approved_automatically").is_none());
+    }
 }

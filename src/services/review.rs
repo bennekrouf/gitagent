@@ -1059,6 +1059,23 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     if let Some(there) = git::worktree_holding(repo, base).await {
         return sync_elsewhere(repo, base, &there).await;
     }
+    // Work in progress is never touched to bring the base up to date: the
+    // merge happened on the forge, and this step is a convenience. Checking
+    // out or fast-forwarding over uncommitted edits is what failed here
+    // whenever a review ran while something else was being worked on.
+    let edited = git::run(
+        repo,
+        "git",
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .await
+    .map(|out| !out.trim().is_empty())
+    .unwrap_or(false);
+    // Files left in conflict by an earlier set-aside-and-update are not
+    // "edits": they need resolving, and the usual path below says which.
+    if edited && git::unmerged_paths(repo).await.is_empty() {
+        return sync_around_edits(repo, base).await;
+    }
     // Already where it needs to be, git is not asked again: after an
     // autostash whose edits clashed, a checkout or merge would refuse over
     // the conflicts even though there is nothing left for either to do.
@@ -1096,6 +1113,92 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
             )
         },
         log: log.trim().to_string(),
+        artifacts: vec![("sync_output".into(), log)],
+        nothing_to_do: false,
+        items: vec![],
+    })
+}
+
+/// Brings the base up to date without touching uncommitted edits, and says
+/// where that leaves things. Never a failure: the merge is done, and nothing
+/// here is in the way of it.
+async fn sync_around_edits(repo: &str, base: &str) -> Result<StepOutcome, StepFailure> {
+    let here = git::current_branch(repo).await.unwrap_or_default();
+    let target = format!("origin/{base}");
+    if here == base {
+        let log = match git::fetch(repo, &["origin", base]).await {
+            Ok(out) => out,
+            Err(e) => return Err(sync_fetch_failure(base, e)),
+        };
+        let behind: usize = git::run(
+            repo,
+            "git",
+            &["rev-list", "--count", &format!("HEAD..{target}")],
+        )
+        .await
+        .ok()
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+        let (summary, note) = if behind == 0 {
+            (
+                format!("on {base}, up to date"),
+                format!(
+                    "{base} was already up to date; your uncommitted edits are as you left them."
+                ),
+            )
+        } else {
+            (
+                format!("on {base}, {behind} behind; your edits kept"),
+                format!(
+                    "You have uncommitted edits on {base}, so it was not updated under them. \
+                     It is {behind} commit{} behind {target}: run `git pull --ff-only` once \
+                     they are committed or put away.",
+                    if behind == 1 { "" } else { "s" }
+                ),
+            )
+        };
+        return Ok(StepOutcome {
+            summary,
+            log: format!("{note}\n\n{}", log.trim()).trim().to_string(),
+            artifacts: vec![("sync_output".into(), log)],
+            nothing_to_do: false,
+            items: vec![],
+        });
+    }
+
+    // On another branch, the base can move without being checked out:
+    // fetching straight into it fast-forwards the ref and touches no file.
+    let into = format!("{base}:{base}");
+    let (summary, note, log) = match git::fetch(repo, &["origin", &into]).await {
+        Ok(out) => (
+            format!("{base} up to date; you stay on {here}"),
+            format!(
+                "You have uncommitted edits on {here}, so the checkout stayed where it is. \
+                 {base} was brought up to date without switching to it."
+            ),
+            out,
+        ),
+        // Git refuses only when the local base has commits origin does not —
+        // not this step's to resolve.
+        Err(e) => {
+            let log = match git::fetch(repo, &["origin", base]).await {
+                Ok(out) => out,
+                Err(e) => return Err(sync_fetch_failure(base, e)),
+            };
+            (
+                format!("fetched {base}; local {base} left as is"),
+                format!(
+                    "You have uncommitted edits on {here}, so the checkout stayed where it \
+                     is. Your local {base} has commits {target} does not, so it was not \
+                     moved either:\n\n{e}"
+                ),
+                log,
+            )
+        }
+    };
+    Ok(StepOutcome {
+        summary,
+        log: format!("{note}\n\n{}", log.trim()).trim().to_string(),
         artifacts: vec![("sync_output".into(), log)],
         nothing_to_do: false,
         items: vec![],
@@ -1237,7 +1340,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_clashing_autostash_still_lets_the_sync_retry_finish() {
+    async fn edits_are_left_alone_and_a_clash_from_before_is_still_named() {
         // Real git: origin changes a file this copy has uncommitted edits to.
         let root = std::env::temp_dir().join(format!("gitagent-autostash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1270,9 +1373,14 @@ mod tests {
         let mut state = RunState::default();
         state.artifacts.insert("pr_base".into(), "main".into());
 
-        let failure = sync(repo, &state).await.expect_err("edits in the way");
-        let fix = &failure.remedies[0];
-        sh(&format!("cd here && git {}", fix.args.join(" ")));
+        // Edits in the way are left alone, and the step still finishes.
+        let kept = sync(repo, &state).await.expect("never a failure over edits");
+        assert!(kept.summary.contains("1 behind; your edits kept"), "{}", kept.summary);
+        assert_eq!(std::fs::read_to_string(root.join("here/f")).unwrap().trim(), "mine");
+
+        // Setting them aside and updating anyway — by hand, or from before —
+        // can leave a clash; then the step says which files to resolve.
+        sh("cd here && git merge --ff-only --autostash origin/main || true");
         assert_eq!(git::unmerged_paths(repo).await, ["f"], "the edits clashed");
 
         let done = sync(repo, &state).await.expect("the retry finishes");

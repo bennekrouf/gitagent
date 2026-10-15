@@ -210,6 +210,25 @@ struct SidebarPref {
 
 const SIDEBAR_FILE: &str = "sidebar.json";
 
+/// "Trust all", kept on disk rather than in one window's memory: GitAgent's
+/// MCP server is another process, and a run it drives for Claude has to
+/// answer approvals the way the window would.
+#[derive(Default, Serialize, Deserialize)]
+struct TrustPref {
+    #[serde(default)]
+    all: bool,
+}
+
+const TRUST_FILE: &str = "trust.json";
+
+pub fn trust_all() -> bool {
+    read::<TrustPref>(TRUST_FILE).all
+}
+
+pub fn save_trust_all(all: bool) {
+    write(TRUST_FILE, &TrustPref { all });
+}
+
 pub fn sidebar_folded() -> bool {
     read::<SidebarPref>(SIDEBAR_FILE).folded
 }
@@ -393,6 +412,30 @@ pub fn load_repo_bases() -> RepoBases {
 
 pub fn save_repo_bases(bases: &RepoBases) {
     write(REPO_BASES_FILE, bases);
+}
+
+/// The base-branch commit each repository last shipped through a flow that
+/// handles releases, keyed by repository path.
+///
+/// A deploy flow ships without tagging, so "commits since the last tag" never
+/// goes back to zero for it — backend-cvenom read 172 commits pending, a year
+/// of deploys after its last tag. This is the bound such a flow leaves behind.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct Shipped {
+    #[serde(default)]
+    pub commit: BTreeMap<String, String>,
+}
+
+const SHIPPED_FILE: &str = "shipped.json";
+
+pub fn shipped_commit(repo: &str) -> Option<String> {
+    read::<Shipped>(SHIPPED_FILE).commit.get(repo).cloned()
+}
+
+pub fn save_shipped_commit(repo: &str, commit: &str) {
+    let mut shipped: Shipped = read(SHIPPED_FILE);
+    shipped.commit.insert(repo.to_string(), commit.to_string());
+    write(SHIPPED_FILE, &shipped);
 }
 
 /// How far the run view's map is zoomed, `1.0` being its own size. Its own

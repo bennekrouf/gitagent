@@ -38,6 +38,9 @@ pub struct LiveRun {
     /// The step stopped for approval, and exactly what it would do.
     pub waiting: Option<(String, String)>,
     pub finished: bool,
+    /// Answering its own approvals by the Trusted run's rules.
+    #[serde(default)]
+    pub trusted: bool,
     /// Seconds since the epoch.
     pub updated: u64,
 }
@@ -103,6 +106,7 @@ pub fn snapshot(
     flow_label: &str,
     graph: &Graph,
     state: &RunState,
+    trusted: bool,
 ) -> LiveRun {
     let steps = graph
         .nodes
@@ -142,6 +146,7 @@ pub fn snapshot(
         steps,
         waiting,
         finished: state.is_finished(graph),
+        trusted,
         updated: now(),
     }
 }
@@ -191,6 +196,7 @@ mod tests {
             steps: vec![],
             waiting: None,
             finished,
+            trusted: false,
             updated,
         }
     }
@@ -216,7 +222,15 @@ mod tests {
         state.set_status("preflight", super::super::graph::NodeStatus::Done);
         state.set_status("scan", super::super::graph::NodeStatus::AwaitingApproval);
         state.runs.get_mut("scan").unwrap().proposal = "git status --porcelain".into();
-        let live = snapshot(7, "/r", "commit_and_pr", "Commit → PR", &graph, &state);
+        let live = snapshot(
+            7,
+            "/r",
+            "commit_and_pr",
+            "Commit → PR",
+            &graph,
+            &state,
+            false,
+        );
         assert_eq!(live.steps[0].status, "done");
         assert_eq!(
             live.waiting,

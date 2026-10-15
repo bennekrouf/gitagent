@@ -35,6 +35,7 @@ use crate::services::licence;
 use crate::services::llm::LlmConfig;
 use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
+use crate::services::release;
 use crate::services::review;
 use crate::services::store::Layout;
 use crate::services::trusted;
@@ -227,13 +228,6 @@ fn approvals() -> &'static tokio::sync::Notify {
     static APPROVALS: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
     APPROVALS.get_or_init(tokio::sync::Notify::new)
 }
-
-/// How many flows one trusted run will chain through before stopping.
-///
-/// Commit, review, release is three; the cap is not a limit anyone should
-/// reach, it is there so a pair of flows that keep handing work to each other
-/// cannot spin forever without a person noticing.
-const MOST_FLOWS_IN_A_TRUSTED_RUN: usize = 6;
 
 /// Walks one flow, for one repository, to completion.
 ///
@@ -624,6 +618,7 @@ async fn drive(
         }
     }
 
+    release::record_shipped(&key.0, &key.1, &graph, &snapshot(&states, &key)).await;
     report_finished(&graph, &key, cfg, &states).await;
     true
 }
@@ -1305,7 +1300,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // turning it off does not untrust anything already in flight, so a run
     // that is mid-chain still finishes the leg it is on before the next
     // approval asks a person again.
-    let mut global_trust = use_signal(|| false);
+    // Remembered, and shared with the MCP server, which reads it to answer a
+    // run's approvals the way this window would.
+    let mut global_trust = use_signal(store::trust_all);
     // Why the last trusted run stopped, when the reason was not "there is
     // nothing left". Cleared when the next one starts.
     let mut chain_note = use_signal(String::new);
@@ -1769,7 +1766,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 
             // Each turn of this loop is one flow, start to finish. Only a
             // trusted run goes round twice.
-            for _ in 0..MOST_FLOWS_IN_A_TRUSTED_RUN {
+            for _ in 0..trusted::MOST_FLOWS {
                 let Some(def) = book.read().get(&id).cloned() else {
                     break;
                 };
@@ -2075,6 +2072,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             "Claude is running {live.flow_label} here"
                         }
                         span { class: "live-run-via", "through GitAgent\u{2019}s MCP server" }
+                        if live.trusted && !live.finished {
+                            span {
+                                class: "live-run-trusted",
+                                title: "Approvals are answered by the Trusted run's rules; it stops at anything they would hold",
+                                "trusted"
+                            }
+                        }
                     }
                     div { class: "live-run-steps",
                         for (i, step) in live.steps.iter().cloned().enumerate() {
@@ -2577,6 +2581,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         onclick: move |_| {
                             let on = !*global_trust.read();
                             global_trust.set(on);
+                            store::save_trust_all(on);
                             if on {
                                 trusted.write().extend(running.read().iter().cloned());
                                 approvals().notify_waiters();
