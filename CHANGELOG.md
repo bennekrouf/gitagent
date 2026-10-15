@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The buttons for approving, rejecting, or skipping steps are now always visible
+  at the bottom of the step's panel, regardless of how long the content above
+  them is. This makes it easier to respond to steps without scrolling.
+
 ## [0.1.105] - 2026-10-15
 
 ### Added
