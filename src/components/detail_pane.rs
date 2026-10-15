@@ -114,22 +114,6 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 }
             }
 
-            if skippable_early {
-                div { class: "step-actions",
-                    button {
-                        class: "btn",
-                        title: if running_now {
-                            "Stop waiting for this step and carry on without it. Whatever it \
-                             has already started is not undone. {skip_cost}"
-                        } else {
-                            "Don't run this step when the run reaches it. {skip_cost}"
-                        },
-                        onclick: move |_| props.on_skip.call(early_skip_id.clone()),
-                        if running_now { "Skip this step" } else { "Skip when reached" }
-                    }
-                }
-            }
-
             if awaiting {
                 div { class: "approval",
                     // A trusted run that stopped here says so at the node it
@@ -184,27 +168,6 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                             }
                         }
                     }
-
-                    div { class: "approval-actions",
-                        button {
-                            class: "btn btn-primary",
-                            disabled: nothing_selected,
-                            onclick: move |_| props.on_approve.call(approve_id.clone()),
-                            if nothing_selected { "Nothing selected" } else { "Approve" }
-                        }
-                        button {
-                            class: "btn btn-danger",
-                            onclick: move |_| props.on_reject.call(reject_id.clone()),
-                            "Reject"
-                        }
-                        button {
-                            class: "btn btn-ghost",
-                            title: "Don't run this step, and carry on anyway. Unlike Reject, \
-                                    which stops everything behind it. {skip_cost}",
-                            onclick: move |_| props.on_skip.call(skip_id.clone()),
-                            "Skip"
-                        }
-                    }
                 }
             }
 
@@ -255,28 +218,6 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                             }
                         }
                     }
-                    div { class: "remedy-actions",
-                        button {
-                            class: "btn",
-                            onclick: move |_| props.on_retry.call(retry_id.clone()),
-                            "Retry this step"
-                        }
-                        button {
-                            class: "btn",
-                            title: "Carry on without this step — for one that is failing on \
-                                    something the rest of the run does not need. {skip_cost}",
-                            onclick: move |_| props.on_skip.call(skip_failed_id.clone()),
-                            "Skip this step"
-                        }
-                        button {
-                            class: "btn btn-ghost",
-                            title: "Give up on this run — for a failure retrying can't fix \
-                                     (already merged, already open elsewhere). Puts this repo's \
-                                     flow back to not-started.",
-                            onclick: move |_| props.on_cancel.call(()),
-                            "Cancel run"
-                        }
-                    }
                 }
             }
 
@@ -321,6 +262,69 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
             } else if !run.log.is_empty() {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
                 LogBox { log: run.log.clone(), failed: run.status == NodeStatus::Failed }
+            }
+
+            // The buttons that decide a step, pinned to the bottom of the
+            // pane. A long diff or log above them used to push them out of
+            // sight, so answering meant scrolling to the end first.
+            if awaiting {
+                div { class: "detail-actions",
+                    button {
+                        class: "btn btn-primary",
+                        disabled: nothing_selected,
+                        onclick: move |_| props.on_approve.call(approve_id.clone()),
+                        if nothing_selected { "Nothing selected" } else { "Approve" }
+                    }
+                    button {
+                        class: "btn btn-danger",
+                        onclick: move |_| props.on_reject.call(reject_id.clone()),
+                        "Reject"
+                    }
+                    button {
+                        class: "btn btn-ghost",
+                        title: "Don't run this step, and carry on anyway. Unlike Reject, \
+                                which stops everything behind it. {skip_cost}",
+                        onclick: move |_| props.on_skip.call(skip_id.clone()),
+                        "Skip"
+                    }
+                }
+            } else if failed {
+                div { class: "detail-actions",
+                    button {
+                        class: "btn",
+                        onclick: move |_| props.on_retry.call(retry_id.clone()),
+                        "Retry this step"
+                    }
+                    button {
+                        class: "btn",
+                        title: "Carry on without this step — for one that is failing on \
+                                something the rest of the run does not need. {skip_cost}",
+                        onclick: move |_| props.on_skip.call(skip_failed_id.clone()),
+                        "Skip this step"
+                    }
+                    button {
+                        class: "btn btn-ghost",
+                        title: "Give up on this run — for a failure retrying can't fix \
+                                 (already merged, already open elsewhere). Puts this repo's \
+                                 flow back to not-started.",
+                        onclick: move |_| props.on_cancel.call(()),
+                        "Cancel run"
+                    }
+                }
+            } else if skippable_early {
+                div { class: "detail-actions",
+                    button {
+                        class: "btn",
+                        title: if running_now {
+                            "Stop waiting for this step and carry on without it. Whatever it \
+                             has already started is not undone. {skip_cost}"
+                        } else {
+                            "Don't run this step when the run reaches it. {skip_cost}"
+                        },
+                        onclick: move |_| props.on_skip.call(early_skip_id.clone()),
+                        if running_now { "Skip this step" } else { "Skip when reached" }
+                    }
+                }
             }
         }
     }

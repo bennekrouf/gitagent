@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Approve, Reject and Skip now stay pinned to the bottom of a step's panel, so
+  you can answer without scrolling past a long diff first. The same goes for
+  Retry, Skip and Cancel run after a step fails, and for skipping a step that
+  is still waiting or running.
+
 ## [0.1.104] - 2026-10-14
 
 ### Fixed
