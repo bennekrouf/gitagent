@@ -17,7 +17,7 @@ use super::git;
 use super::llm::{complete_json, Asker, LlmConfig};
 
 const CHANGELOG: &str = "CHANGELOG.md";
-const COMMIT_MESSAGE: &str = "docs: add release notes";
+pub(crate) const COMMIT_MESSAGE: &str = "docs: add release notes";
 const WRAP: usize = 80;
 const SECTIONS: [(&str, &str); 4] = [
     ("added", "Added"),
@@ -326,6 +326,11 @@ pub async fn write(repo: &str, notes: &str) -> Result<StepOutcome, StepFailure> 
         .into());
     }
 
+    // Commit on top of what origin has now, not on what it had when the notes
+    // were drafted: a pull request merged in between would otherwise leave
+    // this commit and origin's on two sides, and the release refusing.
+    let caught_up = super::flow::catch_up(repo).await?;
+
     let path = std::path::Path::new(repo).join(CHANGELOG);
     let current =
         std::fs::read_to_string(&path).map_err(|e| format!("could not read {CHANGELOG}: {e}"))?;
@@ -340,6 +345,9 @@ pub async fn write(repo: &str, notes: &str) -> Result<StepOutcome, StepFailure> 
     let mut log = git::run(repo, "git", &["add", "--", CHANGELOG]).await?;
     log.push_str(&git::run(repo, "git", &["commit", "-m", COMMIT_MESSAGE]).await?);
 
+    if let Some(note) = caught_up {
+        log = format!("{note}\n{log}");
+    }
     Ok(StepOutcome {
         summary: format!("notes committed to {CHANGELOG}"),
         log: format!("{notes}\n\n{}", log.trim()),

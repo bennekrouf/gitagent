@@ -682,12 +682,54 @@ pub(crate) async fn catch_up(repo: &str) -> Result<Option<String>, StepFailure> 
             remedies: vec![undo_release_remedy(&tag)],
         });
     }
+
+    // Only GitAgent's own notes commit is ahead — written moments ago, never
+    // pushed, and a pull request merged on the forge in the meantime. Putting
+    // it back on top of origin is mechanical, so it is done here rather than
+    // handed to a person; a clash undoes the attempt and asks after all.
+    let ours = git::run(repo, "git", &["log", "--format=%s", "@{u}..HEAD"])
+        .await
+        .map(|out| {
+            let subjects: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+            !subjects.is_empty()
+                && subjects
+                    .iter()
+                    .all(|s| s.trim() == super::notes::COMMIT_MESSAGE)
+        })
+        .unwrap_or(false);
+    let clean = git::run(
+        repo,
+        "git",
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .await
+    .is_ok_and(|out| out.trim().is_empty());
+    let mut clash = String::new();
+    if ours && clean {
+        match git::run(repo, "git", &["rebase", "--quiet", "@{u}"]).await {
+            Ok(_) => {
+                return Ok(Some(format!(
+                    "{tracking} gained {commits} after the release notes were committed \
+                     here, so the notes commit was put back on top of them."
+                )))
+            }
+            Err(e) => {
+                let _ = git::run(repo, "git", &["rebase", "--abort"]).await;
+                clash = format!(
+                    "\n\nPutting the release notes commit back on top of {tracking} clashed, \
+                     so that was undone and nothing changed — most likely both edited \
+                     CHANGELOG.md. The button below does the same, and leaves the clash \
+                     marked in the file for you to resolve.\n\n{e}"
+                );
+            }
+        }
+    }
     Err(StepFailure {
         message: format!(
             "{tracking} has {commits} this copy does not, and this copy has {} that \
              {tracking} does not. Bring them together before releasing — a release \
              cut from here would leave origin's commits out, and its push would be \
-             rejected anyway.",
+             rejected anyway.{clash}",
             plural(ahead, "commit")
         ),
         remedies: vec![Remedy::new(
@@ -1850,6 +1892,87 @@ hint: Updates were rejected because the tip of your current branch is behind";
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn only_gitagents_own_notes_commit_is_put_back_on_top_by_itself() {
+        let root =
+            std::env::temp_dir().join(format!("gitagent-notes-rebase-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |cmd: &str| {
+            let out = std::process::Command::new("sh")
+                .args(["-c", cmd])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{cmd}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let ident = "git config user.name t && git config user.email t@t";
+        let notes = super::super::notes::COMMIT_MESSAGE;
+        sh("git init -q --bare -b main origin.git");
+        sh(&format!(
+            "git clone -q origin.git here && cd here && {ident} && echo a > CHANGELOG.md && \
+             git add . && git commit -q -m init && git push -q -u origin main"
+        ));
+        sh(&format!(
+            "git clone -q origin.git forge && cd forge && {ident}"
+        ));
+        let here = root.join("here");
+        let repo = here.to_str().unwrap();
+        let subjects = || {
+            let out = std::process::Command::new("git")
+                .args(["log", "--format=%s", "-3"])
+                .current_dir(&here)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+
+        // The notes commit here; a pull request merged on the forge meanwhile.
+        sh(&format!(
+            "cd here && echo notes >> CHANGELOG.md && git commit -q -am '{notes}'"
+        ));
+        sh("cd forge && git pull -q && echo x > other.rs && git add . && git commit -q -m 'fix: x (#9)' && git push -q");
+        let note = catch_up(repo).await.expect("ours, and it applies cleanly");
+        assert!(note.unwrap().contains("put back on top"));
+        assert_eq!(
+            subjects()[..2],
+            [notes.to_string(), "fix: x (#9)".to_string()]
+        );
+
+        // Both edited the changelog: undone, nothing changed, the button offered.
+        sh("cd here && git push -q");
+        sh(&format!(
+            "cd here && echo mine >> CHANGELOG.md && git commit -q -am '{notes}'"
+        ));
+        sh("cd forge && git pull -q && echo theirs >> CHANGELOG.md && git commit -q -am 'docs: theirs (#10)' && git push -q");
+        let before = subjects();
+        let failure = catch_up(repo).await.expect_err("the replay clashes");
+        assert!(failure.message.contains("clashed"), "{}", failure.message);
+        assert_eq!(subjects(), before, "nothing changed");
+        assert!(
+            !here.join(".git/rebase-merge").exists(),
+            "no rebase left half-done"
+        );
+        assert_eq!(failure.remedies[0].args, ["pull", "--rebase"]);
+
+        // A commit of the person's own is never moved without them.
+        sh("cd here && git reset -q --hard origin/main");
+        sh("cd here && echo y > mine.rs && git add . && git commit -q -m 'feat: mine'");
+        sh("cd forge && git pull -q && echo z > z.rs && git add . && git commit -q -m 'fix: z (#11)' && git push -q");
+        let failure = catch_up(repo).await.expect_err("not ours to replay");
+        assert!(!failure.message.contains("put back"));
+        assert_eq!(subjects()[0], "feat: mine");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn a_release_catches_up_with_a_merge_made_on_the_forge() {
         // Real git end to end: a bare origin, this copy, and a second clone
