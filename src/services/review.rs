@@ -1441,9 +1441,16 @@ mod tests {
 
     #[test]
     fn a_diverged_base_is_offered_a_replay_rather_than_nothing() {
-        let failure = sync_diverged("main", "fatal: Not possible to fast-forward, aborting.".into(), "");
+        let failure = sync_diverged(
+            "main",
+            "fatal: Not possible to fast-forward, aborting.".into(),
+            "",
+        );
         assert_eq!(failure.remedies[0].args, ["rebase", "origin/main"]);
-        assert!(failure.remedies[0].retry_after, "replayed, Back to base finishes");
+        assert!(
+            failure.remedies[0].retry_after,
+            "replayed, Back to base finishes"
+        );
         assert!(failure.message.contains("The merge is done"));
     }
 

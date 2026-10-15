@@ -2020,8 +2020,13 @@ hint: Updates were rejected because the tip of your current branch is behind";
         sh("cd here && git reset -q --hard origin/main");
         sh(&format!("cd here && printf '\\n- Carried along.\\n' >> CHANGELOG.md && git commit -q -am '{notes}'"));
         sh("cd forge && git pull -q && printf '\\n- Carried along.\\n' >> CHANGELOG.md && echo w > w.rs && git add . && git commit -q -m 'feat: w (#12)' && git push -q");
-        let note = catch_up(repo).await.expect("already there, nothing to bring");
-        assert!(note.unwrap().contains("already on"), "dropped, not replayed");
+        let note = catch_up(repo)
+            .await
+            .expect("already there, nothing to bring");
+        assert!(
+            note.unwrap().contains("already on"),
+            "dropped, not replayed"
+        );
         assert_eq!(subjects()[0], "feat: w (#12)");
 
         let _ = std::fs::remove_dir_all(&root);

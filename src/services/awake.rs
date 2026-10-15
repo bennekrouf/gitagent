@@ -53,9 +53,12 @@ mod tests {
 
     #[test]
     fn an_activity_is_held_where_the_os_has_one_and_released_on_drop() {
-        let held = Activity::begin();
-        assert_eq!(held.is_some(), cfg!(target_os = "macos"));
-        drop(held);
+        // Released at the end of this scope. Not `drop()`: off macOS the type
+        // holds nothing, and clippy rightly calls dropping it a no-op.
+        {
+            let held = Activity::begin();
+            assert_eq!(held.is_some(), cfg!(target_os = "macos"));
+        }
         // Taking it again after a release works: the effect does exactly this
         // every time a run starts after the last one ended.
         assert_eq!(Activity::begin().is_some(), cfg!(target_os = "macos"));
