@@ -25,6 +25,15 @@ were never released.
   at the bottom of the step's panel, regardless of how long the content above
   them is. This makes it easier to respond to steps without scrolling.
 
+### Fixed
+
+- A release no longer stops at "this copy has 1 commit that origin/main does
+  not" when the commit is GitAgent's own release notes and a pull request was
+  merged on GitHub meanwhile. The notes are committed on top of what origin has
+  at that moment, and if a merge still lands in between, the release puts the
+  notes commit back on top of it by itself and carries on. Only a clash —
+  both edited CHANGELOG.md — or a commit of your own still asks first.
+
 ## [0.1.105] - 2026-10-15
 
 ### Added
