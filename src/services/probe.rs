@@ -252,15 +252,16 @@ impl RepoStatus {
             ));
         }
         if has(Need::Release) && self.release.due() {
-            let since = self
-                .release
-                .last_tag
-                .clone()
-                .unwrap_or_else(|| "the first commit".into());
+            let since = self.release.since();
+            let not_yet = if self.release.since_shipped {
+                "not deployed yet"
+            } else {
+                "not released yet"
+            };
             return Some((
                 plural(self.release.commits, "commit", "commits"),
                 format!(
-                    "{} since {since}, not released yet",
+                    "{} since {since}, {not_yet}",
                     plural(self.release.commits, "commit", "commits")
                 ),
             ));
@@ -1224,10 +1225,15 @@ mod tests {
             commits: 3,
             prs: vec![],
             releases: true,
+            since_shipped: false,
         };
         let (tab, hover) = s.count_for(&release).unwrap();
         assert_eq!(tab, "3 commits");
         assert!(hover.contains("since v1.2.0"));
+
+        s.release.since_shipped = true;
+        let (_, hover) = s.count_for(&release).unwrap();
+        assert_eq!(hover, "3 commits since the last deploy, not deployed yet");
         assert_eq!(
             s.count_for(&[]),
             None,
@@ -1295,6 +1301,7 @@ mod tests {
             commits: 3,
             prs: vec!["#6".into()],
             releases: true,
+            since_shipped: false,
         };
         assert_eq!(s.wants(), Wants::Release);
     }
@@ -1313,6 +1320,7 @@ mod tests {
             commits: 9,
             prs: vec![],
             releases: true,
+            since_shipped: false,
         };
         assert_eq!(s.wants(), Wants::Merge);
     }
@@ -1325,6 +1333,7 @@ mod tests {
             commits: 2,
             prs: vec![],
             releases: true,
+            since_shipped: false,
         };
         assert_eq!(s.wants(), Wants::Attention);
     }

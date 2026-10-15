@@ -17,6 +17,38 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Flows Claude runs through GitAgent's MCP server can be trusted runs: when
+  you ask Claude for a trusted run, or have **Trust all** on in the window,
+  GitAgent answers the approvals itself by the same rules as its Trusted run —
+  stopping at anything risky, at your own scripts and deploys, and at release
+  notes — and carries on into the next flow the repository needs. Claude is
+  told what went through on its own and where, and why, it stopped; the
+  window's live panel marks such a run "trusted".
+
+### Changed
+
+- **Trust all** is remembered between launches, and shared with GitAgent's MCP
+  server, instead of switching itself off every time the window opens.
+
+### Fixed
+
+- **Back to base**, the last step of Review → Merge, no longer fails when you
+  have uncommitted edits — the usual case when a review is merged while you
+  keep working. It never touches them: on another branch, it brings your base
+  branch up to date without switching to it, and you stay where you were; on
+  the base branch itself, it leaves everything as it is and says how far
+  behind it is, to pull once your edits are committed.
+- A deploy flow's tab now counts the commits merged since your last deploy,
+  not since the repository's last tag. A flow that deploys without tagging
+  used to show a number that only ever grew — a repository deployed on every
+  merge read 172 commits pending, all counted from a tag a year old. The count
+  goes back to zero after each deploy that goes all the way through, and its
+  tooltip says "since the last deploy".
+
 ## [0.1.104] - 2026-10-14
 
 ### Fixed

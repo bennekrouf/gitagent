@@ -15,8 +15,18 @@
 //! step pulls, and the release steps themselves fetch and catch up before they
 //! read anything (`flow::catch_up`), so a merge made on the forge's website is
 //! picked up there even when this count missed it.
+//!
+//! A deploy flow ships without tagging, so for it the last tag is the wrong
+//! bound: it never moves, and the count only grows. Each successful run of a
+//! flow that handles releases therefore leaves the base-branch commit it
+//! shipped behind (`record_shipped`), and the count starts from whichever of
+//! that and the last tag is further along.
 
+use super::flowdef::FlowBook;
 use super::git;
+use super::graph::{Graph, NodeStatus, RunState};
+use super::probe::{self, Need};
+use super::store;
 
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct ReleaseState {
@@ -32,6 +42,10 @@ pub struct ReleaseState {
     /// its entire history as pending — a 349-commit Node project with no
     /// release tooling claiming "release due" is noise, not a signal.
     pub releases: bool,
+    /// The count starts at the last successful run of a flow that handles
+    /// releases rather than at `last_tag` — a deploy that tags nothing has
+    /// shipped since.
+    pub since_shipped: bool,
 }
 
 impl ReleaseState {
@@ -45,6 +59,9 @@ impl ReleaseState {
             return "not released from here".into();
         }
         if !self.due() {
+            if self.since_shipped {
+                return "nothing new since the last deploy".into();
+            }
             return match &self.last_tag {
                 Some(tag) => format!("released at {tag}"),
                 None => "never released".into(),
@@ -52,6 +69,11 @@ impl ReleaseState {
         }
 
         let what = match &self.last_tag {
+            _ if self.since_shipped => format!(
+                "{} commit{} since the last deploy",
+                self.commits,
+                if self.commits == 1 { "" } else { "s" }
+            ),
             Some(tag) => format!(
                 "{} commit{} since {tag}",
                 self.commits,
@@ -69,6 +91,16 @@ impl ReleaseState {
         } else {
             format!("{what} ({})", self.prs.join(", "))
         }
+    }
+
+    /// What the count is measured from, for "N commits since …".
+    pub fn since(&self) -> String {
+        if self.since_shipped {
+            return "the last deploy".into();
+        }
+        self.last_tag
+            .clone()
+            .unwrap_or_else(|| "the first commit".into())
     }
 }
 
@@ -142,18 +174,41 @@ pub async fn status(repo: &str, base: &str) -> ReleaseState {
     .map(|t| t.trim().to_string())
     .filter(|t| !t.is_empty());
 
+    // Only while the base branch still contains it: after a force push or a
+    // switch of base branch it bounds nothing.
+    let shipped = match store::shipped_commit(repo) {
+        Some(commit) if is_ancestor(repo, &commit, &remote_base).await => Some(commit),
+        _ => None,
+    };
+
     // Short-circuit before walking the log: with no tag and no tooling the
     // range would be the whole history, which is both meaningless and slow.
-    if !releases_from_here(repo, last_tag.is_some()) {
+    if !releases_from_here(repo, last_tag.is_some() || shipped.is_some()) {
         return ReleaseState::default();
     }
 
-    let range = match &last_tag {
-        Some(tag) => format!("{tag}..{remote_base}"),
-        None => remote_base.clone(),
+    // The shipped commit names the count only when it is past the tag; a
+    // release flow that tags records the tagged commit itself, and then the
+    // tag is the better name for the same place.
+    let since_shipped = match (&last_tag, &shipped) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(tag), Some(commit)) => git::run(
+            repo,
+            "git",
+            &["rev-list", "--count", &format!("{tag}..{commit}")],
+        )
+        .await
+        .ok()
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .is_some_and(|n| n > 0),
     };
 
-    let subjects: Vec<String> = git::run(repo, "git", &["log", &range, "--format=%s"])
+    let mut args = vec!["log", remote_base.as_str(), "--format=%s", "--not"];
+    args.extend(last_tag.as_deref());
+    args.extend(shipped.as_deref());
+
+    let subjects: Vec<String> = git::run(repo, "git", &args)
         .await
         .unwrap_or_default()
         .lines()
@@ -166,6 +221,56 @@ pub async fn status(repo: &str, base: &str) -> ReleaseState {
         commits: subjects.len(),
         prs: pr_numbers(&subjects),
         releases: true,
+        since_shipped,
+    }
+}
+
+async fn is_ancestor(repo: &str, commit: &str, of: &str) -> bool {
+    git::run(repo, "git", &["merge-base", "--is-ancestor", commit, of])
+        .await
+        .is_ok()
+}
+
+/// Whether a finished run went all the way through: something was done and
+/// nothing failed, was declined, or stopped short of running.
+fn went_through(statuses: &[NodeStatus]) -> bool {
+    statuses.contains(&NodeStatus::Done)
+        && statuses
+            .iter()
+            .all(|s| matches!(s, NodeStatus::Done | NodeStatus::Bypassed))
+}
+
+/// After a run of a flow that handles releases goes all the way through,
+/// remembers the base-branch commit it shipped, so the release count starts
+/// there next time — see the module doc.
+pub async fn record_shipped(repo: &str, flow_id: &str, graph: &Graph, state: &RunState) {
+    let statuses: Vec<NodeStatus> = graph.nodes.iter().map(|n| state.status(&n.id)).collect();
+    if !went_through(&statuses) {
+        return;
+    }
+    let releases = FlowBook::load()
+        .get(flow_id)
+        .is_some_and(|flow| flow.answers(Need::Release));
+    if !releases {
+        return;
+    }
+    let (base, _) = probe::stored_base_branch(repo).await;
+    let Ok(commit) = git::run(
+        repo,
+        "git",
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("origin/{base}^{{commit}}"),
+        ],
+    )
+    .await
+    else {
+        return;
+    };
+    let commit = commit.trim();
+    if !commit.is_empty() {
+        store::save_shipped_commit(repo, commit);
     }
 }
 
@@ -217,6 +322,7 @@ mod tests {
             commits: 0,
             prs: vec![],
             releases: true,
+            since_shipped: false,
         };
         assert!(!state.due());
         assert_eq!(state.summary(), "released at v0.1.9");
@@ -229,6 +335,7 @@ mod tests {
             commits: 1,
             prs: vec!["#16".into()],
             releases: true,
+            since_shipped: false,
         };
         assert!(state.due());
         assert_eq!(state.summary(), "1 commit since v0.1.9 (#16)");
@@ -241,6 +348,7 @@ mod tests {
             commits: 3,
             prs: vec!["#3".into(), "#2".into()],
             releases: true,
+            since_shipped: false,
         };
         assert_eq!(state.summary(), "3 commits since v1.0.0 (#3, #2)");
     }
@@ -254,6 +362,7 @@ mod tests {
             commits: 349,
             prs: vec![],
             releases: false,
+            since_shipped: false,
         };
         assert!(!other.due());
         assert_eq!(other.summary(), "not released from here");
@@ -266,6 +375,7 @@ mod tests {
             commits: 4,
             prs: vec![],
             releases: true,
+            since_shipped: false,
         };
         assert!(unshipped.due());
         assert_eq!(unshipped.summary(), "4 commits, never tagged");
@@ -278,9 +388,47 @@ mod tests {
             commits: 0,
             prs: vec![],
             releases: true,
+            since_shipped: false,
         };
         assert!(!never.due(), "no commits at all is not a pending release");
         assert_eq!(never.summary(), "never released");
+    }
+
+    #[test]
+    fn a_deploy_since_the_tag_is_what_the_count_is_measured_from() {
+        // backend-cvenom: deployed on every merge, last tagged a year ago.
+        let deployed = ReleaseState {
+            last_tag: Some("2.0".into()),
+            commits: 2,
+            prs: vec!["#4".into(), "#3".into()],
+            releases: true,
+            since_shipped: true,
+        };
+        assert_eq!(deployed.since(), "the last deploy");
+        assert_eq!(
+            deployed.summary(),
+            "2 commits since the last deploy (#4, #3)"
+        );
+
+        let caught_up = ReleaseState {
+            commits: 0,
+            prs: vec![],
+            ..deployed
+        };
+        assert!(!caught_up.due());
+        assert_eq!(caught_up.summary(), "nothing new since the last deploy");
+    }
+
+    #[test]
+    fn only_a_run_that_went_all_the_way_through_has_shipped() {
+        use NodeStatus::*;
+        assert!(went_through(&[Done, Done]));
+        assert!(went_through(&[Done, Bypassed]));
+        assert!(!went_through(&[Done, Failed]), "the deploy failed");
+        assert!(!went_through(&[Done, Rejected]), "the deploy was declined");
+        assert!(!went_through(&[Done, Skipped, Blocked]), "nothing to ship");
+        assert!(!went_through(&[Done, AwaitingApproval]), "still waiting");
+        assert!(!went_through(&[Bypassed]), "nothing ran at all");
     }
 
     #[test]

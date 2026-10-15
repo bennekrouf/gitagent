@@ -56,6 +56,11 @@ impl Verdict {
 /// repository, and a chain that starts it anyway overrules them — which is
 /// exactly what happened to a repository whose release flow had been hidden
 /// and replaced.
+/// How many flows one trusted run may chain through — in the window and from
+/// the MCP server alike. Commit, review, release is three; the cap is there so
+/// two flows handing work to each other cannot spin forever unnoticed.
+pub const MOST_FLOWS: usize = 6;
+
 pub fn next_flow(
     book: &FlowBook,
     status: &RepoStatus,
@@ -369,6 +374,7 @@ mod tests {
                     commits: 2,
                     prs: vec![],
                     releases: true,
+                    since_shipped: false,
                 }
             } else {
                 ReleaseState::default()
