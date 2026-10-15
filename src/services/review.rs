@@ -1374,9 +1374,18 @@ mod tests {
         state.artifacts.insert("pr_base".into(), "main".into());
 
         // Edits in the way are left alone, and the step still finishes.
-        let kept = sync(repo, &state).await.expect("never a failure over edits");
-        assert!(kept.summary.contains("1 behind; your edits kept"), "{}", kept.summary);
-        assert_eq!(std::fs::read_to_string(root.join("here/f")).unwrap().trim(), "mine");
+        let kept = sync(repo, &state)
+            .await
+            .expect("never a failure over edits");
+        assert!(
+            kept.summary.contains("1 behind; your edits kept"),
+            "{}",
+            kept.summary
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("here/f")).unwrap().trim(),
+            "mine"
+        );
 
         // Setting them aside and updating anyway — by hand, or from before —
         // can leave a clash; then the step says which files to resolve.
