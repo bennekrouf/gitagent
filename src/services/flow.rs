@@ -617,6 +617,86 @@ fn is_release(command: &str) -> bool {
     command.contains("release.sh")
 }
 
+/// When the only commits this copy has that `upstream` lacks are GitAgent's
+/// own release-notes commits — written moments ago, never pushed, with a pull
+/// request merged on the forge meanwhile — sorts them out without a person:
+///
+/// - already on `upstream` (a later pull request carried them): the local copy
+///   is dropped, losing nothing;
+/// - otherwise: put back on top of `upstream`.
+///
+/// `Ok(None)` when it is not that case, or work in progress is in the way;
+/// `Err` with a sentence for the person when putting them back clashed —
+/// undone, nothing changed.
+pub(crate) async fn settle_own_notes(repo: &str, upstream: &str) -> Result<Option<String>, String> {
+    let range = format!("{upstream}..HEAD");
+    let ours = git::run(repo, "git", &["log", "--format=%s", &range])
+        .await
+        .map(|out| {
+            let subjects: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+            !subjects.is_empty()
+                && subjects
+                    .iter()
+                    .all(|s| s.trim() == super::notes::COMMIT_MESSAGE)
+        })
+        .unwrap_or(false);
+    let clean = git::run(
+        repo,
+        "git",
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .await
+    .is_ok_and(|out| out.trim().is_empty());
+    if !ours || !clean {
+        return Ok(None);
+    }
+
+    // Every line those commits add is already in upstream's changelog: the
+    // notes went in with a later pull request, and replaying them would only
+    // clash with themselves.
+    let added = git::run(repo, "git", &["diff", &format!("{upstream}...HEAD")])
+        .await
+        .unwrap_or_default();
+    let theirs = git::run(repo, "git", &["show", &format!("{upstream}:CHANGELOG.md")])
+        .await
+        .unwrap_or_default();
+    let new_lines: Vec<&str> = added
+        .lines()
+        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+        .map(|l| l[1..].trim_end())
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    if !new_lines.is_empty()
+        && new_lines
+            .iter()
+            .all(|l| theirs.lines().any(|t| t.trim_end() == *l))
+    {
+        git::run(repo, "git", &["reset", "--keep", upstream])
+            .await
+            .map_err(|e| format!("Could not drop the local copy of the release notes: {e}"))?;
+        return Ok(Some(format!(
+            "The release notes committed here were already on {upstream}, carried by a \
+             later pull request, so the local copy was dropped."
+        )));
+    }
+
+    match git::run(repo, "git", &["rebase", "--quiet", upstream]).await {
+        Ok(_) => Ok(Some(format!(
+            "{upstream} moved on after the release notes were committed here, so the \
+             notes commit was put back on top of it."
+        ))),
+        Err(e) => {
+            let _ = git::run(repo, "git", &["rebase", "--abort"]).await;
+            Err(format!(
+                "Putting the release notes commit back on top of {upstream} clashed, so \
+                 that was undone and nothing changed — most likely both edited \
+                 CHANGELOG.md. The button below does the same, and leaves the clash \
+                 marked in the file for you to resolve.\n\n{e}"
+            ))
+        }
+    }
+}
+
 /// Brings the branch up to date with origin before a release reads it.
 ///
 /// A release only ships what this copy has. A pull request merged on the
@@ -683,46 +763,11 @@ pub(crate) async fn catch_up(repo: &str) -> Result<Option<String>, StepFailure> 
         });
     }
 
-    // Only GitAgent's own notes commit is ahead — written moments ago, never
-    // pushed, and a pull request merged on the forge in the meantime. Putting
-    // it back on top of origin is mechanical, so it is done here rather than
-    // handed to a person; a clash undoes the attempt and asks after all.
-    let ours = git::run(repo, "git", &["log", "--format=%s", "@{u}..HEAD"])
-        .await
-        .map(|out| {
-            let subjects: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-            !subjects.is_empty()
-                && subjects
-                    .iter()
-                    .all(|s| s.trim() == super::notes::COMMIT_MESSAGE)
-        })
-        .unwrap_or(false);
-    let clean = git::run(
-        repo,
-        "git",
-        &["status", "--porcelain", "--untracked-files=no"],
-    )
-    .await
-    .is_ok_and(|out| out.trim().is_empty());
     let mut clash = String::new();
-    if ours && clean {
-        match git::run(repo, "git", &["rebase", "--quiet", "@{u}"]).await {
-            Ok(_) => {
-                return Ok(Some(format!(
-                    "{tracking} gained {commits} after the release notes were committed \
-                     here, so the notes commit was put back on top of them."
-                )))
-            }
-            Err(e) => {
-                let _ = git::run(repo, "git", &["rebase", "--abort"]).await;
-                clash = format!(
-                    "\n\nPutting the release notes commit back on top of {tracking} clashed, \
-                     so that was undone and nothing changed — most likely both edited \
-                     CHANGELOG.md. The button below does the same, and leaves the clash \
-                     marked in the file for you to resolve.\n\n{e}"
-                );
-            }
-        }
+    match settle_own_notes(repo, "@{u}").await {
+        Ok(Some(note)) => return Ok(Some(note)),
+        Ok(None) => {}
+        Err(why) => clash = format!("\n\n{why}"),
     }
     Err(StepFailure {
         message: format!(
@@ -1969,6 +2014,20 @@ hint: Updates were rejected because the tip of your current branch is behind";
         let failure = catch_up(repo).await.expect_err("not ours to replay");
         assert!(!failure.message.contains("put back"));
         assert_eq!(subjects()[0], "feat: mine");
+
+        // The notes already went in with a later pull request: the local copy
+        // is dropped, not replayed into a clash with itself.
+        sh("cd here && git reset -q --hard origin/main");
+        sh(&format!("cd here && printf '\\n- Carried along.\\n' >> CHANGELOG.md && git commit -q -am '{notes}'"));
+        sh("cd forge && git pull -q && printf '\\n- Carried along.\\n' >> CHANGELOG.md && echo w > w.rs && git add . && git commit -q -m 'feat: w (#12)' && git push -q");
+        let note = catch_up(repo)
+            .await
+            .expect("already there, nothing to bring");
+        assert!(
+            note.unwrap().contains("already on"),
+            "dropped, not replayed"
+        );
+        assert_eq!(subjects()[0], "feat: w (#12)");
 
         let _ = std::fs::remove_dir_all(&root);
     }

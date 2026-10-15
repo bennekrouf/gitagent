@@ -37,6 +37,12 @@ were never released.
   at that moment, and if a merge still lands in between, the release puts the
   notes commit back on top of it by itself and carries on. Only a clash —
   both edited CHANGELOG.md — or a commit of your own still asks first.
+- **Back to base** handles the same case after a merge: GitAgent's own release
+  notes commit left on your local base is put back on top of origin, or — when
+  a later pull request already carried those notes — simply dropped, instead
+  of failing with "Not possible to fast-forward". A commit of your own there
+  gets a **Replay your local commits on top** button rather than "No automatic
+  fix".
 
 ## [0.1.105] - 2026-10-15
 

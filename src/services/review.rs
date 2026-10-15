@@ -1096,6 +1096,15 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     if !git::same_commit(repo, "HEAD", &target).await {
         match git::run(repo, "git", &["merge", "--ff-only", &target]).await {
             Ok(out) => log.push_str(&out),
+            // Local base has commits of its own. GitAgent's release notes are
+            // the usual ones, and are settled here; anything else gets a button.
+            Err(e) if e.contains("Not possible to fast-forward") => {
+                match flow::settle_own_notes(repo, &target).await {
+                    Ok(Some(note)) => log.push_str(&note),
+                    Ok(None) => return Err(sync_diverged(base, e, "")),
+                    Err(why) => return Err(sync_diverged(base, e, &why)),
+                }
+            }
             Err(e) => return Err(sync_merge_failure(base, e)),
         }
     }
@@ -1279,6 +1288,30 @@ fn sync_fetch_failure(base: &str, err: String) -> StepFailure {
 /// The pull request is merged and this copy is on the base; only the
 /// fast-forward is left. When uncommitted edits are what stopped it, say so
 /// and offer to move them out of the way and back.
+/// The merge is done; only this copy's base is out of step — it has commits
+/// origin's does not. Replaying them on top is the usual answer, offered here
+/// rather than left to a terminal.
+fn sync_diverged(base: &str, err: String, why: &str) -> StepFailure {
+    let target = format!("origin/{base}");
+    StepFailure {
+        message: format!(
+            "The merge is done, but your local {base} has commits {target} does not, so it \
+             could not simply be moved forward. Replay them on top of {target} below, then \
+             push them when you are ready.{}\n\n{err}",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n{why}")
+            }
+        ),
+        remedies: vec![Remedy::new(
+            &format!("Replay your local commits on top of {target}"),
+            "git",
+            &["rebase", &target],
+        )],
+    }
+}
+
 fn sync_merge_failure(base: &str, err: String) -> StepFailure {
     if !git::local_changes_in_the_way(&err) {
         return StepFailure::from(err);
@@ -1404,6 +1437,21 @@ mod tests {
         assert!(release.message.contains("  f"));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_diverged_base_is_offered_a_replay_rather_than_nothing() {
+        let failure = sync_diverged(
+            "main",
+            "fatal: Not possible to fast-forward, aborting.".into(),
+            "",
+        );
+        assert_eq!(failure.remedies[0].args, ["rebase", "origin/main"]);
+        assert!(
+            failure.remedies[0].retry_after,
+            "replayed, Back to base finishes"
+        );
+        assert!(failure.message.contains("The merge is done"));
     }
 
     #[test]
