@@ -2946,7 +2946,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             "\u{2715}"
                                         }
                                         if let Some(number) = diff_open {
-                                            div { class: "detail",
+                                            div { class: "detail", div { class: "detail-body",
                                                 div { class: "detail-head",
                                                     span { class: "detail-title",
                                                         "#{number} "
@@ -2972,6 +2972,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                                         div { class: "pr-diff-note", "Fetching the diff\u{2026}" }
                                                     },
                                                 }
+                                            }
                                             }
                                         } else if let Some(node_id) = shown_step {
                                             {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(drawer))}
