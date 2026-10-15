@@ -601,15 +601,22 @@ body {
 .first-run-actions { display: flex; align-items: center; gap: 12px; }
 .first-run-note { font-size: 11px; color: var(--text3); }
 
-/* The buttons that decide a step — Approve / Reject / Skip, Retry / Skip /
-   Cancel after a failure, or Skip on a step still pending or running —
-   pinned to the bottom of whichever pane is scrolling, so a long diff never
-   puts them out of reach. Pulled out over the pane's padding so it spans the
-   full width and sits flush with the bottom edge. */
+/* A step's panel fills its pane: the body scrolls, and the buttons that
+   decide the step — Approve / Reject / Skip, Retry / Skip / Cancel after a
+   failure, Skip on a step still pending or running — sit below it, always on
+   screen. A flex footer rather than `position: sticky`: in the run view the
+   pane scrolling is also the one sliding in and out with a transform, and the
+   webview left sticky buttons below the fold there until the pane itself was
+   scrolled to its end. */
+.detail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; }
+/* One scrollbar in the panel, not one inside another: the diff takes the
+   room it needs and the body scrolls. The log keeps its own, to follow its
+   newest lines while a step runs. */
+.detail-body .diff-view { max-height: none; }
 .detail-actions {
-    position: sticky; bottom: 0; z-index: 2;
+    flex-shrink: 0;
     display: flex; gap: 9px; flex-wrap: wrap;
-    margin: 16px -18px -16px; padding: 11px 18px;
+    padding: 11px 18px;
     background: var(--bg0);
     border-top: 1px solid var(--border2);
     box-shadow: 0 -8px 16px -10px rgba(0, 0, 0, 0.35);
@@ -642,7 +649,12 @@ body {
 
 .col-scroll { flex: 1; overflow-y: auto; padding: 10px; min-height: 0; }
 
-.detail-col { flex: 1; min-width: 0; overflow-y: auto; background: var(--bg0); }
+/* The step panel scrolls inside itself (`.detail-body`), so the column
+   does not: its buttons stay below the body, on screen. */
+.detail-col {
+    flex: 1; min-width: 0; background: var(--bg0);
+    display: flex; flex-direction: column; overflow: hidden;
+}
 
 .placeholder {
     flex: 1; display: flex; flex-direction: column;
@@ -717,7 +729,7 @@ body {
 .tag-gate-live { animation: pulse 1.4s ease-in-out infinite; font-weight: 700; }
 
 /* ── Detail pane ──────────────────────────────────────────────────── */
-.detail { padding: 16px 18px; }
+.detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .detail-empty { color: var(--text3); padding: 40px 18px; text-align: center; }
 .detail-head { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
 .detail-title { font-size: 15px; font-weight: 600; flex: 1; }
@@ -1789,7 +1801,7 @@ button.update-banner-link {
     background: var(--bg0);
     border-left: 1px solid var(--border);
     box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
-    overflow-y: auto;
+    display: flex; flex-direction: column; overflow: hidden;
     z-index: 5;
     /* Closed: off to the right, faded, and once it has gone, out of reach of
        the mouse and the keyboard. `visibility` waits for the slide to end

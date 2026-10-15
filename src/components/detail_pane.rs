@@ -85,6 +85,8 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
 
     rsx! {
         div { class: "detail",
+            // Everything but the buttons scrolls; the buttons sit below it.
+            div { class: "detail-body",
             div { class: "detail-head",
                 span { class: "dot dot-{run.status.css()}" }
                 span { class: "detail-title", "{spec.title}" }
@@ -263,10 +265,11 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
                 LogBox { log: run.log.clone(), failed: run.status == NodeStatus::Failed }
             }
+            }
 
-            // The buttons that decide a step, pinned to the bottom of the
-            // pane. A long diff or log above them used to push them out of
-            // sight, so answering meant scrolling to the end first.
+            // The buttons that decide a step, below the scrolling body rather
+            // than inside it: always on screen however long the diff or log,
+            // with no `position: sticky` for a webview to get wrong.
             if awaiting {
                 div { class: "detail-actions",
                     button {
