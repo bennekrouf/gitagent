@@ -173,56 +173,6 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 }
             }
 
-            if failed {
-                div { class: "remedies",
-                    if run.remedies.is_empty() {
-                        div { class: "remedies-none",
-                            "No automatic fix for this. Resolve it, then retry."
-                        }
-                    } else {
-                        div { class: "remedies-head", "Fix it from here" }
-                        for (index, remedy) in run.remedies.iter().enumerate() {
-                            div { key: "{remedy.display}", class: "remedy",
-                                div { class: "remedy-main",
-                                    div { class: "remedy-label", "{remedy.label}" }
-                                    code { class: "remedy-cmd", "{remedy.display}" }
-                                }
-                                {
-                                    let btn_class = if remedy.done {
-                                        "btn"
-                                    } else if remedy.abandons {
-                                        "btn btn-danger"
-                                    } else {
-                                        "btn btn-primary"
-                                    };
-                                    rsx! {
-                                button {
-                                    class: btn_class,
-                                    disabled: remedy.running || remedy.done,
-                                    onclick: {
-                                        let node = remedy_id.clone();
-                                        move |_| props.on_remedy.call((node.clone(), index))
-                                    },
-                                    if remedy.running { "Running…" }
-                                    else if remedy.done { "Done" }
-                                    else if remedy.failed { "Run again" }
-                                    else if remedy.abandons { "Abandon" }
-                                    else { "Run" }
-                                }
-                                    }
-                                }
-                            }
-                            if !remedy.output.is_empty() {
-                                if remedy.failed {
-                                    div { class: "remedy-stopped", "That stopped before finishing:" }
-                                }
-                                pre { class: if remedy.failed { "remedy-out remedy-out-failed" } else { "remedy-out" }, "{remedy.output}" }
-                            }
-                        }
-                    }
-                }
-            }
-
             if let Some(diff) = props.diff.clone().filter(|d| !d.trim().is_empty()) {
                 {
                     // A step that offered files (scan does) lets them be
@@ -292,6 +242,57 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                     }
                 }
             } else if failed {
+                // The fixes on offer, then the step's own choices — all of it
+                // in the panel's footer, where every decision on a step is.
+                div { class: "detail-foot",
+                    div { class: "remedies",
+                        if run.remedies.is_empty() {
+                            div { class: "remedies-none",
+                                "No automatic fix for this. Resolve it, then retry."
+                            }
+                        } else {
+                            div { class: "remedies-head", "Fix it from here" }
+                            for (index, remedy) in run.remedies.iter().enumerate() {
+                                div { key: "{remedy.display}", class: "remedy",
+                                    div { class: "remedy-main",
+                                        div { class: "remedy-label", "{remedy.label}" }
+                                        code { class: "remedy-cmd", "{remedy.display}" }
+                                    }
+                                    {
+                                        let btn_class = if remedy.done {
+                                            "btn"
+                                        } else if remedy.abandons {
+                                            "btn btn-danger"
+                                        } else {
+                                            "btn btn-primary"
+                                        };
+                                        rsx! {
+                                    button {
+                                        class: btn_class,
+                                        disabled: remedy.running || remedy.done,
+                                        onclick: {
+                                            let node = remedy_id.clone();
+                                            move |_| props.on_remedy.call((node.clone(), index))
+                                        },
+                                        if remedy.running { "Running…" }
+                                        else if remedy.done { "Done" }
+                                        else if remedy.failed { "Run again" }
+                                        else if remedy.abandons { "Abandon" }
+                                        else { "Run" }
+                                    }
+                                        }
+                                    }
+                                }
+                                if !remedy.output.is_empty() {
+                                    if remedy.failed {
+                                        div { class: "remedy-stopped", "That stopped before finishing:" }
+                                    }
+                                    pre { class: if remedy.failed { "remedy-out remedy-out-failed" } else { "remedy-out" }, "{remedy.output}" }
+                                }
+                            }
+                        }
+                    }
+
                 div { class: "detail-actions",
                     button {
                         class: "btn",
@@ -313,6 +314,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                         onclick: move |_| props.on_cancel.call(()),
                         "Cancel run"
                     }
+                }
                 }
             } else if skippable_early {
                 div { class: "detail-actions",

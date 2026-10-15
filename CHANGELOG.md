@@ -24,6 +24,10 @@ were never released.
 - The buttons for approving, rejecting, or skipping steps are now always visible
   at the bottom of the step's panel, regardless of how long the content above
   them is. This makes it easier to respond to steps without scrolling.
+- When a step fails, the fixes on offer under **Fix it from here** — pull and
+  replay, bring the base in, close the pull request — sit in that same bar at
+  the bottom, just above Retry, Skip and Cancel run, instead of up in the
+  panel above the error. Every decision on a step is now in one place.
 
 ### Fixed
 

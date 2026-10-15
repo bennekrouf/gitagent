@@ -2005,3 +2005,23 @@ button.update-banner-link {
     padding: 1px 7px; border-radius: 999px; color: var(--green);
     border: 1px solid color-mix(in srgb, var(--green) 55%, transparent);
 }
+
+/* A failed step's footer: the fixes on offer above Retry / Skip / Cancel, one
+   bar at the bottom of the panel like every other decision on a step. Capped,
+   so a long fix output cannot push the step itself off the panel. */
+.detail-foot {
+    flex-shrink: 0; max-height: 55%;
+    display: flex; flex-direction: column;
+    background: var(--bg0);
+    border-top: 1px solid var(--border2);
+    box-shadow: 0 -8px 16px -10px rgba(0, 0, 0, 0.35);
+}
+.detail-foot .remedies {
+    margin: 0; border: none; border-radius: 0;
+    padding: 11px 18px 4px;
+    overflow-y: auto; min-height: 0;
+    background: color-mix(in srgb, var(--red) 6%, var(--bg0));
+}
+.detail-foot .remedy { margin-bottom: 6px; padding: 8px 10px; }
+.detail-foot .remedy-out { max-height: 110px; }
+.detail-foot .detail-actions { border-top: none; box-shadow: none; }
