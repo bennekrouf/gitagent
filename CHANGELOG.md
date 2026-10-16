@@ -17,6 +17,22 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Claude can work on your flows through GitAgent's MCP server, not only run
+  them: list the kinds of step a flow can use, read a flow, create or change
+  one, delete one, and choose which repositories show it — the same checks as
+  Setup, so a flow that would not run is refused with the reason. A step that
+  runs a script or a server command always stops for your approval: Claude
+  cannot switch that off. `flows.toml` is backed up before every change, and
+  the open window shows the change without a restart.
+- Claude can also ask for everything GitAgent knows about a repository: its
+  branch, uncommitted files, what it needs next and which flow answers that,
+  open pull requests with their checks, the release state, and what each flow
+  would act on.
+
 ## [0.1.106] - 2026-10-15
 
 ### Changed
