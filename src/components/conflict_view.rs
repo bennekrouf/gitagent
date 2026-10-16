@@ -23,6 +23,8 @@ pub struct ConflictViewProps {
 #[component]
 pub fn ConflictView(props: ConflictViewProps) -> Element {
     let mut files = use_signal(Vec::<Conflicted>::new);
+    // Settled since the stop, and still able to be put back in conflict.
+    let mut resolved = use_signal(Vec::<String>::new);
     let mut state = use_signal(|| None::<InProgress>);
     let mut open = use_signal(|| None::<String>);
     let mut pieces = use_signal(|| Ok::<Vec<Piece>, String>(vec![]));
@@ -47,10 +49,12 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                 .clone()
                 .filter(|p| found.iter().any(|f| &f.path == p));
             let next = keep.or_else(|| found.first().map(|f| f.path.clone()));
-            if !found.is_empty() {
+            let done = conflicts::resolved(&repo).await;
+            if !found.is_empty() || !done.is_empty() {
                 seen.set(true);
             }
             files.set(found);
+            resolved.set(done);
             if let Some(path) = &next {
                 let read = conflicts::read(&repo, path).await;
                 let n = read
@@ -65,26 +69,35 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
     }));
 
     let list = files.read().clone();
-    if list.is_empty() {
+    let done = resolved.read().clone();
+    if list.is_empty() && done.is_empty() {
         if !seen() {
             return rsx! {};
         }
-        let finish = state()
-            .map(|s| format!(" Finish the {} below.", s.label()))
-            .unwrap_or_default();
+        // Finished, or abandoned: either way nothing is left to resolve.
         return rsx! {
-            div { class: "conflicts conflicts-done", "Every conflict is resolved.{finish}" }
+            div { class: "conflicts conflicts-done", "Nothing is left to resolve." }
         };
     }
 
-    let Some(path) = open() else { return rsx! {} };
-    let Some(file) = list.iter().find(|f| f.path == path).cloned() else {
-        return rsx! {};
-    };
+    let showing = open().and_then(|path| list.iter().find(|f| f.path == path).cloned());
+    let path = showing.as_ref().map(|f| f.path.clone()).unwrap_or_default();
     let read = pieces.read().clone();
     let chosen = picks.read().clone();
     let left = chosen.iter().filter(|p| p.is_none()).count();
-    let whole_only = read.is_err() || file.current_deleted() || file.incoming_deleted();
+    let whole_only = read.is_err()
+        || showing
+            .as_ref()
+            .is_some_and(|f| f.current_deleted() || f.incoming_deleted());
+    let finish = state()
+        .map(|s| format!(" Finish the {} below.", s.label()))
+        .unwrap_or_default();
+    // Everything picked so far, saved or staged, back to what git left.
+    let every: Vec<String> = done
+        .iter()
+        .cloned()
+        .chain(list.iter().map(|f| f.path.clone()))
+        .collect();
     let clashes = read
         .as_ref()
         .map(|p| conflicts::clash_count(p))
@@ -92,18 +105,19 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
 
     // Every action ends the same way: say what went wrong, if anything, and
     // read the list again.
-    let mut act =
-        move |job: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>| {
-            busy.set(true);
-            error.set(String::new());
-            spawn(async move {
-                if let Err(e) = job.await {
-                    error.set(e);
-                }
-                busy.set(false);
-                *reload.write() += 1;
-            });
-        };
+    let mut act = move |job: Job| {
+        busy.set(true);
+        error.set(String::new());
+        spawn(async move {
+            if let Err(e) = job.await {
+                error.set(e);
+            }
+            busy.set(false);
+            *reload.write() += 1;
+        });
+    };
+
+    let act_handle = EventHandler::new(move |job: Job| act(job));
 
     let rebase = state() == Some(InProgress::Rebase);
     let mut n = 0usize;
@@ -113,7 +127,9 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
             div { class: "conflicts-head",
                 span { "Resolve conflicts" }
                 span { class: "conflicts-count",
-                    if list.len() == 1 { "1 file left" } else { "{list.len()} files left" }
+                    if list.is_empty() { "all resolved" }
+                    else if list.len() == 1 { "1 file left" }
+                    else { "{list.len()} files left" }
                 }
             }
             if rebase {
@@ -148,6 +164,11 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                 }
             }
 
+            if list.is_empty() {
+                div { class: "conflicts-done-line", "Every conflict is resolved.{finish}" }
+            }
+
+            if let Some(file) = showing.clone() {
             if let Some(what) = file.what() {
                 div { class: "conflicts-hint", "{file.path} was {what}." }
             }
@@ -203,6 +224,7 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                         },
                         "Mark resolved"
                     }
+                    StartOver { repo: props.repo.clone(), paths: vec![path.clone()], busy: busy(), open, act: act_handle }
                 }
             } else {
                 div { class: "conflicts-text",
@@ -262,12 +284,75 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                         },
                         if left == 0 { "Save and mark resolved" } else { "Save — {left} still open" }
                     }
+                    StartOver { repo: props.repo.clone(), paths: vec![path.clone()], busy: busy(), open, act: act_handle }
+                }
+            }
+            }
+
+            if !done.is_empty() {
+                div { class: "conflicts-resolved",
+                    div { class: "conflicts-sub", "Resolved — start over to pick again" }
+                    for p in done.iter().cloned() {
+                        div { key: "{p}", class: "conflicts-resolved-row",
+                            span { class: "conflicts-resolved-path", "✓ {p}" }
+                            StartOver { repo: props.repo.clone(), paths: vec![p.clone()], busy: busy(), open, act: act_handle, small: true }
+                        }
+                    }
+                    div { class: "conflicts-actions",
+                        StartOver { repo: props.repo.clone(), paths: every.clone(), busy: busy(), open, act: act_handle }
+                    }
                 }
             }
 
             if !error().is_empty() {
                 div { class: "conflicts-error", "{error}" }
             }
+        }
+    }
+}
+
+/// One of the git actions above, run by `act`.
+type Job = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>;
+
+/// Puts files back in conflict as git left them, throwing away whatever was
+/// picked for them here, saved or staged — for a change of mind short of
+/// abandoning the whole merge. The first of them is opened.
+#[component]
+fn StartOver(
+    repo: String,
+    paths: Vec<String>,
+    busy: bool,
+    open: Signal<Option<String>>,
+    act: EventHandler<Job>,
+    #[props(default)] small: bool,
+) -> Element {
+    let label = match (small, paths.len()) {
+        (true, _) => "Start over",
+        (false, 1) => "Start over this file",
+        _ => "Start over on every file",
+    };
+    let title = if paths.len() == 1 {
+        "Puts the conflicts in this file back as git left them, dropping what you picked."
+    } else {
+        "Puts every file back in conflict as git left it, dropping what you picked. \
+         The merge itself carries on — to undo it entirely, abandon it below."
+    };
+    rsx! {
+        button {
+            class: if small { "clash-btn" } else { "btn btn-ghost" },
+            disabled: busy,
+            title,
+            onclick: move |_| {
+                let (repo, paths) = (repo.clone(), paths.clone());
+                open.set(paths.first().cloned());
+                act.call(Box::pin(async move {
+                    for path in &paths {
+                        conflicts::start_over(&repo, path).await?;
+                    }
+                    Ok(())
+                }))
+            },
+            "{label}"
         }
     }
 }
@@ -312,7 +397,9 @@ fn ClashBlock(clash: Clash, pick: Option<Pick>, on_pick: EventHandler<Option<Pic
 }
 
 fn name(side: &str, label: &str) -> String {
-    if label.is_empty() {
+    // A conflict put back by Start over is labelled only `ours` / `theirs`,
+    // which says nothing the side's own name does not.
+    if label.is_empty() || label == "ours" || label == "theirs" {
         side.to_string()
     } else {
         format!("{side} — {label}")
