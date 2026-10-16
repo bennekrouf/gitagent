@@ -920,8 +920,9 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
         } else {
             format!(
                 "A {} is in progress. Git is waiting on {} file(s):\n{}\n\n\
-                 Resolve them in your editor — each has <<<<<<< markers — then \
-                 finish below. Nothing else can run until this is settled.",
+                 Resolve them above — pick a side for each conflict — or in your \
+                 editor, where each has <<<<<<< markers, then finish below. \
+                 Nothing else can run until this is settled.",
                 state.label(),
                 stuck.len(),
                 stuck

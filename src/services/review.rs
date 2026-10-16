@@ -771,21 +771,28 @@ async fn analyse(
     );
     let user = format!("{head}{}", fitted.text);
 
+    // Every string and the list are bounded. A small model at temperature 0
+    // can fall into repeating one token inside a string — a 2B model quoting
+    // code wrote `\`` until the answer budget ran out — and the cut-off
+    // reply is not JSON at all. ollama enforces these bounds while it
+    // generates, so a loop is forced to close its string and move on; the
+    // longest answer they allow still fits the budget.
     let schema = json!({
         "type": "object",
         "properties": {
             "verdict": { "type": "string", "enum": ["looks_safe", "worth_a_look", "risky"] },
-            "summary": { "type": "string" },
+            "summary": { "type": "string", "maxLength": 600 },
             "findings": {
                 "type": "array",
+                "maxItems": 6,
                 "items": {
                     "type": "object",
                     "properties": {
                         "severity": { "type": "string", "enum": ["high", "medium", "low"] },
-                        "file":     { "type": "string" },
-                        "claim":    { "type": "string" },
-                        "trigger":  { "type": "string" },
-                        "evidence": { "type": "string" }
+                        "file":     { "type": "string", "maxLength": 200 },
+                        "claim":    { "type": "string", "maxLength": 300 },
+                        "trigger":  { "type": "string", "maxLength": 300 },
+                        "evidence": { "type": "string", "maxLength": 400 }
                     },
                     "required": ["severity", "file", "claim", "trigger", "evidence"]
                 }
@@ -887,8 +894,8 @@ pub fn conflict_followup(number: &str, base: &str, output: &str) -> Option<StepF
     let message = format!(
         "{base} is merged into #{number}'s branch everywhere except where both sides \
          changed the same lines. Nothing has been pushed.\n\n\
-         Fix {} in your editor — each conflict sits between <<<<<<< and >>>>>>>: \
-         keep what should stay, delete the markers, save:\n{}\n\n\
+         Resolve {} above — pick a side for each conflict — or in your editor, \
+         where each sits between <<<<<<< and >>>>>>>:\n{}\n\n\
          Then Finish below. It commits the merge, pushes, waits for GitHub to \
          recheck #{number}, and tries the merge again. It refuses while any of \
          these files still has a marker.\n\n\

@@ -959,6 +959,7 @@ fn step_detail(
         DetailPane {
             spec: graph.get(&node_id).cloned(),
             run: state.runs.get(&node_id).cloned().unwrap_or_else(NodeRun::default),
+            repo: key.0.clone(),
             diff: graph.get(&node_id).and_then(|spec| {
                 spec.writes.iter()
                     .find(|w| w.as_str() == "diff" || w.as_str() == "pr_diff")

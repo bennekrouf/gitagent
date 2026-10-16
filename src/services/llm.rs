@@ -718,6 +718,9 @@ async fn call_ollama(
 
     let value: Value =
         serde_json::from_str(&text).map_err(|e| format!("ollama sent invalid JSON: {e}"))?;
+    if value["done_reason"] == "length" {
+        return Err(cut_off(&cfg.ollama_model));
+    }
     value["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
@@ -785,6 +788,9 @@ async fn call_openai_compatible(
 
     let value: Value = serde_json::from_str(&text)
         .map_err(|e| format!("{} sent invalid JSON: {e}", preset.label))?;
+    if value["choices"][0]["finish_reason"] == "length" {
+        return Err(cut_off(cfg.remote_model_name()));
+    }
     value["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
@@ -794,6 +800,17 @@ async fn call_openai_compatible(
                 preset.label
             )
         })
+}
+
+/// A reply stopped at `ANSWER_TOKENS` is half an object, and the raw text
+/// that a parse error would show is mostly the loop that ran it out — the
+/// same token over and over. Say what happened instead.
+fn cut_off(model: &str) -> String {
+    format!(
+        "{model} ran out of room before it finished its answer ({ANSWER_TOKENS} tokens), \
+         so the reply was cut off and cannot be read. Small models do this when they \
+         start repeating themselves. Run the step again, or pick a larger model in Settings."
+    )
 }
 
 /// A model ollama has on disk.

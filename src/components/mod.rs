@@ -1,4 +1,5 @@
 pub mod branches_panel;
+pub mod conflict_view;
 pub mod dag_view;
 pub mod detail_pane;
 pub mod diff_view;

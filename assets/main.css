@@ -2025,3 +2025,63 @@ button.update-banner-link {
 .detail-foot .remedy { margin-bottom: 6px; padding: 8px 10px; }
 .detail-foot .remedy-out { max-height: 110px; }
 .detail-foot .detail-actions { border-top: none; box-shadow: none; }
+
+/* ── Conflict resolver ────────────────────────────────────────────────
+   A failed step over files git is waiting on: each clash as its two
+   sides, Current in blue and Incoming in green — the colours editors use
+   for the same choice — with the pick on a strip above it. */
+.conflicts {
+    background: var(--bg1);
+    border: 1px solid var(--yellow);
+    border-radius: 9px;
+    padding: 12px 13px;
+    margin-bottom: 16px;
+}
+.conflicts-done { border-color: var(--green); color: var(--green); font-size: 12px; }
+.conflicts-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 10px; color: var(--yellow);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 9px;
+}
+.conflicts-count { color: var(--text3); }
+.conflicts-hint { font-size: 11px; color: var(--text2); margin-bottom: 9px; line-height: 1.5; }
+.conflicts-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.conflicts-file {
+    font-family: var(--mono); font-size: 11px;
+    padding: 3px 9px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg0); color: var(--text2);
+}
+.conflicts-file:hover { border-color: var(--yellow); }
+.conflicts-file-on { border-color: var(--yellow); color: var(--text1); background: var(--bg2); }
+.conflicts-text {
+    background: var(--bg0); border: 1px solid var(--border2); border-radius: 6px;
+    font-size: 11.5px; line-height: 1.55; overflow-x: auto;
+}
+.conflicts-text pre { font-family: var(--mono); white-space: pre; margin: 0; padding: 0 10px; }
+.conflict-same { color: var(--text3); }
+.clash { margin: 4px 0; }
+.clash-bar {
+    display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+    padding: 2px 10px; font-size: 10.5px;
+}
+.clash-btn {
+    font-family: var(--mono); font-size: 10.5px;
+    background: none; border: none; padding: 1px 4px; cursor: pointer;
+    color: var(--text3);
+}
+.clash-btn:hover { color: var(--text1); text-decoration: underline; }
+.clash-btn + .clash-btn::before { content: "|"; color: var(--border); margin-right: 8px; }
+.clash-kept { color: var(--green); margin-right: 6px; }
+.clash-label {
+    padding: 1px 10px; font-size: 10px; color: var(--text3);
+    background: color-mix(in srgb, var(--text3) 12%, transparent);
+}
+.clash-label-current { color: var(--blue); background: color-mix(in srgb, var(--blue) 22%, transparent); }
+.clash-label-incoming { color: var(--green); background: color-mix(in srgb, var(--green) 22%, transparent); }
+.conflicts-text .clash-side { padding: 2px 10px; color: var(--text1); }
+.clash-current { background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.clash-incoming { background: color-mix(in srgb, var(--green) 10%, transparent); }
+.clash-base { background: color-mix(in srgb, var(--text3) 8%, transparent); color: var(--text2); }
+.clash-result { border-left: 2px solid var(--green); }
+.conflicts-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.conflicts-error { margin-top: 8px; font-size: 11px; color: var(--red); white-space: pre-wrap; }
