@@ -3,6 +3,7 @@
 
 use dioxus::prelude::*;
 
+use crate::components::conflict_view::ConflictView;
 use crate::components::diff_view::DiffView;
 use crate::services::graph::{NodeRun, NodeSpec, NodeStatus};
 
@@ -10,6 +11,8 @@ use crate::services::graph::{NodeRun, NodeSpec, NodeStatus};
 pub struct DetailPaneProps {
     pub spec: Option<NodeSpec>,
     pub run: NodeRun,
+    /// The repository the step runs in — where a stuck merge is resolved.
+    pub repo: String,
     /// The node's own diff artifact (`diff` or `pr_diff`), when it wrote
     /// one — shown as a highlighted diff instead of the plain output log.
     #[props(default)]
@@ -82,6 +85,15 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     // question is about — behind an unlabelled "…" — meant the answer to "how
     // do I choose the files" was a control nobody could find.
     let mut show_files = use_signal(|| true);
+    // Anything a fix or a retry changes, so the conflict list is read again.
+    let stamp = format!(
+        "{:?}{}",
+        run.status,
+        run.remedies
+            .iter()
+            .map(|r| format!("{}{}{}", r.running, r.done, r.failed))
+            .collect::<String>()
+    );
 
     rsx! {
         div { class: "detail",
@@ -114,6 +126,12 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                         }
                     }
                 }
+            }
+
+            // A failure over files git is still waiting on is settled here,
+            // above the message about it. Shows nothing while nothing is stuck.
+            if failed {
+                ConflictView { repo: props.repo.clone(), stamp }
             }
 
             if awaiting {

@@ -17,6 +17,29 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Merge conflicts can be resolved without leaving GitAgent. When a step stops
+  because a merge, rebase, cherry-pick or revert is waiting on files, the
+  step's panel now lists those files and shows each conflict as its two sides,
+  Current and Incoming, with Accept current, Accept incoming or Accept both,
+  as in an editor. Save writes your choices, and once nothing in a file is left
+  undecided it is marked resolved, ready for Finish below. A file one side
+  deleted, or one that is not text, is settled by keeping one side whole, and a
+  file you already fixed in your editor only needs Mark resolved.
+
+### Fixed
+
+- The second opinion works with small local models again. A small model could
+  get stuck repeating the same characters in a quoted line of code until it ran
+  out of room, and the step failed with "model did not return JSON" followed by
+  a wall of unreadable text. Each part of a review now has a length limit the
+  model has to respect, so it moves on instead. If an answer is still cut off,
+  the step says so plainly and suggests running it again or picking a larger
+  model.
+
 ## [0.1.107] - 2026-10-16
 
 ### Added

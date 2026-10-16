@@ -1,6 +1,7 @@
 pub mod awake;
 pub mod branches;
 pub mod catalogue;
+pub mod conflicts;
 pub mod diffview;
 pub mod env;
 pub mod flow;
