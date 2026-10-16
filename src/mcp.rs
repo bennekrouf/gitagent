@@ -23,10 +23,10 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::services::flow;
-use crate::services::flowdef::FlowBook;
+use crate::services::flowdef::{self, FlowBook, FlowDef};
 use crate::services::graph::{Graph, NodeKind, NodeSpec, NodeStatus, RunState, Step};
 use crate::services::llm::LlmConfig;
-use crate::services::{forge, git, licence, live, probe, release, store, trusted};
+use crate::services::{catalogue, forge, git, licence, live, probe, release, store, trusted};
 use crate::telemetry;
 
 /// The newest protocol revision this server speaks. A client asking for an
@@ -47,7 +47,12 @@ the user's behalf without asking them. Pass trusted: true to run_flow only when 
 a trusted run: GitAgent then answers approvals itself by the rules of its Trusted run — it holds \
 at anything risky, any script or deploy, and release notes — and carries on into the next flow \
 the repository needs. If the user turned on Trust all in the GitAgent window, runs are trusted \
-already. Either way, report what was approved automatically and where it stopped.";
+already. Either way, report what was approved automatically and where it stopped. The flows \
+themselves can be read and changed too: list_steps names the steps a flow can use, get_flow \
+shows one, save_flow creates or changes one (it is refused, with the reason, if it would not \
+run), delete_flow removes one, and show_flow sets which repositories show it. Say what you \
+are about to change before saving, as the user would see it in Setup. repo_insight tells \
+everything GitAgent knows about one repository.";
 
 /// One flow being run for one repository.
 struct Run {
@@ -250,6 +255,82 @@ fn tools() -> Value {
                 "required": ["run_id"],
             },
         },
+        {
+            "name": "list_steps",
+            "description": "Every kind of step a flow can be built from: what it does, what it \
+                            reads and writes, whether it stops for approval by default, and the \
+                            settings it takes.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "get_flow",
+            "description": "One flow's full definition — its steps, how they depend on each \
+                            other, their settings — in the shape save_flow takes, plus any \
+                            problems that keep it from running and which repositories show it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "flow": { "type": "string", "description": "Flow id." } },
+                "required": ["flow"],
+            },
+        },
+        {
+            "name": "save_flow",
+            "description": "Create a flow, or replace one with the same id, as Setup's Save \
+                            does. Take the shape from get_flow: id (optional for a new flow; \
+                            it follows the label), label, handles, and nodes, each with id, \
+                            step (a key from list_steps), deps, and optional title, config and \
+                            gated. Refused, with the reasons, if the flow would not run. A \
+                            script or server step always stops for approval: `gated: false` \
+                            on one is refused unless it was already so. flows.toml is backed \
+                            up first, and the open window picks the change up by itself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "flow": { "type": "object", "description": "The flow definition." },
+                    "repo": { "type": "string", "description": "For a new flow: show it on \
+                        this repository only, as a flow made in Setup is. Leave out to show \
+                        it everywhere." },
+                },
+                "required": ["flow"],
+            },
+        },
+        {
+            "name": "delete_flow",
+            "description": "Remove a flow. flows.toml is backed up first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "flow": { "type": "string", "description": "Flow id." } },
+                "required": ["flow"],
+            },
+        },
+        {
+            "name": "show_flow",
+            "description": "Which repositories show a flow: on one repository (shown true or \
+                            false), or on every repository (everywhere true).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "flow": { "type": "string", "description": "Flow id." },
+                    "repo": { "type": "string", "description": "Absolute path." },
+                    "shown": { "type": "boolean" },
+                    "everywhere": { "type": "boolean" },
+                },
+                "required": ["flow"],
+            },
+        },
+        {
+            "name": "repo_insight",
+            "description": "Everything GitAgent knows about one repository: branch, uncommitted \
+                            files, commits ahead or behind, what it needs next and which flow \
+                            answers that, every open pull request with its checks and size, \
+                            the release state, each shown flow with what it would act on, and \
+                            any run Claude has going there.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "repo": { "type": "string", "description": "Absolute path." } },
+                "required": ["repo"],
+            },
+        },
     ])
 }
 
@@ -281,8 +362,282 @@ async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result
                 _ => Ok(report(run)),
             }
         }
+        "list_steps" => Ok(list_steps()),
+        "get_flow" => get_flow(&text("flow")),
+        "save_flow" => save_flow(&args["flow"], &text("repo")),
+        "delete_flow" => delete_flow(&text("flow")),
+        "show_flow" => show_flow(
+            &text("flow"),
+            &text("repo"),
+            args["shown"].as_bool(),
+            args["everywhere"].as_bool().unwrap_or(false),
+        ),
+        "repo_insight" => repo_insight(&repo_path(&text("repo"))?).await,
         _ => Err(format!("no tool {name}")),
     }
+}
+
+fn list_steps() -> Value {
+    json!(catalogue::CATALOGUE
+        .iter()
+        .map(|s| json!({
+            "step": s.key,
+            "title": s.title,
+            "about": s.about,
+            "uses_model": s.kind == NodeKind::Model,
+            "reads": s.reads,
+            "writes": s.writes,
+            "stops_for_approval": s.gate_by_default,
+            "settings": s.config.iter().map(|c| json!({
+                "key": c.key,
+                "label": c.label,
+                "help": c.help,
+                "required": c.required,
+                "example": c.placeholder,
+            })).collect::<Vec<_>>(),
+        }))
+        .collect::<Vec<_>>())
+}
+
+/// A flow as save_flow takes it, with what keeps it from running and where
+/// it is shown alongside — those two are read-only and ignored on save.
+fn flow_json(def: &FlowDef, shown: &store::RepoFlows) -> Value {
+    let mut out = serde_json::to_value(def).unwrap_or_default();
+    if let Some(nodes) = out.as_object_mut().and_then(|o| o.remove("node")) {
+        out["nodes"] = nodes;
+    }
+    out["problems"] = json!(flowdef::validate(def)
+        .iter()
+        .map(|p| p.message())
+        .collect::<Vec<_>>());
+    out["shown_only_on"] = json!(shown.shown_only_on(&def.id));
+    out["hidden_on"] = json!(shown
+        .hidden
+        .iter()
+        .filter(|(_, ids)| ids.iter().any(|id| id == &def.id))
+        .map(|(repo, _)| repo)
+        .collect::<Vec<_>>());
+    out
+}
+
+fn get_flow(id: &str) -> Result<Value, String> {
+    let book = FlowBook::load();
+    let def = book
+        .get(id)
+        .ok_or(format!("no flow {id}; see list_flows"))?;
+    Ok(flow_json(def, &store::load_repo_flows()))
+}
+
+/// flows.toml as it was before a change, beside it — one step of undo for a
+/// change a client made.
+fn back_up_flows() {
+    let dir = store::data_dir();
+    let _ = std::fs::copy(dir.join("flows.toml"), dir.join("flows.toml.bak"));
+}
+
+fn save_flow(raw: &Value, repo: &str) -> Result<Value, String> {
+    let mut raw = raw.clone();
+    let obj = raw
+        .as_object_mut()
+        .ok_or("`flow` must be an object, in the shape get_flow returns")?;
+    for read_only in ["problems", "shown_only_on", "hidden_on"] {
+        obj.remove(read_only);
+    }
+    if !obj.contains_key("node") {
+        if let Some(nodes) = obj.remove("nodes") {
+            obj.insert("node".into(), nodes);
+        }
+    }
+    let label = obj
+        .get("label")
+        .and_then(|l| l.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if label.is_empty() {
+        return Err("a flow needs a `label` — the name shown on its tab".into());
+    }
+    if obj
+        .get("id")
+        .and_then(|i| i.as_str())
+        .is_none_or(|i| i.trim().is_empty())
+    {
+        obj.insert("id".into(), json!(flowdef::id_from_label(&label)));
+    }
+    let flow: FlowDef = serde_json::from_value(raw)
+        .map_err(|e| format!("not a flow definition ({e}); see get_flow for the shape"))?;
+
+    let mut book = FlowBook::load();
+    let before = book.get(&flow.id).cloned();
+    // A command the app cannot vet only runs unattended on the person's own
+    // say-so, given in Setup — never on a client's.
+    for node in &flow.nodes {
+        let command = matches!(node.step.as_str(), "run_script" | "run_remote");
+        if command && node.gated == Some(false) {
+            let already = before.as_ref().is_some_and(|f| {
+                f.nodes
+                    .iter()
+                    .any(|n| n.id == node.id && n.step == node.step && n.gated == Some(false))
+            });
+            if !already {
+                return Err(format!(
+                    "step `{}` runs a command, and GitAgent's MCP tools will not make it run \
+                     without approval. Leave `gated` out, or have the user untick Needs \
+                     approval on it in Setup.",
+                    node.id
+                ));
+            }
+        }
+    }
+    let problems = flowdef::validate(&flow);
+    if !problems.is_empty() {
+        return Err(format!(
+            "not saved — this flow would not run:\n- {}",
+            problems
+                .iter()
+                .map(|p| p.message())
+                .collect::<Vec<_>>()
+                .join("\n- ")
+        ));
+    }
+
+    back_up_flows();
+    let created = before.is_none();
+    match book.flows.iter_mut().find(|f| f.id == flow.id) {
+        Some(existing) => *existing = flow.clone(),
+        None => book.flows.push(flow.clone()),
+    }
+    let mut shown = store::load_repo_flows();
+    let mut id = flow.id.clone();
+    for (old, new) in book.ids_from_labels() {
+        shown.rename_flow(&old, &new);
+        if old == id {
+            id = new;
+        }
+    }
+    if created && !repo.trim().is_empty() {
+        shown.only_on(&id, &repo_path(repo)?);
+    }
+    book.save();
+    store::save_repo_flows(&shown);
+    let saved = book.get(&id).ok_or("saved, but could not read it back")?;
+    Ok(json!({
+        "saved": id,
+        "created": created,
+        "flow": flow_json(saved, &shown),
+    }))
+}
+
+fn delete_flow(id: &str) -> Result<Value, String> {
+    let mut book = FlowBook::load();
+    if book.get(id).is_none() {
+        return Err(format!("no flow {id}; see list_flows"));
+    }
+    if book.flows.len() == 1 {
+        return Err("this is the only flow left; GitAgent needs at least one".into());
+    }
+    back_up_flows();
+    book.flows.retain(|f| f.id != id);
+    book.save();
+    let mut shown = store::load_repo_flows();
+    shown.forget_flow(id);
+    store::save_repo_flows(&shown);
+    Ok(json!({ "deleted": id, "backup": "flows.toml.bak, in GitAgent's data folder" }))
+}
+
+fn show_flow(id: &str, repo: &str, shown: Option<bool>, everywhere: bool) -> Result<Value, String> {
+    if FlowBook::load().get(id).is_none() {
+        return Err(format!("no flow {id}; see list_flows"));
+    }
+    let mut lists = store::load_repo_flows();
+    if everywhere {
+        lists.everywhere(id);
+        for ids in lists.hidden.values_mut() {
+            ids.retain(|f| f != id);
+        }
+        lists.hidden.retain(|_, ids| !ids.is_empty());
+    } else {
+        let repo = repo_path(repo)?;
+        match shown {
+            Some(true) => lists.show(&repo, id),
+            Some(false) => lists.hide(&repo, id),
+            None => {
+                return Err("say `shown` true or false for the repo, or `everywhere` true".into())
+            }
+        }
+    }
+    store::save_repo_flows(&lists);
+    let def = FlowBook::load();
+    Ok(flow_json(def.get(id).expect("checked above"), &lists))
+}
+
+async fn repo_insight(repo: &str) -> Result<Value, String> {
+    let status = probe::probe(repo).await;
+    let book = FlowBook::load();
+    let lists = store::load_repo_flows();
+    let hidden = lists.hidden_for(repo);
+    let wants = status.wants();
+    let next = trusted::next_flow(&book, &status, &hidden);
+    let flows: Vec<Value> = book
+        .runnable_for(&hidden)
+        .into_iter()
+        .map(|f| {
+            let count = status.count_for(&f.handles);
+            json!({
+                "flow": f.id,
+                "label": f.label,
+                "would_act_on": count.as_ref().map(|c| &c.0),
+                "detail": count.as_ref().map(|c| &c.1),
+            })
+        })
+        .collect();
+    let prs: Vec<Value> = status
+        .prs
+        .iter()
+        .map(|p| {
+            json!({
+                "number": p.number,
+                "title": p.title,
+                "checks": format!("{:?}", p.checks).to_lowercase(),
+                "files": p.files,
+                "additions": p.additions,
+                "deletions": p.deletions,
+            })
+        })
+        .collect();
+    let live_here: Vec<Value> = live::load()
+        .into_iter()
+        .filter(|r| r.repo == repo)
+        .map(|r| {
+            json!({
+                "flow": r.flow_label,
+                "finished": r.finished,
+                "trusted": r.trusted,
+                "waiting_on": r.waiting.map(|w| w.0),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "repo": repo,
+        "branch": status.branch,
+        "uncommitted_files": status.changes,
+        "ahead_of_upstream": status.ahead,
+        "behind_upstream": status.behind,
+        "commits_without_a_pull_request": status.unmerged,
+        "needs": wants.note(),
+        "next_flow": next.as_ref().map(|(f, _)| f),
+        "why_nothing_runs_next": if next.is_none() {
+            trusted::why_stopped(&book, &status, &hidden)
+        } else {
+            None
+        },
+        "open_pull_requests": prs,
+        "pull_requests_unreadable": status.prs_error,
+        "release": status.release.summary(),
+        "git_operation_in_progress": status.in_progress.as_ref().map(|p| p.label()),
+        "flows": flows,
+        "claude_runs_here": live_here,
+    }))
 }
 
 /// The path as the app keys repositories, so a licence slot taken here is the

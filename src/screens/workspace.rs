@@ -1550,8 +1550,21 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // when the file changes, and now and then regardless, so a run whose
     // server went away drops off.
     let mut live_runs = use_signal(crate::services::live::load);
+    // The flows, too, can change from outside: the MCP server's Setup tools
+    // write the same files Setup does. Picked up here so a flow Claude made
+    // shows as a tab without reopening the window — but not while Setup is
+    // open, whose draft would then be compared against a moved target.
+    let flow_files_changed_at = || {
+        let dir = store::data_dir();
+        ["flows.toml", "repo_flows.json"].map(|f| {
+            std::fs::metadata(dir.join(f))
+                .and_then(|m| m.modified())
+                .ok()
+        })
+    };
     use_future(move || async move {
         let mut stamp = crate::services::live::changed_at();
+        let mut flows_stamp = flow_files_changed_at();
         let mut ticks = 0u32;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -1563,6 +1576,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 if *live_runs.peek() != runs {
                     live_runs.set(runs);
                 }
+            }
+            let flows_now = flow_files_changed_at();
+            if flows_now != flows_stamp && !*setup_open.peek() {
+                flows_stamp = flows_now;
+                book.set(FlowBook::load());
+                repo_flows.set(store::load_repo_flows());
             }
         }
     });

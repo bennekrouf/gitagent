@@ -341,6 +341,15 @@ impl RepoFlows {
         self.only.remove(flow_id);
     }
 
+    /// A flow that no longer exists, removed from every list that names it.
+    pub fn forget_flow(&mut self, flow_id: &str) {
+        self.only.remove(flow_id);
+        for ids in self.hidden.values_mut() {
+            ids.retain(|id| id != flow_id);
+        }
+        self.hidden.retain(|_, ids| !ids.is_empty());
+    }
+
     pub fn shown_only_on(&self, flow_id: &str) -> Option<&[String]> {
         self.only.get(flow_id).map(Vec::as_slice)
     }
