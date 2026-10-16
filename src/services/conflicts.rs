@@ -290,6 +290,90 @@ pub async fn mark_resolved(repo: &str, file: &Conflicted) -> Result<(), String> 
     Ok(())
 }
 
+/// Files resolved since this merge (rebase, …) stopped, that git can still
+/// put back in conflict. Git keeps what each side had when a file is staged,
+/// and keeps it past the commit, so only what matches `HEAD` now counts:
+/// anything else is left over from an earlier stop.
+pub async fn resolved(repo: &str) -> Vec<String> {
+    if git::in_progress(repo).await.is_none() {
+        return vec![];
+    }
+    let Ok(out) = git::run(repo, "git", &["ls-files", "--resolve-undo", "-z"]).await else {
+        return vec![];
+    };
+    // `mode sha stage\tpath`, one entry per side git kept.
+    let mut kept: Vec<(String, Option<String>)> = vec![];
+    for entry in out.split('\0').filter(|e| !e.is_empty()) {
+        let Some((meta, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let mut meta = meta.split_whitespace();
+        let (sha, stage) = (meta.nth(1), meta.next());
+        let at = match kept.iter().position(|(p, _)| p == path) {
+            Some(at) => at,
+            None => {
+                kept.push((path.to_string(), None));
+                kept.len() - 1
+            }
+        };
+        if stage == Some("2") {
+            kept[at].1 = sha.map(str::to_string);
+        }
+    }
+    let stuck = git::unmerged_paths(repo).await;
+    let mut found = vec![];
+    for (path, current) in kept {
+        if stuck.contains(&path) {
+            continue;
+        }
+        let head = git::run(
+            repo,
+            "git",
+            &["rev-parse", "--verify", "--quiet", &format!("HEAD:{path}")],
+        )
+        .await
+        .ok()
+        .map(|s| s.trim().to_string());
+        if head == current {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// Puts a file back as git first left it: conflict markers in place for
+/// both sides to be picked again, and no longer staged. Throws away what
+/// was chosen for it, saved or not.
+pub async fn start_over(repo: &str, path: &str) -> Result<(), String> {
+    // Brings back the sides git kept when the file was staged. A file still
+    // in conflict has nothing to bring back, and is left as it is.
+    git::run(repo, "git", &["update-index", "--unresolve", "--", path]).await?;
+    let stages = git::run(repo, "git", &["ls-files", "--unmerged", "--", path]).await?;
+    let has = |n: &str| {
+        stages
+            .lines()
+            .any(|l| l.split('\t').next().is_some_and(|m| m.ends_with(n)))
+    };
+    // Markers need both sides. With one side deleted, the file comes back as
+    // the side that kept it — which is what the merge itself left.
+    let args: &[&str] = match (has(" 2"), has(" 3")) {
+        (true, true) => &["checkout", "--merge", "--", path],
+        (true, false) => &["checkout", "--ours", "--", path],
+        (false, true) => &["checkout", "--theirs", "--", path],
+        (false, false) => {
+            return Err(format!(
+                "git kept nothing of {path} to start over from — abandon the whole \
+                 operation instead to get every file back as it was."
+            ))
+        }
+    };
+    git::run(repo, "git", args).await?;
+    // With rerere on, the choice just undone was recorded, and the next time
+    // the same conflict came up git would quietly make it again.
+    let _ = git::run(repo, "git", &["rerere", "forget", "--", path]).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,7 +511,35 @@ mod tests {
         assert!(!root.join("gone").exists());
 
         assert!(list(repo).await.is_empty());
+
+        // Changed your mind: both come back exactly as the merge left them.
+        let mut done = resolved(repo).await;
+        done.sort();
+        assert_eq!(done, ["f", "gone"]);
+        for path in &done {
+            start_over(repo, path).await.unwrap();
+        }
+        assert_eq!(list(repo).await.len(), 2);
+        assert!(resolved(repo).await.is_empty());
+        assert_eq!(clash_count(&read(repo, "f").await.unwrap()), 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("gone")).unwrap(),
+            "edit\n"
+        );
+        // A half-saved file starts over too.
+        let pieces = read(repo, "f").await.unwrap();
+        save(repo, "f", &resolve(&pieces, &[Some(Pick::Current)]))
+            .await
+            .unwrap();
+        start_over(repo, "f").await.unwrap();
+        assert_eq!(clash_count(&read(repo, "f").await.unwrap()), 1);
+
+        for f in list(repo).await {
+            take_whole(repo, &f, Pick::Incoming).await.unwrap();
+        }
         assert!(sh("git commit --no-edit -q").status.success());
+        // What git still keeps after the commit is not offered again.
+        assert!(resolved(repo).await.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

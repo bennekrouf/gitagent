@@ -17,6 +17,19 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Changed your mind while resolving a merge? Start over puts a file's
+  conflicts back exactly as git left them, so you can pick again, even after
+  you saved it or it was marked resolved. Files already resolved are listed
+  under the conflicts, each with its own Start over, and Start over on every
+  file takes the whole merge back to its first stop. Your choices are thrown
+  away, but the merge itself carries on; abandon it if you want to undo it
+  entirely. If git remembers resolutions on your machine, the one you undid is
+  forgotten too, so it is not quietly applied again next time.
+
 ## [0.1.108] - 2026-10-16
 
 ### Added
