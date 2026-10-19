@@ -119,9 +119,10 @@ fn announce(status: NodeStatus, repo_path: &str, node_title: &str, detail: &str)
 
 /// The approval a repository's row can offer as a button, if any.
 ///
-/// Only one that needs nothing more than a yes. A step a trusted run held back
-/// has a reason waiting to be read, and one with every file unchecked has
-/// nothing to commit; both keep the plain "needs you" and send you to the run.
+/// Any step waiting on a yes — including one a trusted run held back, such as
+/// release notes or a script, whose reason goes at the top of the button's
+/// tooltip. Only a step with every file unchecked is left out: it has nothing
+/// to commit, and keeps the plain "needs you" that sends you to the run.
 fn approval_for(states: &States, book: &FlowBook, repo: &str) -> Option<Approval> {
     states
         .iter()
@@ -134,7 +135,7 @@ fn approval_for(states: &States, book: &FlowBook, repo: &str) -> Option<Approval
                     && !state.decisions.contains_key(&n.id)
             })?;
             let run = state.runs.get(&node.id)?;
-            if !run.held.is_empty() || run.has_nothing_selected() {
+            if run.has_nothing_selected() {
                 return None;
             }
             Some(Approval {
@@ -142,6 +143,7 @@ fn approval_for(states: &States, book: &FlowBook, repo: &str) -> Option<Approval
                 node: node.id.clone(),
                 title: node.title.clone(),
                 proposal: run.proposal.clone(),
+                held: run.held.clone(),
             })
         })
 }
@@ -3553,12 +3555,20 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_that_wants_a_look_first_is_not_offered_in_the_list() {
-        let book = FlowBook::defaults();
-
+    fn a_step_a_trusted_run_held_back_is_offered_with_its_reason() {
         let mut held = waiting_at_push();
         held.runs.get_mut("push").unwrap().held = "CI is failing".into();
-        assert!(approval_for(&states_with("commit_and_pr", "", held), &book, "repo").is_none());
+        let approval =
+            approval_for(&states_with("commit_and_pr", "", held), &FlowBook::defaults(), "repo")
+                .unwrap();
+        let tooltip = approval.tooltip();
+        assert!(tooltip.starts_with("CI is failing"));
+        assert!(tooltip.contains("git push -u origin feat/x"));
+    }
+
+    #[test]
+    fn an_approval_with_nothing_to_approve_is_not_offered_in_the_list() {
+        let book = FlowBook::defaults();
 
         let mut empty = waiting_at_push();
         empty.runs.get_mut("push").unwrap().items = vec![crate::services::graph::ProposalItem {
