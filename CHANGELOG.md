@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent now includes a script to check for dynamic C runtime dependencies in
+  the Windows executable. This ensures that the application runs smoothly on any
+  PC without requiring additional installations of the Visual C++
+  Redistributable.
+
 ## [0.1.109] - 2026-10-16
 
 ### Added
