@@ -133,6 +133,8 @@ pub struct Approval {
     pub node: String,
     pub title: String,
     pub proposal: String,
+    /// Why a trusted run stopped here instead of answering itself, or empty.
+    pub held: String,
 }
 
 impl Approval {
@@ -151,10 +153,17 @@ impl Approval {
         if lines.len() > MOST_LINES {
             shown.push_str("\n\u{2026}");
         }
-        format!(
+        let approve = format!(
             "Approve \u{201c}{}\u{201d}. This will run:\n\n{shown}",
             self.title
-        )
+        );
+        // A held step is offered too, but the reason it was held is read
+        // before anything else.
+        if self.held.trim().is_empty() {
+            approve
+        } else {
+            format!("{}\n\n{approve}", self.held.trim())
+        }
     }
 }
 
@@ -189,10 +198,9 @@ pub struct RepoEntry {
     /// The free version's repositories are taken and this is not one of them:
     /// listed, but not checked, and selecting it opens the Pro window.
     pub locked: bool,
-    /// Set when a run here is waiting on an approval that needs nothing more
-    /// than a yes: the row offers the button itself. `None` for an approval
-    /// that wants a look first — a trusted run held it back, or every file is
-    /// unchecked — which keeps the plain "needs you".
+    /// Set when a run here is waiting on an approval: the row offers the
+    /// button itself, held or not. `None` when nothing waits, or every file is
+    /// unchecked, which keeps the plain "needs you".
     pub approval: Option<Approval>,
 }
 

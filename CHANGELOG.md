@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- The Approve button in the repository list now also shows for a step a
+  trusted run stopped at, such as release notes, a script or a deploy. Before,
+  those rows only said the run needed you, and approving meant opening the
+  run. Hover the button to read why the run stopped before you approve.
+
 ## [0.1.110] - 2026-10-19
 
 ### Added
