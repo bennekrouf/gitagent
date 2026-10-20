@@ -297,6 +297,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 if !error.read().is_empty() {
                     div { class: "welcome-error", "{error}" }
                 }
+                crate::feedback::FeedbackLine {}
             }
         }
 

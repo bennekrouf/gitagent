@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A Feedback button in the top bar, and Feedback and mayorana.ch links under
+  the welcome screen, open the contact form with GitAgent and your version
+  already filled in, so an idea or a problem reaches us in two clicks.
+
 ## [0.1.114] - 2026-10-20
 
 ### Fixed
