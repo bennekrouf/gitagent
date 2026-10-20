@@ -27,6 +27,12 @@ were never released.
   forever on Windows. Now the welcome screen names each repository it could not
   reach and shows git's reason. You can fix access and try again, or open the
   folder anyway.
+- When a merge stops on conflicts, the button that finishes the merge now waits
+  until every file is resolved. It names the files git is still waiting on and
+  points you to Resolve conflicts above it, including Mark resolved for a file
+  you fixed in your editor. Before, the button could be clicked too early and
+  only showed git's "unmerged files" error, with no hint of what to do next.
+
 ## [0.1.113] - 2026-10-20
 
 ### Changed

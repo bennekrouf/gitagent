@@ -1959,6 +1959,10 @@ button.update-banner-link {
 }
 
 /* A fix that ran and stopped: said in words, not left looking untouched. */
+.remedy-waiting {
+    margin-top: 6px; font-size: 11px; color: var(--text2);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+}
 .remedy-stopped { margin: 6px 0 2px; font-size: 11px; font-weight: 700; color: var(--red); }
 .remedy-out-failed { border-left: 2px solid var(--red); }
 

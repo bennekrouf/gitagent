@@ -928,7 +928,8 @@ git commit --no-edit && git push || exit 1
             "git add <fixed files> && git commit --no-edit && git push   (then waits for GitHub to recheck #{number})"
         ),
         ..finish
-    };
+    }
+    .once_resolved();
     Some(StepFailure {
         message,
         remedies: vec![
