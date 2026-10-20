@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- When a run stops because Azure DevOps does not accept your Azure sign-in
+  (TF400813, "not authorized"), the error now explains why and what to do:
+  check your access to the organization, sign in to the tenant it is
+  connected to, enroll in multi-factor authentication if that tenant asks for
+  it, or use a personal access token instead.
+
 ## [0.1.112] - 2026-10-20
 
 ### Fixed
