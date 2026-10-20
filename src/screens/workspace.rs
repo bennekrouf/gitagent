@@ -2748,6 +2748,18 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let mut w = states.write();
                         if let Some(state) = w.get_mut(&approval.run) {
                             if state.status(&approval.node) == NodeStatus::AwaitingApproval {
+                                // As the pane's own button does: a panel left
+                                // open on the step just approved closes with it.
+                                let shown: Key = (
+                                    selected_repo.peek().clone().unwrap_or_default(),
+                                    selected_flow.peek().clone(),
+                                    selected_pr.peek().clone(),
+                                );
+                                if shown == approval.run
+                                    && drawer.peek().as_deref() == Some(approval.node.as_str())
+                                {
+                                    drawer.set(None);
+                                }
                                 state.decisions.insert(approval.node, true);
                                 approvals().notify_waiters();
                             }

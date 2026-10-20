@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Approving a step from the repository list now closes that step's panel over
+  the run map, as the Approve button in the panel itself does. Before, the
+  panel stayed open on a step that had already moved on.
+- When a run stops because the GitHub CLI is not signed in, the error now walks
+  you through `gh auth login` step by step, offers the token alternative, and
+  shows what `gh auth status` reported. It also tells you when one account is
+  signed in but another has a stale sign-in, which fails the check too.
+
 ## [0.1.111] - 2026-10-19
 
 ### Fixed
