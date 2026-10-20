@@ -27,6 +27,22 @@ were never released.
   forever on Windows. Now the welcome screen names each repository it could not
   reach and shows git's reason. You can fix access and try again, or open the
   folder anyway.
+## [0.1.113] - 2026-10-20
+
+### Changed
+
+- Approving a step from its panel over the run map, such as a release, now
+  keeps the panel open on the step's log while it runs. The panel closes once
+  the step succeeds. If the step fails, the panel stays open on the error.
+  Closing the panel yourself or moving to another step still works as before.
+
+### Fixed
+
+- When a run stops because Azure DevOps does not accept your Azure sign-in
+  (TF400813, "not authorized"), the error now explains why and what to do:
+  check your access to the organization, sign in to the tenant it is
+  connected to, enroll in multi-factor authentication if that tenant asks for
+  it, or use a personal access token instead.
 
 ## [0.1.112] - 2026-10-20
 

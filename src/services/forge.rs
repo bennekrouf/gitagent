@@ -225,6 +225,63 @@ fn gh_login_steps(said: &str) -> String {
     steps
 }
 
+/// The organization's address, `https://dev.azure.com/{org}`, from any of
+/// the three remote shapes. Empty for a remote that is none of them.
+fn azure_org_url(remote: &str) -> String {
+    let remote = remote.trim();
+    if let Some(rest) = remote.split("ssh.dev.azure.com:v3/").nth(1) {
+        return format!("https://dev.azure.com/{}", rest.split('/').next().unwrap_or_default());
+    }
+    if let Some(rest) = remote.split("dev.azure.com/").nth(1) {
+        return format!("https://dev.azure.com/{}", rest.split('/').next().unwrap_or_default());
+    }
+    if let Some(host) = remote
+        .split("://")
+        .nth(1)
+        .and_then(|r| r.split('/').next())
+        .filter(|h| h.ends_with(".visualstudio.com"))
+    {
+        let org = host.trim_end_matches(".visualstudio.com");
+        let org = org.rsplit('@').next().unwrap_or(org);
+        return format!("https://dev.azure.com/{org}");
+    }
+    String::new()
+}
+
+/// What to do when `az login` is fine but Azure DevOps turns it away. The
+/// usual reason is the tenant: an account in several directories signs in
+/// to whichever `az` picked as default, often a customer's, and the
+/// organization does not know you there. The tenant that is right may
+/// demand multi-factor authentication first, which `az login` reports
+/// only as AADSTS50079.
+fn azure_access_steps(org: &str) -> String {
+    let org = if org.is_empty() { "https://dev.azure.com/<organization>" } else { org };
+    format!(
+        "You are signed in to Azure, but Azure DevOps does not accept that sign-in\n\
+         for this organization. Usually az signed in to another tenant (directory)\n\
+         than the one the organization is connected to.\n\
+         \n\
+         1. Open {org} in your browser with the same account. If you cannot\n\
+         \x20  see the project, ask an Azure DevOps admin to add you; nothing\n\
+         \x20  else will help until they do.\n\
+         2. Find the organization's tenant: Organization settings, then\n\
+         \x20  Microsoft Entra.\n\
+         3. In a terminal, run:\n\
+         \x20  az login --tenant <that tenant ID> --allow-no-subscriptions\n\
+         \x20  If it says AADSTS50079, that tenant wants multi-factor\n\
+         \x20  authentication: enroll at https://aka.ms/mfasetup, or ask your\n\
+         \x20  IT if it will not let you, then run az login again.\n\
+         4. Check it from the repository folder with:  az repos list -o table\n\
+         \x20  When it lists the repositories, run the flow again.\n\
+         \n\
+         Or, instead: create a personal access token with the Code (Read &\n\
+         Write) scope under User settings, Personal access tokens, in\n\
+         {org}. Export AZURE_DEVOPS_EXT_PAT=<token> in your shell profile\n\
+         (~/.zshrc) and restart GitAgent so it reads it. A token does not\n\
+         depend on the tenant az signed in to."
+    )
+}
+
 /// Everything that must be true before a run can reach `open_pr`.
 pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
     match forge {
@@ -301,13 +358,26 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
                         az_login_remedy(),
                     ))
                 }
-                Err(e) => checks.push(Check::fail(
-                    "azure devops auth",
-                    e.lines()
-                        .next()
-                        .unwrap_or("could not reach the project")
-                        .to_string(),
-                )),
+                Err(e) => {
+                    let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
+                        .await
+                        .unwrap_or_default();
+                    let check = Check::fail(
+                        "azure devops auth",
+                        e.lines()
+                            .next()
+                            .unwrap_or("could not reach the project")
+                            .to_string(),
+                    );
+                    // Not authorized, with `az login` passing just above: the
+                    // sign-in is real, but for a tenant this organization is
+                    // not connected to, or one it does not know you in.
+                    if e.contains("TF400813") || e.contains("not authorized") {
+                        checks.push(check.with_help(azure_access_steps(&azure_org_url(&remote))))
+                    } else {
+                        checks.push(check)
+                    }
+                }
             }
             checks
         }
@@ -551,6 +621,32 @@ mod tests {
             "github.com\n  ✓ Logged in to github.com account a\n  X Failed to log in to github.com account b",
         );
         assert!(help.contains("stale one"));
+    }
+
+    #[test]
+    fn the_azure_organization_is_read_from_every_remote_shape() {
+        assert_eq!(
+            azure_org_url("git@ssh.dev.azure.com:v3/CGI-Switzerland-SA/CGI%20Augmented%20Support/kit\n"),
+            "https://dev.azure.com/CGI-Switzerland-SA"
+        );
+        assert_eq!(
+            azure_org_url("https://org@dev.azure.com/org/project/_git/repo"),
+            "https://dev.azure.com/org"
+        );
+        assert_eq!(
+            azure_org_url("https://org.visualstudio.com/project/_git/repo"),
+            "https://dev.azure.com/org"
+        );
+        assert_eq!(azure_org_url("git@github.com:a/b.git"), "");
+    }
+
+    #[test]
+    fn not_authorized_on_azure_explains_the_tenant_and_the_token() {
+        let help = azure_access_steps("https://dev.azure.com/oryx");
+        assert!(help.contains("https://dev.azure.com/oryx"));
+        assert!(help.contains("az login --tenant"));
+        assert!(help.contains("AADSTS50079"));
+        assert!(help.contains("AZURE_DEVOPS_EXT_PAT"));
     }
 
     #[test]
