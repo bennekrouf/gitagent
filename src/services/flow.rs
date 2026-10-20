@@ -948,7 +948,8 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
                     ),
                     "git",
                     &finish,
-                ),
+                )
+                .once_resolved(),
                 // Terminal on purpose: aborting throws the work away, so the
                 // run should not quietly carry on as if nothing happened.
                 Remedy::terminal(

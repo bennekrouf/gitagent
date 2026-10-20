@@ -9,10 +9,15 @@ use dioxus::prelude::*;
 
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
+use crate::services::git;
 use crate::services::licence;
 use crate::services::llm::LlmConfig;
 use crate::services::probe::{self, Wants};
 use crate::services::store::{self, Registry};
+
+/// A folder that was not opened, and the repositories in it that could not be
+/// reached: each by name, with what git said.
+type Denied = (String, Vec<(String, String)>);
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WelcomeProps {
@@ -27,6 +32,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // The folder whose repositories are being checked before it opens, and
+    // the ones that failed.
+    let opening = use_signal(|| Option::<String>::None);
+    let mut denied = use_signal(|| Option::<Denied>::None);
 
     let mut is_light = props.is_light;
     let mut theme_overridden = props.theme_overridden;
@@ -111,7 +120,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
             else {
                 return;
             };
-            open_folder(handle.path().to_string_lossy().to_string(), registry, error);
+            let path = handle.path().to_string_lossy().to_string();
+            open_folder(path, registry, error, opening, denied).await;
         });
     };
 
@@ -134,7 +144,12 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 div { class: "welcome-box",
                     div { class: "welcome-pick",
                         div { class: "field-row",
-                            button { class: "btn btn-primary", onclick: pick, "Open folder…" }
+                            button {
+                                class: "btn btn-primary",
+                                disabled: opening.read().is_some(),
+                                onclick: pick,
+                                "Open folder…"
+                            }
                         }
                         div { class: "welcome-pick-note",
                             "Every git repository directly inside it becomes available."
@@ -159,7 +174,15 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     class: "repo-row",
                                     onclick: {
                                         let path = path.clone();
-                                        move |_| open_folder(path.clone(), registry, error)
+                                        move |_| {
+                                            if opening.peek().is_some() {
+                                                return;
+                                            }
+                                            let path = path.clone();
+                                            spawn(async move {
+                                                open_folder(path, registry, error, opening, denied).await;
+                                            });
+                                        }
                                     },
                                     div { class: "repo-main",
                                         div { class: "repo-label", "{folder_name(&path)}" }
@@ -231,6 +254,46 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                     }
                 }
 
+                if let Some(path) = opening.read().clone() {
+                    div { class: "welcome-checking",
+                        "Checking access to the repositories in {folder_name(&path)}\u{2026}"
+                    }
+                }
+                if let Some((path, failed)) = denied.read().clone() {
+                    div { class: "welcome-error welcome-denied",
+                        div {
+                            "GitAgent cannot reach "
+                            if failed.len() == 1 { "this repository" } else { "these repositories" }
+                            " in {folder_name(&path)}:"
+                        }
+                        for (name , why) in failed.iter() {
+                            div { key: "{name}", class: "welcome-denied-repo",
+                                strong { "{name}" }
+                                pre { "{why}" }
+                            }
+                        }
+                        div { class: "welcome-denied-hint",
+                            "Check that you are signed in and have been given access, \
+                             then open the folder again."
+                        }
+                        div { class: "field-row",
+                            button {
+                                class: "btn",
+                                onclick: move |_| {
+                                    if let Some((path, _)) = denied.take() {
+                                        launch(path, registry);
+                                    }
+                                },
+                                "Open anyway"
+                            }
+                            button {
+                                class: "btn btn-ghost",
+                                onclick: move |_| denied.set(None),
+                                "Dismiss"
+                            }
+                        }
+                    }
+                }
                 if !error.read().is_empty() {
                     div { class: "welcome-error", "{error}" }
                 }
@@ -246,14 +309,57 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     }
 }
 
-/// Opens a folder in a new window if it holds at least one repository, and
-/// remembers it. This window stays on the welcome list. A free function
-/// rather than a closure: two different handlers need it.
-fn open_folder(path: String, mut registry: Signal<Registry>, mut error: Signal<String>) {
-    if store::discover_repos(&path).is_empty() {
+/// Opens a folder in a new window if it holds at least one repository and
+/// every one of them can be reached, and remembers it. This window stays on
+/// the welcome list. A free function rather than a closure: two different
+/// handlers need it.
+///
+/// The check comes first because a window opened on a repository we have no
+/// rights to — an Azure DevOps project you were never added to, a folder owned
+/// by another account — could sit blank waiting on it. Here, the ones that
+/// fail are listed with git's reason, and opening anyway stays your call.
+async fn open_folder(
+    path: String,
+    registry: Signal<Registry>,
+    mut error: Signal<String>,
+    mut opening: Signal<Option<String>>,
+    mut denied: Signal<Option<Denied>>,
+) {
+    use futures_util::stream::StreamExt;
+
+    error.set(String::new());
+    denied.set(None);
+    if let Err(e) = std::fs::read_dir(&path) {
+        error.set(format!("GitAgent cannot read {path}: {e}"));
+        return;
+    }
+    let repos = store::discover_repos(&path);
+    if repos.is_empty() {
         error.set(format!("No git repositories found in {path}"));
         return;
     }
+
+    opening.set(Some(path.clone()));
+    let failed: Vec<(String, String)> = futures_util::stream::iter(repos)
+        .map(|repo| async move {
+            let result = git::check_access(&repo.path).await;
+            (repo.label, result)
+        })
+        .buffered(6)
+        .filter_map(|(label, result)| async move { result.err().map(|why| (label, why)) })
+        .collect()
+        .await;
+    opening.set(None);
+
+    if failed.is_empty() {
+        launch(path, registry);
+    } else {
+        denied.set(Some((path, failed)));
+    }
+}
+
+/// Remembers the folder and opens it in a new window.
+fn launch(path: String, mut registry: Signal<Registry>) {
     registry.write().remember(&path);
     store::save_registry(&registry.read());
     crate::open_in_new_window(path);

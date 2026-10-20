@@ -18,6 +18,8 @@ pub struct ConflictViewProps {
     /// Changes whenever the step does — a fix run, a retry — so the list is
     /// read again after anything that may have settled or abandoned it.
     pub stamp: String,
+    /// The files git is still waiting on, each time the list is read.
+    pub on_left: EventHandler<Vec<String>>,
 }
 
 #[component]
@@ -38,6 +40,7 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
 
     let repo = props.repo.clone();
     let stamp = props.stamp.clone();
+    let on_left = props.on_left;
     use_effect(use_reactive!(|repo, stamp| {
         let _ = (stamp, reload());
         let repo = repo.clone();
@@ -53,6 +56,7 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
             if !found.is_empty() || !done.is_empty() {
                 seen.set(true);
             }
+            on_left.call(found.iter().map(|f| f.path.clone()).collect());
             files.set(found);
             resolved.set(done);
             if let Some(path) = &next {

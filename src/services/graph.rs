@@ -229,6 +229,9 @@ pub struct Remedy {
     /// The last run of it did not finish. Its output says why; the button
     /// says so too, rather than going back to looking untouched.
     pub failed: bool,
+    /// Only runnable once git is waiting on no file: finishing a merge while
+    /// one is still conflicted just fails, with git's words for why.
+    pub once_resolved: bool,
 }
 
 impl Remedy {
@@ -245,7 +248,14 @@ impl Remedy {
             abandons: false,
             sets: vec![],
             failed: false,
+            once_resolved: false,
         }
+    }
+
+    /// Held back while the step's panel still lists conflicted files.
+    pub fn once_resolved(mut self) -> Self {
+        self.once_resolved = true;
+        self
     }
 
     pub fn setting(mut self, key: &str, value: &str) -> Self {

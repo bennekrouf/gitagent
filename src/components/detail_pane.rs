@@ -85,10 +85,16 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     // question is about — behind an unlabelled "…" — meant the answer to "how
     // do I choose the files" was a control nobody could find.
     let mut show_files = use_signal(|| true);
+    // The files git is still waiting on, as the resolver last read them —
+    // what holds back a fix that finishes the merge.
+    let mut unresolved = use_signal(Vec::<String>::new);
+    // Bumped by "Check again", for a file settled outside the app.
+    let mut rechecks = use_signal(|| 0u32);
     // Anything a fix or a retry changes, so the conflict list is read again.
     let stamp = format!(
-        "{:?}{}",
+        "{:?}{}{}",
         run.status,
+        rechecks(),
         run.remedies
             .iter()
             .map(|r| format!("{}{}{}", r.running, r.done, r.failed))
@@ -131,7 +137,11 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
             // A failure over files git is still waiting on is settled here,
             // above the message about it. Shows nothing while nothing is stuck.
             if failed {
-                ConflictView { repo: props.repo.clone(), stamp }
+                ConflictView {
+                    repo: props.repo.clone(),
+                    stamp,
+                    on_left: move |left: Vec<String>| unresolved.set(left),
+                }
             }
 
             if awaiting {
@@ -277,6 +287,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                         code { class: "remedy-cmd", "{remedy.display}" }
                                     }
                                     {
+                                        let held = remedy.once_resolved && !unresolved.read().is_empty();
                                         let btn_class = if remedy.done {
                                             "btn"
                                         } else if remedy.abandons {
@@ -287,7 +298,8 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                         rsx! {
                                     button {
                                         class: btn_class,
-                                        disabled: remedy.running || remedy.done,
+                                        disabled: remedy.running || remedy.done || held,
+                                        title: if held { "Resolve every file in Resolve conflicts above first" } else { "" },
                                         onclick: {
                                             let node = remedy_id.clone();
                                             move |_| props.on_remedy.call((node.clone(), index))
@@ -301,9 +313,33 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                         }
                                     }
                                 }
+                                if remedy.once_resolved && !remedy.done && !unresolved.read().is_empty() {
+                                    {
+                                        let left = unresolved.read().clone();
+                                        rsx! {
+                                            div { class: "remedy-waiting",
+                                                "Git is still waiting on {left.join(\", \")}. Pick a side for each \
+                                                 conflict in Resolve conflicts above and save. If you already \
+                                                 fixed it in your editor, pick it in that list and click Mark \
+                                                 resolved. This unlocks once nothing is left. "
+                                                button {
+                                                    class: "clash-btn",
+                                                    onclick: move |_| *rechecks.write() += 1,
+                                                    "Check again"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 if !remedy.output.is_empty() {
                                     if remedy.failed {
                                         div { class: "remedy-stopped", "That stopped before finishing:" }
+                                    }
+                                    if remedy.failed && remedy.output.contains("unmerged files") {
+                                        div { class: "remedy-waiting",
+                                            "Git refused because a file still has conflicts in it. Resolve it \
+                                             in Resolve conflicts above, then run this again."
+                                        }
                                     }
                                     pre { class: if remedy.failed { "remedy-out remedy-out-failed" } else { "remedy-out" }, "{remedy.output}" }
                                 }

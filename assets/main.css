@@ -136,6 +136,13 @@ body {
 .repo-remove:hover { color: var(--red); }
 .welcome-actions { display: flex; gap: 10px; padding: 16px; justify-content: center; border-top: 1px solid var(--border2); }
 .welcome-error { margin-top: 14px; color: var(--red); font-size: 12px; }
+.welcome-checking { margin-top: 14px; color: var(--text3); font-size: 12px; }
+.welcome-denied { display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.welcome-denied-repo pre {
+    margin: 4px 0 0; white-space: pre-wrap; word-break: break-word;
+    color: var(--text2); font-size: 11px;
+}
+.welcome-denied-hint { color: var(--text3); }
 .welcome-pick {
     padding: 26px 24px;
     display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -1952,6 +1959,10 @@ button.update-banner-link {
 }
 
 /* A fix that ran and stopped: said in words, not left looking untouched. */
+.remedy-waiting {
+    margin-top: 6px; font-size: 11px; color: var(--text2);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+}
 .remedy-stopped { margin: 6px 0 2px; font-size: 11px; font-weight: 700; color: var(--red); }
 .remedy-out-failed { border-left: 2px solid var(--red); }
 

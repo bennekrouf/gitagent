@@ -447,6 +447,55 @@ pub async fn remote_url(repo: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// How long `check_access` waits for the remote before calling it unreachable.
+const ACCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Whether this repository can be worked on from here: git can read it, and
+/// `origin`, if it has one, lets us in. Asked before a folder opens, so a
+/// repository we have no rights to is reported on the welcome screen rather
+/// than leaving a window waiting on it.
+///
+/// Read-only, and never interactive. With a credential prompt allowed, a
+/// remote that wants a sign-in — an Azure DevOps project you were never added
+/// to, typically — waits on a window that may never be shown. Here it fails at
+/// once, and the time limit covers a host that does not answer at all.
+pub async fn check_access(repo: &str) -> Result<(), String> {
+    run(repo, "git", &["rev-parse", "--git-dir"]).await?;
+    if remote_url(repo).await.is_none() {
+        return Ok(());
+    }
+    let child = Command::new(super::env::resolve_program("git"))
+        .args(["ls-remote", "--quiet", "origin", "HEAD"])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+    let output = match tokio::time::timeout(ACCESS_TIMEOUT, child).await {
+        Err(_) => {
+            return Err(format!(
+                "origin did not answer within {} seconds",
+                ACCESS_TIMEOUT.as_secs()
+            ))
+        }
+        Ok(Err(e)) => return Err(spawn_error("git", &e)),
+        Ok(Ok(output)) => output,
+    };
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "origin refused access".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
 /// The branch a pull request should target, and how that was worked out.
 ///
 /// Only **remote-tracking** refs count. A local branch proves nothing about
@@ -1704,5 +1753,30 @@ mod tests {
         // `master` must not match a branch that merely starts with it.
         let list = "worktree /code/a\nHEAD 1\nbranch refs/heads/master-old\n";
         assert_eq!(holder_in(list, "master", "/code/b"), None);
+    }
+
+    #[tokio::test]
+    async fn access_is_checked_against_origin_without_prompting() {
+        let dir = std::env::temp_dir().join(format!("gitagent-access-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+        };
+        git(&["init", "-q"]);
+        // No remote: nothing to be refused by.
+        assert_eq!(check_access(&repo).await, Ok(()));
+
+        // A remote that is not there fails, and says why, rather than waiting.
+        let missing = dir.join("no-such-remote");
+        git(&["remote", "add", "origin", &missing.to_string_lossy()]);
+        let err = check_access(&repo).await.unwrap_err();
+        assert!(!err.trim().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
