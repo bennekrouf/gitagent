@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Opening a folder now checks that you can reach every repository in it before
+  the window opens. Before, a repository you had no access to, such as an Azure
+  DevOps project you were never added to, could leave the new window blank
+  forever on Windows. Now the welcome screen names each repository it could not
+  reach and shows git's reason. You can fix access and try again, or open the
+  folder anyway.
+
 ## [0.1.112] - 2026-10-20
 
 ### Fixed
