@@ -92,6 +92,9 @@ pub struct Check {
     pub detail: String,
     /// Present only when the failure has an exact, non-interactive fix.
     pub fix: Option<Remedy>,
+    /// What to do about a failure the app cannot fix itself, step by step.
+    /// Empty when the detail line already says it all.
+    pub help: String,
 }
 
 impl Check {
@@ -101,6 +104,7 @@ impl Check {
             ok: true,
             detail: detail.into(),
             fix: None,
+            help: String::new(),
         }
     }
     fn fail(name: &str, detail: impl Into<String>) -> Self {
@@ -109,6 +113,7 @@ impl Check {
             ok: false,
             detail: detail.into(),
             fix: None,
+            help: String::new(),
         }
     }
 
@@ -119,7 +124,13 @@ impl Check {
             ok: false,
             detail: detail.into(),
             fix: Some(fix),
+            help: String::new(),
         }
+    }
+
+    fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = help.into();
+        self
     }
 }
 
@@ -176,6 +187,44 @@ pub fn pr_list_remedy(forge: &Forge, err: &str) -> Option<Remedy> {
     None
 }
 
+/// How to sign the GitHub CLI in, for someone who has never done it. `said`
+/// is what `gh auth status` answered: it fails when *any* account it knows
+/// has a stale token, even with another one signed in, and only its own
+/// words tell those two cases apart.
+fn gh_login_steps(said: &str) -> String {
+    let said = said
+        .split("\n\nwhile running:")
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let mut steps = String::from(
+        "To sign the GitHub CLI in:\n\
+         1. Open a terminal and run:  gh auth login\n\
+         2. Answer its questions: GitHub.com; SSH if your remote starts with\n\
+         \x20  git@, HTTPS otherwise; then \"Login with a web browser\".\n\
+         3. Copy the one-time code it shows, press Enter, paste the code in the\n\
+         \x20  browser page that opens and authorize GitHub CLI.\n\
+         4. Check it with:  gh auth status  — it should say \"Logged in to\n\
+         \x20  github.com\" and report no errors.\n\
+         5. Run the flow again. No restart needed.\n\
+         \n\
+         Or, instead: create a personal access token with the repo scope at\n\
+         github.com/settings/tokens, export GH_TOKEN=<token> in your shell\n\
+         profile (~/.zshrc), and restart GitAgent so it reads it.",
+    );
+    if said.contains("Logged in") {
+        steps.push_str(
+            "\n\nOne of your accounts is signed in, but gh reports a problem with\n\
+             another. Run  gh auth logout  for the stale one, or\n\
+             gh auth refresh, until  gh auth status  shows no errors.",
+        );
+    }
+    if !said.is_empty() {
+        steps.push_str(&format!("\n\ngh auth status said:\n{said}"));
+    }
+    steps
+}
+
 /// Everything that must be true before a run can reach `open_pr`.
 pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
     match forge {
@@ -192,11 +241,13 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
                         .trim(),
                 )],
                 // Deliberately not fixable in-app: `gh auth login` needs a
-                // terminal to show the device code and take the answer.
-                Err(_) => vec![Check::fail(
+                // terminal to show the device code and take the answer. So
+                // the steps are spelled out instead.
+                Err(e) => vec![Check::fail(
                     "gh auth",
                     "not authenticated — run `gh auth login`, or set GH_TOKEN",
-                )],
+                )
+                .with_help(gh_login_steps(&e))],
             }
         }
         Forge::AzureDevOps => {
@@ -480,6 +531,26 @@ mod tests {
         for forge in [Forge::GitHub, Forge::AzureDevOps, Forge::None] {
             assert_eq!(Forge::from_key(&forge.as_key()), forge);
         }
+    }
+
+    #[test]
+    fn signing_gh_in_is_spelled_out_with_what_gh_said() {
+        let help = gh_login_steps(
+            "You are not logged into any GitHub hosts.\n\nwhile running: `gh auth status`",
+        );
+        assert!(help.contains("gh auth login"));
+        assert!(help.contains("GH_TOKEN"));
+        assert!(help.contains("You are not logged into any GitHub hosts."));
+        assert!(!help.contains("while running"));
+        assert!(!help.contains("stale one"));
+    }
+
+    #[test]
+    fn a_stale_second_account_is_told_apart_from_never_signing_in() {
+        let help = gh_login_steps(
+            "github.com\n  ✓ Logged in to github.com account a\n  X Failed to log in to github.com account b",
+        );
+        assert!(help.contains("stale one"));
     }
 
     #[test]

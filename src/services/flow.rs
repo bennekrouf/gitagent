@@ -988,6 +988,8 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
     }
 
     let mut remedies: Vec<Remedy> = vec![];
+    // Step-by-step instructions for failures no button can fix.
+    let mut help: Vec<String> = vec![];
 
     // An explicit override is otherwise trusted at face value with no check
     // that the branch actually exists on the remote — confirmed 2026-08-27:
@@ -1023,6 +1025,9 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
             if let Some(fix) = check.fix {
                 remedies.push(fix);
             }
+            if !check.help.is_empty() {
+                help.push(check.help);
+            }
         }
     }
 
@@ -1044,9 +1049,10 @@ async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome, StepFailu
     }
 
     if !failures.is_empty() {
+        let help: String = help.iter().map(|h| format!("{h}\n\n")).collect();
         return Err(StepFailure {
             message: format!(
-                "Preflight failed. Nothing in the repository has been touched.\n\n{}\n\n{log}",
+                "Preflight failed. Nothing in the repository has been touched.\n\n{}\n\n{help}{log}",
                 failures.join("\n")
             ),
             remedies,
