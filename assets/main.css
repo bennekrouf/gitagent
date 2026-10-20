@@ -135,6 +135,10 @@ body {
 }
 .repo-remove:hover { color: var(--red); }
 .welcome-actions { display: flex; gap: 10px; padding: 16px; justify-content: center; border-top: 1px solid var(--border2); }
+.feedback-line { margin-top: 18px; font-size: 12px; color: var(--text3); }
+.feedback-line a { color: var(--text3); text-decoration: none; }
+.feedback-line a:hover { color: var(--text2); text-decoration: underline; }
+a.btn { text-decoration: none; }
 .welcome-error { margin-top: 14px; color: var(--red); font-size: 12px; }
 .welcome-checking { margin-top: 14px; color: var(--text3); font-size: 12px; }
 .welcome-denied { display: flex; flex-direction: column; gap: 8px; text-align: left; }

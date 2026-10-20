@@ -5,6 +5,7 @@
 //! engine underneath it is not.
 
 mod components;
+mod feedback;
 mod mcp;
 mod notice;
 mod screens;

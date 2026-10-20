@@ -2681,6 +2681,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         onclick: move |_| mcp_open.set(true),
                         "MCP"
                     }
+                    a {
+                        class: "btn btn-ghost",
+                        href: "{crate::feedback::contact_url()}",
+                        target: "_blank",
+                        title: "Ideas, bugs, questions: send them to the person who makes GitAgent",
+                        "Feedback"
+                    }
                     button {
                         class: "btn btn-ghost",
                         onclick: move |_| settings_open.set(true),
