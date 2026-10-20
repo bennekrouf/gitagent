@@ -934,9 +934,21 @@ struct Wiring {
 /// right-hand column and the run view in a panel over the map — the same
 /// panel, built here once, so the two can never drift apart.
 ///
-/// `drawer` is the run view's open panel, closed once the step is approved or
-/// skipped: the run moves on, and so does your attention. Reject leaves it
-/// open, since that is where you would retry. The list view passes `None`.
+/// `panel` is the run view's open panel. Skipping closes it: the run moves on,
+/// and so does your attention. Approving keeps it open on the step's log while
+/// the step runs, and it closes once the step succeeds — a failure stays in
+/// front of you. Reject leaves it open, since that is where you would retry.
+/// The list view passes `None`.
+/// The run view's panel over the map, as `step_detail` needs it.
+#[derive(Clone, Copy)]
+struct Panel {
+    /// The step the panel shows, if it is open.
+    drawer: Signal<Option<String>>,
+    /// A step approved from the panel, by run, whose panel closes when it
+    /// succeeds.
+    close_when_done: Signal<Option<(Key, String)>>,
+}
+
 fn step_detail(
     wiring: Wiring,
     key: Key,
@@ -944,7 +956,7 @@ fn step_detail(
     state: RunState,
     node_id: String,
     is_light: bool,
-    drawer: Option<Signal<Option<String>>>,
+    panel: Option<Panel>,
 ) -> Element {
     let Wiring {
         mut states,
@@ -982,12 +994,12 @@ fn step_detail(
             on_approve: {
                 let key = key.clone();
                 move |id: String| {
+                    if let Some(mut panel) = panel {
+                        panel.close_when_done.set(Some((key.clone(), id.clone())));
+                    }
                     states.write().entry(key.clone()).or_default()
                         .decisions.insert(id, true);
                     approvals().notify_waiters();
-                    if let Some(mut drawer) = drawer {
-                        drawer.set(None);
-                    }
                 }
             },
             on_reject: {
@@ -1115,8 +1127,8 @@ fn step_detail(
                         llm_config, statuses, skip_graph.clone(),
                         key.clone(), &node, trusted,
                     );
-                    if let Some(mut drawer) = drawer {
-                        drawer.set(None);
+                    if let Some(mut panel) = panel {
+                        panel.drawer.set(None);
                     }
                 }
             },
@@ -1338,6 +1350,39 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut diff_panel = use_signal(|| Option::<String>::None);
     let mut pr_diffs =
         use_signal(BTreeMap::<(String, String), Option<Result<(String, String), String>>>::new);
+    // A step approved from its panel, kept open on its log while it runs.
+    let mut close_when_done = use_signal(|| Option::<(Key, String)>::None);
+    use_effect(move || {
+        let Some((key, step)) = close_when_done.read().clone() else {
+            return;
+        };
+        // Closed by hand, or moved to another step or repository: the panel
+        // is yours again.
+        let shown: Key = (
+            selected_repo.read().clone().unwrap_or_default(),
+            selected_flow.read().clone(),
+            selected_pr.read().clone(),
+        );
+        if shown != key || drawer.read().as_deref() != Some(step.as_str()) {
+            close_when_done.set(None);
+            return;
+        }
+        let status = states
+            .read()
+            .get(&key)
+            .map(|state| state.status(&step))
+            .unwrap_or_default();
+        match status {
+            NodeStatus::Done | NodeStatus::Skipped | NodeStatus::Bypassed => {
+                close_when_done.set(None);
+                drawer.set(None);
+            }
+            NodeStatus::Failed | NodeStatus::Rejected | NodeStatus::Blocked => {
+                close_when_done.set(None);
+            }
+            NodeStatus::Pending | NodeStatus::Running | NodeStatus::AwaitingApproval => {}
+        }
+    });
     use_effect(move || {
         if let Some(step) = drawer.read().clone() {
             panel_step.set(Some(step));
@@ -3009,7 +3054,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                             }
                                             }
                                         } else if let Some(node_id) = shown_step {
-                                            {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(drawer))}
+                                            {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(Panel { drawer, close_when_done }))}
                                         }
                                     }
                                 }

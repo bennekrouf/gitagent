@@ -19,6 +19,13 @@ were never released.
 
 ## [Unreleased]
 
+### Changed
+
+- Approving a step from its panel over the run map, such as a release, now
+  keeps the panel open on the step's log while it runs. The panel closes once
+  the step succeeds. If the step fails, the panel stays open on the error.
+  Closing the panel yourself or moving to another step still works as before.
+
 ### Fixed
 
 - When a run stops because Azure DevOps does not accept your Azure sign-in
