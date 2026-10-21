@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 
-use crate::services::licence::{self, Slots, Status, BUY_URL, FREE_REPOS};
+use crate::services::licence::{self, Account, Slots, Status, BUY_URL, FREE_REPOS};
 use crate::services::store::Repo;
 use crate::telemetry;
 
@@ -27,21 +27,52 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
     let mut problem = use_signal(|| Option::<String>::None);
     let close = move |_| props.on_close.call(());
 
+    let mut busy = use_signal(|| false);
+
     let activate = move |_| {
         let pasted = key.peek().clone();
-        match licence::activate(&pasted) {
-            Ok(s) => {
-                telemetry::record(telemetry::Event::LicenceActivated);
-                status.set(s);
-                key.set(String::new());
-                problem.set(None);
+        busy.set(true);
+        spawn(async move {
+            match licence::activate(&pasted).await {
+                Ok(s) => {
+                    telemetry::record(telemetry::Event::LicenceActivated);
+                    status.set(s);
+                    key.set(String::new());
+                    problem.set(None);
+                }
+                Err(e) => problem.set(Some(e)),
             }
-            Err(e) => problem.set(Some(e)),
-        }
+            busy.set(false);
+        });
+    };
+    let check_again = move |_| {
+        busy.set(true);
+        spawn(async move {
+            match licence::check().await {
+                Ok(s) => {
+                    status.set(s);
+                    problem.set(None);
+                }
+                Err(e) => problem.set(Some(e)),
+            }
+            busy.set(false);
+        });
+    };
+    let manage = move |_| {
+        busy.set(true);
+        spawn(async move {
+            let opened = match licence::portal_url().await {
+                Ok(url) => licence::open_in_browser(&url),
+                Err(e) => Err(e),
+            };
+            problem.set(opened.err());
+            busy.set(false);
+        });
     };
     let remove = move |_| {
         licence::deactivate();
         status.set(Status::Free);
+        problem.set(None);
     };
 
     let label_of = |path: &str| {
@@ -79,22 +110,14 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
 
                 div { class: "modal-body",
                     match &current {
-                        Status::Pro(l) => rsx! {
-                            p { "Licensed to " strong { "{l.email}" } ". Every repository is unlocked." }
-                            p { class: "field-note", "Includes every update released until {l.updates_until}." }
+                        Status::Pro(a) => rsx! {
+                            p { "Licensed to " strong { "{a.email}" } ". Every repository is unlocked." }
+                            PlanDetails { account: a.clone() }
                         },
-                        Status::Renew(l) => rsx! {
-                            p { "Licensed to " strong { "{l.email}" } "." }
-                            p { class: "field-note",
-                                "This version was released on {licence::release_date()}, after your updates ended on \
-                                 {l.updates_until}. Renew to unlock every repository in it, or keep using a version \
-                                 released before that day."
-                            }
-                        },
-                        Status::Unavailable => rsx! {
-                            p { class: "field-note",
-                                "This build of GitAgent can't check licences, and works with every repository. \
-                                 Download GitAgent from mayorana.ch to use a licence."
+                        Status::Lapsed(lapse) => rsx! {
+                            p { class: "probe probe-bad", "{lapse.explain()}" }
+                            if let Some(a) = lapse.account() {
+                                PlanDetails { account: a.clone() }
                             }
                         },
                         Status::Free => rsx! {
@@ -107,7 +130,8 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                             p {
                                 "The free version works with {FREE_REPOS} repositories in all, across every folder \
                                  and window. The others are listed but locked: click one to use it instead of one \
-                                 of these. GitAgent Pro works with all of them."
+                                 of these. GitAgent Pro works with all of them, and comes with AI credits for the \
+                                 api0 model each month."
                             }
                         },
                     }
@@ -141,13 +165,12 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                         }
                     }
 
-                    if matches!(current, Status::Free | Status::Renew(_)) {
+                    if !current.unlimited() {
                         label { class: "field",
-                            span { "Licence key" }
-                            textarea {
-                                rows: "4",
+                            span { "Licence number" }
+                            input {
                                 spellcheck: "false",
-                                placeholder: "Paste the key from your purchase email",
+                                placeholder: "ABCDE-FGHJK-LMNPQ-RSTUV, from your subscription email",
                                 value: "{key}",
                                 oninput: move |e| {
                                     problem.set(None);
@@ -155,38 +178,72 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                                 },
                             }
                         }
-                        if let Some(p) = problem.read().clone() {
-                            div { class: "probe probe-bad", "{p}" }
-                        }
+                    }
+                    if let Some(p) = problem.read().clone() {
+                        div { class: "probe probe-bad", "{p}" }
                     }
 
                     div { class: "field-row",
-                        match &current {
-                            Status::Pro(_) | Status::Renew(_) => rsx! {
-                                button {
-                                    class: "btn btn-ghost",
-                                    title: "Remove the licence from this computer, e.g. to use it on another one",
-                                    onclick: remove,
-                                    "Remove from this computer"
-                                }
-                            },
-                            _ => rsx! {},
-                        }
-                        if !matches!(current, Status::Pro(_)) {
-                            a { class: "btn", href: "{BUY_URL}", target: "_blank",
-                                if matches!(current, Status::Renew(_)) { "Renew…" } else { "Buy GitAgent Pro…" }
+                        if !matches!(current, Status::Free) {
+                            button {
+                                class: "btn btn-ghost",
+                                title: "Remove the licence from this computer, e.g. to use it on another one",
+                                onclick: remove,
+                                "Remove from this computer"
                             }
                         }
-                        if matches!(current, Status::Free | Status::Renew(_)) {
+                        if matches!(current, Status::Lapsed(_)) {
+                            button {
+                                class: "btn btn-ghost",
+                                disabled: *busy.read(),
+                                onclick: check_again,
+                                "Check again"
+                            }
+                        }
+                        if matches!(&current, Status::Pro(_)) || matches!(&current, Status::Lapsed(l) if l.account().is_some()) {
+                            button {
+                                class: "btn",
+                                title: "Change or cancel your plan on Stripe's page, in your browser",
+                                disabled: *busy.read(),
+                                onclick: manage,
+                                "Manage subscription\u{2026}"
+                            }
+                        }
+                        if !current.unlimited() {
+                            a { class: "btn", href: "{BUY_URL}", target: "_blank", "Buy GitAgent Pro\u{2026}" }
                             button {
                                 class: "btn btn-primary",
-                                disabled: key.read().trim().is_empty(),
+                                disabled: key.read().trim().is_empty() || *busy.read(),
                                 onclick: activate,
-                                "Activate"
+                                if *busy.read() { "Checking\u{2026}" } else { "Activate" }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The plan behind a licence: what it includes, the AI credits left, and when
+/// it renews.
+#[component]
+fn PlanDetails(account: Account) -> Element {
+    let renewal = account.period_end_day().map(|day| {
+        if account.cancel_at_period_end {
+            format!("Ends on {day}; it won't renew.")
+        } else {
+            format!("Renews on {day}.")
+        }
+    });
+    let credits = &account.credits;
+    rsx! {
+        div { class: "field-note",
+            p { "Plan: " strong { "{account.plan.name}" } }
+            p { "Apps included: {account.apps()}" }
+            p { "AI credits left this month: {credits.left} of {credits.granted}" }
+            if let Some(r) = renewal {
+                p { "{r}" }
             }
         }
     }

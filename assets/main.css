@@ -141,6 +141,14 @@ body {
 a.btn { text-decoration: none; }
 .welcome-error { margin-top: 14px; color: var(--red); font-size: 12px; }
 .welcome-checking { margin-top: 14px; color: var(--text3); font-size: 12px; }
+.welcome-checking-count { font-variant-numeric: tabular-nums; }
+/* A folder being checked before it opens: its row says so where "Open ›"
+   was, and the others step back until it is done. */
+.repo-open-checking { color: var(--green); font-variant-numeric: tabular-nums; }
+.repo-row-checking { background: var(--bg2); cursor: progress; }
+.repo-row-waiting { opacity: 0.5; cursor: default; }
+.repo-row-waiting:hover { background: none; }
+.repo-row-waiting:hover .repo-open { color: var(--text3); }
 .welcome-denied { display: flex; flex-direction: column; gap: 8px; text-align: left; }
 .welcome-denied-repo pre {
     margin: 4px 0 0; white-space: pre-wrap; word-break: break-word;

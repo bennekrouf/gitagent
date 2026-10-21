@@ -15,7 +15,9 @@
 //!     OpenAI, vLLM, LM Studio and OpenRouter later — only the base URL and
 //!     model name change.
 //!
-//! The API key is read from `DEEPSEEK_API_KEY` and is never written to disk.
+//! Each provider's API key is read from its environment variable and is never
+//! written to disk. api0 also takes the GitAgent Pro licence number already
+//! saved on this computer, so a subscriber needs no key of their own.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -235,6 +237,15 @@ pub struct Remote {
 }
 
 pub const REMOTES: &[Remote] = &[
+    // api0 serves the model the licence's plan pays for; "default" lets it
+    // pick. The key is the saved licence, or a licence number in API0_API_KEY.
+    Remote {
+        key: "api0",
+        label: "api0",
+        base_url: "https://gateway.api0.ai/v1",
+        model: "default",
+        env: "API0_API_KEY",
+    },
     Remote {
         key: "deepseek",
         label: "DeepSeek",
@@ -280,8 +291,44 @@ pub const REMOTES: &[Remote] = &[
     },
 ];
 
+/// The provider a settings file without one gets, and the one an unknown
+/// key falls back to.
+const DEFAULT_REMOTE: &str = "deepseek";
+
 pub fn remote(key: &str) -> &'static Remote {
-    REMOTES.iter().find(|r| r.key == key).unwrap_or(&REMOTES[0])
+    REMOTES
+        .iter()
+        .find(|r| r.key == key)
+        .or_else(|| REMOTES.iter().find(|r| r.key == DEFAULT_REMOTE))
+        .unwrap_or(&REMOTES[0])
+}
+
+/// Whether this provider is api0, which also accepts the saved licence.
+pub fn is_api0(remote: &Remote) -> bool {
+    remote.key == "api0"
+}
+
+/// The key to send to `remote`: its environment variable, or for api0 the
+/// GitAgent Pro licence number saved on this computer.
+pub fn key_for(remote: &Remote) -> Option<String> {
+    api_key(remote.env).or_else(|| {
+        if is_api0(remote) {
+            super::licence::saved_key()
+        } else {
+            None
+        }
+    })
+}
+
+/// Where `remote`'s key comes from, for Settings.
+pub fn key_source(remote: &Remote) -> Option<String> {
+    if api_key(remote.env).is_some() {
+        Some(format!("{} found in the environment", remote.env))
+    } else if is_api0(remote) && super::licence::saved_key().is_some() {
+        Some("Uses your GitAgent Pro licence".into())
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -398,7 +445,7 @@ impl Default for SecondModel {
 }
 
 fn default_remote() -> String {
-    REMOTES[0].key.to_string()
+    DEFAULT_REMOTE.to_string()
 }
 
 impl Default for LlmConfig {
@@ -512,7 +559,7 @@ impl LlmConfig {
     }
 
     pub fn remote_key(&self) -> Option<String> {
-        api_key(self.preset().env)
+        key_for(self.preset())
     }
 }
 
@@ -745,9 +792,7 @@ async fn call_openai_compatible(
             cfg.remote_base_url()
         ));
     }
-    let key = cfg
-        .remote_key()
-        .ok_or_else(|| format!("{} is not set — export it and restart the app", preset.env))?;
+    let key = cfg.remote_key().ok_or_else(|| missing_key(preset))?;
     let url = format!(
         "{}/chat/completions",
         cfg.remote_base_url().trim_end_matches('/')
@@ -773,6 +818,7 @@ async fn call_openai_compatible(
         let resp = client(REMOTE_TIMEOUT)?
             .post(&url)
             .bearer_auth(key)
+            .headers(client_app(preset))
             .json(&body)
             .send()
             .await
@@ -783,7 +829,7 @@ async fn call_openai_compatible(
     let (status, text) =
         awaiting_answer(request, None, cfg.remote_model_name(), asker.on_line).await?;
     if !status.is_success() {
-        return Err(format!("{} returned {status}: {text}", preset.label));
+        return Err(format!("{} returned {status}: {}", preset.label, error_message(&text)));
     }
 
     let value: Value = serde_json::from_str(&text)
@@ -860,6 +906,73 @@ pub async fn local_models(url: &str) -> Result<Vec<LocalModel>, String> {
     Ok(parse_tags(&value))
 }
 
+/// api0 is told which app is calling, so its use is put down to GitAgent.
+fn client_app(remote: &Remote) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if is_api0(remote) {
+        headers.insert(
+            "X-Client-App",
+            reqwest::header::HeaderValue::from_static(super::licence::PRODUCT),
+        );
+    }
+    headers
+}
+
+/// What to do about a provider with no key.
+fn missing_key(remote: &Remote) -> String {
+    if is_api0(remote) {
+        format!(
+            "api0 needs your GitAgent Pro licence — activate Pro, or export a \
+             licence number as {} and restart the app",
+            remote.env
+        )
+    } else {
+        format!("{} is not set — export it and restart the app", remote.env)
+    }
+}
+
+/// The message out of an OpenAI-style error body, or the body itself. A 402
+/// from api0 says what to do about the credits; the raw JSON around it doesn't.
+fn error_message(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| body.to_string())
+}
+
+/// api0's own check: whether the key is accepted, and the AI credits left on
+/// the account's plan this month.
+async fn probe_api0(cfg: &LlmConfig, key: &str) -> Result<String, String> {
+    let url = format!("{}/balance", cfg.remote_base_url().trim_end_matches('/'));
+    let resp = client(PROBE_TIMEOUT)?
+        .get(&url)
+        .bearer_auth(key)
+        .headers(client_app(cfg.preset()))
+        .send()
+        .await
+        .map_err(|e| format!("unreachable: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("api0 returned {status}: {}", error_message(&text)));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("bad reply: {e}"))?;
+    api0_balance_line(&v)
+}
+
+fn api0_balance_line(v: &Value) -> Result<String, String> {
+    let credits = v["balance"].as_i64().unwrap_or(0);
+    if v["plan"].as_bool() != Some(true) {
+        return Err(
+            "api0 accepted the licence, but it has no plan with AI credits".into(),
+        );
+    }
+    if credits <= 0 {
+        return Err("api0: this month's AI credits are used up".into());
+    }
+    Ok(format!("api0 authenticated — {credits} AI credits left this month"))
+}
+
 /// Cheap reachability check for the settings panel.
 pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
     match cfg.kind {
@@ -900,8 +1013,11 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
                 ));
             }
             let Some(key) = cfg.remote_key() else {
-                return Err(format!("{} is not set", preset.env));
+                return Err(missing_key(preset));
             };
+            if is_api0(preset) {
+                return probe_api0(cfg, &key).await;
+            }
             let url = format!("{}/models", cfg.remote_base_url().trim_end_matches('/'));
             let resp = client(PROBE_TIMEOUT)?
                 .get(&url)
@@ -1101,7 +1217,31 @@ mod tests {
 
     #[test]
     fn an_unknown_provider_falls_back_rather_than_panicking() {
-        assert_eq!(remote("does-not-exist").key, REMOTES[0].key);
+        assert_eq!(remote("does-not-exist").key, DEFAULT_REMOTE);
+    }
+
+    #[test]
+    fn api0_is_offered_under_its_own_name_and_lets_the_server_pick_the_model() {
+        let api0 = remote("api0");
+        assert!(is_api0(api0));
+        assert_eq!(api0.label, "api0");
+        assert_eq!(api0.model, "default");
+        assert!(!is_api0(remote("deepseek")));
+    }
+
+    #[test]
+    fn an_error_body_is_read_for_its_message() {
+        let body = r#"{"error":{"message":"This month's AI credits are used up.","type":"insufficient_quota"}}"#;
+        assert_eq!(error_message(body), "This month's AI credits are used up.");
+        assert_eq!(error_message("plain text"), "plain text");
+    }
+
+    #[test]
+    fn the_api0_check_says_what_the_plan_has_left() {
+        let ok = api0_balance_line(&json!({"plan": true, "balance": 420})).unwrap();
+        assert!(ok.contains("420 AI credits"));
+        assert!(api0_balance_line(&json!({"plan": false, "balance": 0})).unwrap_err().contains("no plan"));
+        assert!(api0_balance_line(&json!({"plan": true, "balance": 0})).unwrap_err().contains("used up"));
     }
 
     #[test]

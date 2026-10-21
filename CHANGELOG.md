@@ -17,6 +17,35 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- api0 is now one of the hosted models under Settings → Model provider and on
+  the first-run screen. It needs no API key of its own: your GitAgent Pro
+  licence is enough, and the model's use comes out of your plan's monthly AI
+  credits. Test connection shows how many credits are left this month.
+- When a hosted model refuses a request, the step's log now shows the
+  provider's own explanation instead of the raw reply around it.
+
+### Changed
+
+- GitAgent Pro now comes with a monthly plan from mayorana.ch. Subscribing
+  emails you a licence number such as `ABCDE-FGHJK-LMNPQ-RSTUV`: paste it in
+  the GitAgent Pro window, in any case, with or without the dashes. The window
+  shows your plan, the apps it includes, the AI credits left this month and
+  when it renews, and Manage subscription opens the page where you change or
+  cancel it.
+- GitAgent checks your licence when it starts and once a day. Without a
+  connection Pro keeps working for seven days after the last check that got
+  through. The free version's five repositories work as before, online or not.
+- Opening a folder from the home screen now shows that it is being checked:
+  the folder's row spins and counts the repositories as each one is reached
+  (**Checking 3/12**), the other folders step back until it is done, and
+  **Open folder…** and **Refresh** spin while they work. Before, the only sign
+  was a line of text under the list, so a slow check looked like nothing was
+  happening.
+
 ## [0.1.115] - 2026-10-20
 
 ### Added

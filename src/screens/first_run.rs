@@ -60,7 +60,11 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
     let ollama_ready = matches!(*detected.read(), Detected::Found(_));
     let can_continue = match picked {
         ProviderKind::Ollama => ollama_ready,
-        ProviderKind::Remote => !key_input.read().trim().is_empty(),
+        // api0 can run on the licence already saved here.
+        ProviderKind::Remote => {
+            !key_input.read().trim().is_empty()
+                || llm::key_for(llm::remote(&remote.read())).is_some()
+        }
         ProviderKind::Off => true,
     };
 
@@ -79,7 +83,10 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
             // put there, and the env var is the one place the rest of the app
             // already looks.
             let preset = llm::remote(&remote.read());
-            std::env::set_var(preset.env, key_input.read().trim());
+            let typed = key_input.read().trim().to_string();
+            if !typed.is_empty() {
+                std::env::set_var(preset.env, typed);
+            }
         }
         store::save_settings(&next);
         cfg.set(next);
@@ -145,7 +152,7 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
                                     input {
                                         class: "input",
                                         r#type: "password",
-                                        placeholder: "{llm::remote(&remote.read()).env}",
+                                        placeholder: "{key_placeholder(llm::remote(&remote.read()))}",
                                         value: "{key_input.read()}",
                                         oninput: move |e| key_input.set(e.value()),
                                     }
@@ -186,5 +193,14 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// What the key field asks for: api0 needs nothing more when a licence is
+/// already saved on this computer.
+fn key_placeholder(remote: &llm::Remote) -> String {
+    match llm::key_source(remote) {
+        Some(source) if llm::is_api0(remote) => format!("{source} — no key needed"),
+        _ => remote.env.to_string(),
     }
 }

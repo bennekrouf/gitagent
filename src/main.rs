@@ -35,7 +35,7 @@ pub fn window_title(name: Option<&str>) -> String {
     let mut title = format!("GitAgent {}", env!("CARGO_PKG_VERSION"));
     title.push_str(match services::licence::current() {
         services::licence::Status::Pro(_) => " \u{b7} \u{2726} Pro",
-        services::licence::Status::Renew(_) => " \u{b7} Pro updates ended",
+        services::licence::Status::Lapsed(_) => " \u{b7} Pro inactive",
         _ => "",
     });
     if let Some(name) = name {
