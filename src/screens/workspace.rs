@@ -807,7 +807,6 @@ fn refresh_all(
     mut selected_repo: Signal<Option<String>>,
     mut selected_flow: Signal<String>,
     book: Signal<FlowBook>,
-    mut free_slots: Signal<licence::Slots>,
     // False when opening the folder: a check from the last two minutes — the
     // home screen's, made a moment ago — is shown rather than asked for
     // again. True for Refresh, which is asking for news.
@@ -833,20 +832,6 @@ fn refresh_all(
         }
         repos.set(list.clone());
     }
-
-    // Without Pro, only the free version's repositories are checked; the rest
-    // are listed locked. The slots are re-read here, not kept per window,
-    // because every window shares them.
-    let licence_now = licence::current();
-    let paths: Vec<String> = list.iter().map(|r| r.path.clone()).collect();
-    let slots = licence::slots_for(&licence_now, &paths);
-    let locked = |path: &str| licence::is_locked(&licence_now, &slots, path);
-    statuses.write().retain(|path, _| !locked(path));
-    if selected_repo.read().as_deref().is_some_and(locked) {
-        selected_repo.set(None);
-    }
-    let list: Vec<store::Repo> = list.into_iter().filter(|r| !locked(&r.path)).collect();
-    free_slots.set(slots.clone());
 
     if list.is_empty() {
         return;
@@ -1421,11 +1406,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut settings_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     let mut mcp_open = use_signal(|| false);
-    // GitAgent Pro. `licence_open` holds the repository a refused run was
-    // for, when that is why the window opened.
+    // GitAgent Pro: the licence, and whether its window is open.
     let mut licence_status = use_signal(licence::current);
-    let mut free_slots = use_signal(licence::load_slots);
-    let mut licence_open = use_signal(|| Option::<Option<String>>::None);
+    let mut licence_open = use_signal(|| false);
     // The licence is asked about at start and then daily; between checks,
     // and offline, the last answer stands (for a week, for Pro).
     use_future(move || async move {
@@ -1434,7 +1417,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 Ok(now) => {
                     if *licence_status.peek() != now {
                         licence_status.set(now);
-                        free_slots.set(licence::load_slots());
                         crate::refresh_window_title();
                     }
                     licence::CHECK_EVERY
@@ -1547,7 +1529,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             // A dialog in front owns the key: closing the panel hidden
             // behind it would be a change nobody could see happen.
             let dialog_open = *settings_open.peek()
-                || licence_open.peek().is_some()
+                || *licence_open.peek()
                 || branches_open.peek().is_some()
                 || base_editor_open.peek().is_some()
                 || confirm_hide.peek().is_some()
@@ -1613,7 +1595,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 selected_repo,
                 selected_flow,
                 book,
-                free_slots,
                 false,
             );
         }
@@ -1670,9 +1651,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let paths: Vec<String> = repos.read().iter().map(|r| r.path.clone()).collect();
             for path in paths {
-                if licence::is_locked(&licence_status.peek(), &free_slots.peek(), &path)
-                    || running.peek().iter().any(|k| k.0 == path)
-                {
+                if running.peek().iter().any(|k| k.0 == path) {
                     continue;
                 }
                 let now = git::change_fingerprint(&path);
@@ -1766,7 +1745,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             behind: status_map.get(&repo.path).map(|s| s.behind).unwrap_or(0),
             open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
             prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
-            locked: licence::is_locked(&licence_status.read(), &free_slots.read(), &repo.path),
             approval: approval_for(&states_snapshot, &flows, &repo.path),
         })
         .collect();
@@ -1791,14 +1769,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         {
             return;
         }
-        // The free version's five repositories: the first run in one takes a
-        // slot; with none left, say so instead of starting.
-        if !licence::may_run(&licence_status.read(), &repo) {
-            telemetry::record(telemetry::Event::LicenceWallHit);
-            licence_open.set(Some(Some(repo)));
-            return;
-        }
-        free_slots.set(licence::load_slots());
         // Two questions, kept apart: which flow to start, and whether its
         // approvals answer themselves. Only the Trusted run button chooses the
         // flow for you. "Trust all" answers the second question for every
@@ -2735,7 +2705,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             button {
                                 class: "pro-badge",
                                 title: "GitAgent Pro \u{b7} {a.plan.name} plan \u{b7} {a.email}",
-                                onclick: move |_| licence_open.set(Some(None)),
+                                onclick: move |_| licence_open.set(true),
                                 span { class: "pro-badge-star", "\u{2726}" }
                                 span { class: "pro-badge-text", "PRO" }
                             }
@@ -2744,16 +2714,24 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             button {
                                 class: "pro-badge pro-badge-renew",
                                 title: "{lapse.explain()}",
-                                onclick: move |_| licence_open.set(Some(None)),
+                                onclick: move |_| licence_open.set(true),
                                 span { class: "pro-badge-star", "\u{2726}" }
                                 span { class: "pro-badge-text", "PRO INACTIVE" }
+                            }
+                        },
+                        licence::Status::Credits(a) => rsx! {
+                            button {
+                                class: "btn btn-ghost btn-pro",
+                                title: "{a.credits_headline()}. Buy GitAgent Pro, or choose the free version's repositories",
+                                onclick: move |_| licence_open.set(true),
+                                "Get Pro\u{2026}"
                             }
                         },
                         licence::Status::Free => rsx! {
                             button {
                                 class: "btn btn-ghost btn-pro",
-                                title: "Buy GitAgent Pro, paste your licence number, or choose the free version's repositories",
-                                onclick: move |_| licence_open.set(Some(None)),
+                                title: "Buy GitAgent Pro, get free AI credits, paste your licence number, or choose the free version's repositories",
+                                onclick: move |_| licence_open.set(true),
                                 "Get Pro\u{2026}"
                             }
                         },
@@ -2808,7 +2786,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let workspace = workspace.clone();
                         move |_| {
                             forget_finished(&mut states.write(), &running.read(), None);
-                            refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots, true);
+                            refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, true);
                         }
                     },
                     on_approve: move |approval: Approval| {
@@ -2836,28 +2814,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         }
                     },
                     on_reprobe: move |path: String| {
-                        if !licence::is_locked(&licence_status.read(), &free_slots.read(), &path) {
-                            forget_finished(&mut states.write(), &running.read(), Some(&path));
-                            reprobe(path, statuses);
-                        }
+                        forget_finished(&mut states.write(), &running.read(), Some(&path));
+                        reprobe(path, statuses);
                     },
                     on_select: move |path: String| {
-                        // A locked repository can't be selected, so nothing —
-                        // no flow, no branch action — can act on it. With a
-                        // slot free, selecting it takes the slot.
-                        if !licence_status.read().unlimited() {
-                            let mut slots = licence::load_slots();
-                            if !slots.has(&path) {
-                                if !slots.claim(&path) {
-                                    free_slots.set(slots);
-                                    licence_open.set(Some(Some(path)));
-                                    return;
-                                }
-                                licence::save_slots(&slots);
-                                free_slots.set(slots);
-                                reprobe(path.clone(), statuses);
-                            }
-                        }
                         let (flow_id, node_id, pr_id) =
                             default_selection(
                                 &book.read(),
@@ -3234,21 +3194,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             }
         }
 
-        if let Some(wanted) = licence_open.read().clone() {
+        if *licence_open.read() {
             LicencePanel {
                 status: licence_status,
-                slots: free_slots,
-                repos: repos.read().clone(),
-                wanted,
-                on_close: {
-                    let workspace = workspace.clone();
-                    move |_| {
-                        licence_open.set(None);
-                        crate::refresh_window_title();
-                        // A licence activated, or a slot given back: re-read
-                        // what is locked, and check what just opened up.
-                        refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, free_slots, true);
-                    }
+                on_close: move |_| {
+                    licence_open.set(false);
+                    crate::refresh_window_title();
                 },
             }
         }

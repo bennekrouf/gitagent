@@ -1,5 +1,4 @@
-//! GitAgent Pro: the licence on this computer, and the free version's five
-//! repositories.
+//! GitAgent Pro: the licence on this computer.
 //!
 //! Pro comes with a monthly plan from mayorana.ch. Subscribing emails a
 //! licence number, `ABCDE-FGHJK-LMNPQ-RSTUV`, which the buyer pastes here. The
@@ -9,15 +8,14 @@
 //! active and lists GitAgent (or every app, `"*"`).
 //!
 //! The same licence is the API key of api0's model provider, whose use comes
-//! out of the plan's monthly AI credits.
+//! out of the plan's monthly AI credits. A licence whose plan doesn't list
+//! GitAgent still gives those credits, but not Pro: the free licence anyone
+//! can ask for by email from the licence window (a few credits a month, no
+//! apps), or one granted by hand. If the free licence's email later buys a
+//! plan, the same number moves to it.
 //!
-//! Without Pro, GitAgent works with [`FREE_REPOS`] repositories in all — across
-//! every folder and every window, since the slots live in one file. Free slots
-//! are taken by the repositories listed, in order, so the first folder opened
-//! gets them. Every other repository is listed but locked: not checked, not
-//! selectable, so no flow or branch action can reach it. Clicking a locked one
-//! opens the licence window, where it can take the place of one of the five.
-//! None of this needs the network: the free version works offline.
+//! Without a licence GitAgent works in every repository, offline included: a
+//! licence never decides which repositories flows can run in.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -32,8 +30,8 @@ pub const PRODUCT: &str = "gitagent";
 /// Where "Buy GitAgent Pro" leads.
 pub const BUY_URL: &str = "https://mayorana.ch/en/apps/gitagent";
 
-/// How many repositories the free version runs flows in.
-pub const FREE_REPOS: usize = 5;
+/// The plans and what each gives, for someone with no licence yet.
+pub const PRICING_URL: &str = "https://mayorana.ch/pricing";
 
 /// How long Pro lasts without reaching the gateway, after the last check that
 /// did.
@@ -46,6 +44,8 @@ pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(24 *
 pub const RETRY_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 const GATEWAY: &str = "https://gateway.api0.ai/v1";
+/// Where the free licence is asked for, passed through by the gateway.
+const FREE_CREDITS: &str = "https://gateway.api0.ai/api/plans/free";
 
 /// The letters a licence number is made of: no 0, 1, I or O, which are easily
 /// misread.
@@ -55,7 +55,6 @@ const GROUP: usize = 5;
 
 const LICENCE_FILE: &str = "licence";
 const CHECK_FILE: &str = "licence_check.json";
-const SLOTS_FILE: &str = "free_repos.json";
 
 /// The licence number in `input`, as `ABCDE-FGHJK-LMNPQ-RSTUV`. Case, spaces
 /// and dashes don't matter: numbers copied from an email come in all shapes.
@@ -152,6 +151,24 @@ impl Account {
     pub fn period_end_day(&self) -> Option<String> {
         self.period_end.map(|d| d.format("%Y-%m-%d").to_string())
     }
+
+    /// The free allowance everyone can have: AI credits, no apps.
+    pub fn is_free(&self) -> bool {
+        self.products.is_empty()
+    }
+
+    /// How a licence that isn't Pro is headed in the licence window.
+    pub fn credits_headline(&self) -> String {
+        let kind = if self.is_free() {
+            "Free"
+        } else {
+            "AI credits only, not Pro"
+        };
+        format!(
+            "{kind} \u{2014} {} AI credits left this month",
+            self.credits.left
+        )
+    }
 }
 
 /// The last answer the gateway gave, kept for when it can't be reached.
@@ -175,8 +192,6 @@ pub enum Lapse {
     Unknown,
     /// The subscription is cancelled, unpaid or over.
     Inactive(Account),
-    /// The plan is for other apps.
-    OtherApps(Account),
     /// The last successful check is older than the grace period.
     Offline(Account),
 }
@@ -184,7 +199,7 @@ pub enum Lapse {
 impl Lapse {
     pub fn account(&self) -> Option<&Account> {
         match self {
-            Lapse::Inactive(a) | Lapse::OtherApps(a) | Lapse::Offline(a) => Some(a),
+            Lapse::Inactive(a) | Lapse::Offline(a) => Some(a),
             Lapse::NotChecked | Lapse::Unknown => None,
         }
     }
@@ -199,18 +214,13 @@ impl Lapse {
                                subscription email."
                 .into(),
             Lapse::Inactive(a) => format!(
-                "Your {} subscription isn't active ({}). Renew it to unlock every repository.",
+                "Your {} subscription isn't active ({}). Renew it to keep its AI credits.",
                 a.plan.name,
                 if a.status.is_empty() {
                     "ended"
                 } else {
                     a.status.as_str()
                 }
-            ),
-            Lapse::OtherApps(a) => format!(
-                "Your {} plan includes {}, not GitAgent.",
-                a.plan.name,
-                a.apps()
             ),
             Lapse::Offline(_) => format!(
                 "GitAgent couldn't check your licence for more than {GRACE_DAYS} days. \
@@ -226,13 +236,16 @@ pub enum Status {
     Free,
     /// A licence whose plan makes GitAgent Pro.
     Pro(Account),
+    /// An active plan that doesn't list GitAgent: AI credits for api0's
+    /// model, but not Pro.
+    Credits(Account),
     /// A licence that doesn't make GitAgent Pro now.
     Lapsed(Lapse),
 }
 
 impl Status {
-    /// Whether flows run in every repository.
-    pub fn unlimited(&self) -> bool {
+    /// Whether this computer has GitAgent Pro.
+    pub fn is_pro(&self) -> bool {
         matches!(self, Status::Pro(_))
     }
 }
@@ -249,12 +262,11 @@ pub fn status_at(licence: Option<&str>, check: Option<&Check>, now: i64) -> Stat
     let Some(account) = check.account.clone() else {
         return Status::Lapsed(Lapse::Unknown);
     };
+    if !account.active {
+        return Status::Lapsed(Lapse::Inactive(account));
+    }
     if !account.unlocks() {
-        return Status::Lapsed(if account.active {
-            Lapse::OtherApps(account)
-        } else {
-            Lapse::Inactive(account)
-        });
+        return Status::Credits(account);
     }
     // A clock set back counts as within the grace: the next check that gets
     // through settles it either way.
@@ -394,6 +406,69 @@ pub async fn portal_url() -> Result<String, String> {
         .ok_or_else(|| "api0 didn't give a page to open".into())
 }
 
+/// What asking for the free licence came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FreeReply {
+    /// The licence number was emailed (or emailed again).
+    Sent(String),
+    /// Not sent, and why.
+    Refused(String),
+    /// There are no free credits right now.
+    Unavailable,
+}
+
+fn free_reply(status: u16, body: &serde_json::Value, email: &str) -> FreeReply {
+    match status {
+        200..=299 => FreeReply::Sent(format!(
+            "Check your email at {email}: paste the licence number it contains here."
+        )),
+        404 => FreeReply::Unavailable,
+        409 => FreeReply::Refused(format!(
+            "{email} already has a paid plan. Paste the licence number from its \
+             subscription email."
+        )),
+        _ => FreeReply::Refused(
+            body["message"]
+                .as_str()
+                .or(body["error"].as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("api0 returned {status}")),
+        ),
+    }
+}
+
+/// Asks for the free licence for `email`. Its number is only ever emailed,
+/// which proves the address is real; asking again re-sends the same one, at
+/// most once an hour.
+pub async fn request_free_credits(email: &str) -> FreeReply {
+    let email = email.trim();
+    let well_formed = email
+        .split_once('@')
+        .is_some_and(|(name, host)| !name.is_empty() && host.contains('.'));
+    if !well_formed {
+        return FreeReply::Refused(
+            "Enter the email address the licence number should go to.".into(),
+        );
+    }
+    let client = match client() {
+        Ok(c) => c,
+        Err(e) => return FreeReply::Refused(e),
+    };
+    let resp = match client
+        .post(FREE_CREDITS)
+        .header("X-Client-App", PRODUCT)
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return FreeReply::Refused(format!("api0 couldn't be reached: {e}")),
+    };
+    let status = resp.status().as_u16();
+    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    free_reply(status, &body, email)
+}
+
 /// Opens `url` in the default browser.
 pub fn open_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -410,107 +485,6 @@ pub fn open_in_browser(url: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("The browser couldn't be opened: {e}"))
-}
-
-// ── The free version's repositories ─────────────────────────────────────────
-
-/// The repositories (by path) the free version runs flows in, in the order
-/// they were first used.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Slots {
-    #[serde(default)]
-    pub repos: Vec<String>,
-}
-
-impl Slots {
-    pub fn has(&self, repo: &str) -> bool {
-        self.repos.iter().any(|r| r == repo)
-    }
-
-    pub fn full(&self) -> bool {
-        self.repos.len() >= FREE_REPOS
-    }
-
-    /// Whether a flow may run in `repo`, taking a free slot for it if one is
-    /// left. Idempotent for a repository that already has one.
-    pub fn claim(&mut self, repo: &str) -> bool {
-        if self.has(repo) {
-            return true;
-        }
-        if self.full() {
-            return false;
-        }
-        self.repos.push(repo.to_string());
-        true
-    }
-
-    /// No slot, and none free to take.
-    pub fn locks(&self, repo: &str) -> bool {
-        !self.has(repo) && self.full()
-    }
-
-    /// Free slots go to `repos`, in order. Returns whether anything changed.
-    pub fn fill(&mut self, repos: &[String]) -> bool {
-        let before = self.repos.len();
-        for repo in repos {
-            if self.full() {
-                break;
-            }
-            self.claim(repo);
-        }
-        self.repos.len() != before
-    }
-
-    /// `wanted` takes `given`'s place.
-    pub fn swap(&mut self, given: &str, wanted: &str) {
-        if let Some(slot) = self.repos.iter_mut().find(|r| *r == given) {
-            *slot = wanted.to_string();
-        }
-    }
-}
-
-/// The slots as they are on disk now — shared by every window — with any
-/// free ones taken by `repos`.
-pub fn slots_for(status: &Status, repos: &[String]) -> Slots {
-    let mut slots = load_slots();
-    if !status.unlimited() && slots.fill(repos) {
-        save_slots(&slots);
-    }
-    slots
-}
-
-/// Whether `repo` is off limits: listed, but not checked or selectable.
-pub fn is_locked(status: &Status, slots: &Slots, repo: &str) -> bool {
-    !status.unlimited() && slots.locks(repo)
-}
-
-pub fn load_slots() -> Slots {
-    std::fs::read_to_string(store::data_dir().join(SLOTS_FILE))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-pub fn save_slots(slots: &Slots) {
-    let _ = std::fs::create_dir_all(store::data_dir());
-    if let Ok(json) = serde_json::to_string_pretty(slots) {
-        let _ = store::write_atomic(&store::data_dir().join(SLOTS_FILE), json.as_bytes());
-    }
-}
-
-/// Whether a flow may start in `repo` now: always with Pro, otherwise when it
-/// has a free slot or one can be taken for it.
-pub fn may_run(status: &Status, repo: &str) -> bool {
-    if status.unlimited() {
-        return true;
-    }
-    let mut slots = load_slots();
-    let before = slots.clone();
-    let ok = slots.claim(repo);
-    if slots != before {
-        save_slots(&slots);
-    }
-    ok
 }
 
 #[cfg(test)]
@@ -581,7 +555,7 @@ mod tests {
         assert!(matches!(at(account(true, &["gitagent"])), Status::Pro(_)));
         assert!(matches!(
             at(account(true, &["splitter"])),
-            Status::Lapsed(Lapse::OtherApps(_))
+            Status::Credits(_)
         ));
         assert!(matches!(
             at(account(false, &["*"])),
@@ -593,14 +567,14 @@ mod tests {
     fn pro_lasts_seven_days_without_a_check_that_gets_through() {
         let check = checked(Some(account(true, &["gitagent"])), 1_000 * DAY);
         let at = |now: i64| status_at(Some(LICENCE), Some(&check), now);
-        assert!(at(1_000 * DAY).unlimited());
-        assert!(at(1_007 * DAY).unlimited());
+        assert!(at(1_000 * DAY).is_pro());
+        assert!(at(1_007 * DAY).is_pro());
         assert!(matches!(
             at(1_007 * DAY + 1),
             Status::Lapsed(Lapse::Offline(_))
         ));
         assert!(
-            at(999 * DAY).unlimited(),
+            at(999 * DAY).is_pro(),
             "a clock set back waits for the next check"
         );
     }
@@ -628,6 +602,59 @@ mod tests {
     }
 
     #[test]
+    fn a_free_licence_shows_its_credits_and_is_not_pro() {
+        let mut free = account(true, &[]);
+        free.credits = Credits {
+            granted: 50,
+            used: 8,
+            left: 42,
+        };
+        let status = status_at(Some(LICENCE), Some(&checked(Some(free), 0)), 0);
+        assert!(!status.is_pro());
+        let Status::Credits(a) = status else {
+            panic!("a licence without GitAgent shows its credits, got {status:?}");
+        };
+        assert_eq!(
+            a.credits_headline(),
+            "Free \u{2014} 42 AI credits left this month"
+        );
+        let mut granted = account(true, &["splitter"]);
+        granted.credits.left = 7;
+        assert_eq!(
+            granted.credits_headline(),
+            "AI credits only, not Pro \u{2014} 7 AI credits left this month"
+        );
+        // A cancelled one is just inactive.
+        assert!(matches!(
+            status_at(
+                Some(LICENCE),
+                Some(&checked(Some(account(false, &[])), 0)),
+                0
+            ),
+            Status::Lapsed(Lapse::Inactive(_))
+        ));
+    }
+
+    #[test]
+    fn the_free_credits_reply_is_read() {
+        let none = serde_json::Value::Null;
+        assert!(matches!(
+            free_reply(200, &none, "a@b.ch"),
+            FreeReply::Sent(m) if m.contains("a@b.ch")
+        ));
+        assert_eq!(free_reply(404, &none, "a@b.ch"), FreeReply::Unavailable);
+        assert!(matches!(
+            free_reply(409, &none, "a@b.ch"),
+            FreeReply::Refused(m) if m.contains("paid plan")
+        ));
+        let slow = serde_json::json!({ "message": "Asked too often; try in an hour." });
+        assert_eq!(
+            free_reply(429, &slow, "a@b.ch"),
+            FreeReply::Refused("Asked too often; try in an hour.".into())
+        );
+    }
+
+    #[test]
     fn the_gateways_answer_is_read() {
         let body = r#"{"object":"licence","licence":"ABCDE-FGHJK-LMNPQ-RSTUV","email":"dev@example.ch",
             "plan":{"id":"studio","name":"Studio"},"products":["*"],"active":true,"status":"active",
@@ -642,66 +669,9 @@ mod tests {
     }
 
     #[test]
-    fn five_repositories_take_the_free_slots_and_a_sixth_can_take_ones_place() {
-        let mut slots = Slots::default();
-        for i in 0..FREE_REPOS {
-            assert!(slots.claim(&format!("/code/r{i}")));
-        }
-        assert!(slots.claim("/code/r0"), "a repository keeps its slot");
-        assert!(!slots.claim("/code/sixth"));
-        slots.swap("/code/r2", "/code/sixth");
-        assert!(slots.has("/code/sixth"));
-        assert!(!slots.has("/code/r2"));
-    }
-
-    #[test]
-    fn the_first_folder_fills_the_slots_and_everything_else_is_locked() {
-        let first: Vec<String> = (0..10).map(|i| format!("/a/r{i}")).collect();
-        let second: Vec<String> = (0..10).map(|i| format!("/b/r{i}")).collect();
-        let mut slots = Slots::default();
-        assert!(slots.fill(&first));
-        assert!(!slots.fill(&second), "a second folder takes nothing");
-        let free = Status::Free;
-        let usable = |list: &[String]| list.iter().filter(|r| !is_locked(&free, &slots, r)).count();
-        assert_eq!(usable(&first), FREE_REPOS);
-        assert_eq!(usable(&second), 0);
-        let pro = Status::Pro(account(true, &["gitagent"]));
-        assert!(second.iter().all(|r| !is_locked(&pro, &slots, r)));
-
-        // A locked repository takes one's place.
-        slots.swap("/a/r0", "/b/r3");
-        assert!(!is_locked(&free, &slots, "/b/r3"));
-        assert!(is_locked(&free, &slots, "/a/r0"));
-        assert_eq!(slots.repos.len(), FREE_REPOS);
-    }
-
-    #[test]
-    fn slots_taken_before_are_topped_up_to_five() {
-        // 0.1.65 took a slot on the first run only: two used, three free.
-        let mut slots = Slots {
-            repos: vec!["/a/mayorana".into(), "/a/gitagent".into()],
-        };
-        let listed: Vec<String> = ["/a/api0", "/a/gitagent", "/a/splitter", "/a/cvenom", "/a/x"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert!(slots.fill(&listed));
-        assert_eq!(
-            slots.repos,
-            [
-                "/a/mayorana",
-                "/a/gitagent",
-                "/a/api0",
-                "/a/splitter",
-                "/a/cvenom"
-            ]
-        );
-    }
-
-    #[test]
-    fn only_pro_is_unlimited() {
-        assert!(Status::Pro(account(true, &["*"])).unlimited());
-        assert!(!Status::Free.unlimited());
-        assert!(!Status::Lapsed(Lapse::Offline(account(true, &["*"]))).unlimited());
+    fn a_lapsed_licence_or_none_at_all_is_not_pro() {
+        assert!(Status::Pro(account(true, &["*"])).is_pro());
+        assert!(!Status::Free.is_pro());
+        assert!(!Status::Lapsed(Lapse::Offline(account(true, &["*"]))).is_pro());
     }
 }

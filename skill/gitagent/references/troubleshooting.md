@@ -25,8 +25,8 @@ the login shell doesn't set up either. Fix the shell profile, or start
 GitAgent from a terminal.
 
 **A repository is greyed out with a 🔒 Pro tag.**
-The free version runs flows in 5 repositories (0.1.63, 0.1.67). Click the
-repository to give it one of the 5 places, or add a licence in **Get Pro…**.
+Older versions limited the free version to 5 repositories. Current ones have
+no limit: update GitAgent.
 
 **A flow is shown as broken and can't start.**
 Its definition in `flows.toml` is no longer valid; GitAgent lists what's

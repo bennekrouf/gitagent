@@ -1,33 +1,41 @@
-//! GitAgent Pro — the licence on this computer, and which repositories the
-//! free version runs flows in.
+//! GitAgent Pro — the licence on this computer: its plan, its AI credits, and
+//! activating, checking or removing it.
 
 use dioxus::prelude::*;
 
-use crate::services::licence::{self, Account, Slots, Status, BUY_URL, FREE_REPOS};
-use crate::services::store::Repo;
+use crate::services::licence::{self, Account, FreeReply, Status, BUY_URL};
 use crate::telemetry;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct LicencePanelProps {
     pub status: Signal<Status>,
-    pub slots: Signal<Slots>,
-    /// For showing a slot's repository by its name rather than its path.
-    pub repos: Vec<Repo>,
-    /// Set when the panel opened because a run was refused: the repository
-    /// that asked for a sixth slot.
-    pub wanted: Option<String>,
     pub on_close: EventHandler<()>,
 }
 
 #[component]
 pub fn LicencePanel(props: LicencePanelProps) -> Element {
     let mut status = props.status;
-    let mut slots = props.slots;
     let mut key = use_signal(String::new);
     let mut problem = use_signal(|| Option::<String>::None);
     let close = move |_| props.on_close.call(());
 
     let mut busy = use_signal(|| false);
+    // Set by an Activate that worked: the window then says so and nothing
+    // else. Removing or managing the licence you have just pasted is the last
+    // thing to put in front of someone at that moment.
+    let mut activated = use_signal(|| false);
+    let mut email = use_signal(String::new);
+    // What asking for the free licence came to, once asked.
+    let mut free_reply = use_signal(|| Option::<FreeReply>::None);
+
+    let ask_free = move |_| {
+        let to = email.peek().clone();
+        busy.set(true);
+        spawn(async move {
+            free_reply.set(Some(licence::request_free_credits(&to).await));
+            busy.set(false);
+        });
+    };
 
     let activate = move |_| {
         let pasted = key.peek().clone();
@@ -36,6 +44,9 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
             match licence::activate(&pasted).await {
                 Ok(s) => {
                     telemetry::record(telemetry::Event::LicenceActivated);
+                    // A saved licence that doesn't work now (a cancelled
+                    // plan, say) is not a success: the window shows why.
+                    activated.set(matches!(s, Status::Pro(_) | Status::Credits(_)));
                     status.set(s);
                     key.set(String::new());
                     problem.set(None);
@@ -75,27 +86,49 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
         problem.set(None);
     };
 
-    let label_of = |path: &str| {
-        props
-            .repos
-            .iter()
-            .find(|r| r.path == path)
-            .map(|r| r.label.clone())
-            .unwrap_or_else(|| {
-                std::path::Path::new(path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.to_string())
-            })
-    };
     let current = status.read().clone();
-    let used: Vec<(String, String)> = slots
-        .read()
-        .repos
-        .iter()
-        .map(|p| (p.clone(), label_of(p)))
-        .collect();
-    let wanted = props.wanted.as_deref().map(label_of);
+
+    if *activated.read() {
+        let (title, detail) = match &current {
+            Status::Pro(a) => (
+                "GitAgent Pro is active.".to_string(),
+                format!(
+                    "Licensed to {}, with {} AI credits this month.",
+                    a.email, a.credits.left
+                ),
+            ),
+            Status::Credits(a) => (
+                "Licence saved.".to_string(),
+                format!("{} for {}.", a.credits_headline(), a.email),
+            ),
+            _ => (String::new(), String::new()),
+        };
+        return rsx! {
+            div { class: "modal-backdrop", onclick: close,
+                div {
+                    class: "modal",
+                    onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                    div { class: "modal-head",
+                        span { "GitAgent Pro" }
+                        button { class: "modal-close", onclick: close, "×" }
+                    }
+                    div { class: "modal-body",
+                        div { class: "licence-done",
+                            span { class: "licence-done-mark", "\u{2713}" }
+                            div {
+                                div { class: "licence-done-title", "{title}" }
+                                div { class: "field-note", "{detail}" }
+                            }
+                        }
+                        div { class: "licence-actions",
+                            span { class: "licence-actions-gap" }
+                            button { class: "btn btn-primary", onclick: close, "Done" }
+                        }
+                    }
+                }
+            }
+        };
+    }
 
     rsx! {
         div { class: "modal-backdrop", onclick: close,
@@ -111,7 +144,7 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                 div { class: "modal-body",
                     match &current {
                         Status::Pro(a) => rsx! {
-                            p { "Licensed to " strong { "{a.email}" } ". Every repository is unlocked." }
+                            p { "Licensed to " strong { "{a.email}" } "." }
                             PlanDetails { account: a.clone() }
                         },
                         Status::Lapsed(lapse) => rsx! {
@@ -120,52 +153,31 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                                 PlanDetails { account: a.clone() }
                             }
                         },
-                        Status::Free => rsx! {
-                            if let Some(name) = &wanted {
-                                p { class: "probe probe-bad",
-                                    "{name} is locked: the free version works with {FREE_REPOS} repositories, \
-                                     and they are all taken. Use it instead of one of them below, or get Pro."
+                        Status::Credits(a) => rsx! {
+                            p { strong { "{a.credits_headline()}" } ", for the api0 model." }
+                            if a.is_free() {
+                                p { class: "field-note",
+                                    "The free licence of {a.email} gives AI credits each month. Buy a plan with \
+                                     the same email and this licence moves to it, with nothing to paste again."
                                 }
+                            } else {
+                                p { class: "field-note",
+                                    "The licence of {a.email} ({a.plan.name}) gives AI credits for the api0 \
+                                     model, but its plan doesn't include GitAgent Pro."
+                                }
+                                PlanDetails { account: a.clone() }
                             }
+                        },
+                        Status::Free => rsx! {
                             p {
-                                "The free version works with {FREE_REPOS} repositories in all, across every folder \
-                                 and window. The others are listed but locked: click one to use it instead of one \
-                                 of these. GitAgent Pro works with all of them, and comes with AI credits for the \
-                                 api0 model each month."
+                                "GitAgent works in every repository, with or without a licence. A licence \
+                                 adds AI credits each month for the api0 model: a few with the free one, \
+                                 more with GitAgent Pro."
                             }
                         },
                     }
 
-                    if !current.unlimited() {
-                        div { class: "field-note", "Your {FREE_REPOS} repositories" }
-                        div { class: "items",
-                            for (path, name) in used {
-                                div { key: "{path}", class: "item",
-                                    span { class: "item-label", title: "{path}", "{name}" }
-                                    if let (Some(wanted_path), Some(wanted_name)) = (props.wanted.clone(), wanted.clone()) {
-                                        button {
-                                            class: "btn btn-ghost",
-                                            title: "{wanted_name} takes this repository's place; {name} becomes locked",
-                                            onclick: {
-                                                // The row still shows `path`; the handler gets its own copy.
-                                                let path = path.clone();
-                                                move |_| {
-                                                    let mut s = slots.write();
-                                                    s.swap(&path, &wanted_path);
-                                                    licence::save_slots(&s);
-                                                    drop(s);
-                                                    props.on_close.call(());
-                                                }
-                                            },
-                                            "Use {wanted_name} instead"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if !current.unlimited() {
+                    if !current.is_pro() {
                         label { class: "field",
                             span { "Licence number" }
                             input {
@@ -183,7 +195,41 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                         div { class: "probe probe-bad", "{p}" }
                     }
 
-                    div { class: "field-row",
+                    if matches!(current, Status::Free | Status::Lapsed(_)) {
+                        if *free_reply.read() == Some(FreeReply::Unavailable) {
+                            div { class: "field-note", "There are no free AI credits right now." }
+                        } else {
+                            div { class: "field-note",
+                                "No licence yet? Get free AI credits for the api0 model each month: the licence \
+                                 number is sent to your email."
+                            }
+                            div { class: "field-row",
+                                input {
+                                    r#type: "email",
+                                    spellcheck: "false",
+                                    placeholder: "you@example.com",
+                                    value: "{email}",
+                                    oninput: move |e| {
+                                        free_reply.set(None);
+                                        email.set(e.value());
+                                    },
+                                }
+                                button {
+                                    class: "btn",
+                                    disabled: email.read().trim().is_empty() || *busy.read(),
+                                    onclick: ask_free,
+                                    "Get free AI credits"
+                                }
+                            }
+                            match free_reply.read().clone() {
+                                Some(FreeReply::Sent(m)) => rsx! { div { class: "probe probe-ok", "{m}" } },
+                                Some(FreeReply::Refused(m)) => rsx! { div { class: "probe probe-bad", "{m}" } },
+                                _ => rsx! {},
+                            }
+                        }
+                    }
+
+                    div { class: "licence-actions",
                         if !matches!(current, Status::Free) {
                             button {
                                 class: "btn btn-ghost",
@@ -192,15 +238,21 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                                 "Remove from this computer"
                             }
                         }
-                        if matches!(current, Status::Lapsed(_)) {
+                        if matches!(current, Status::Lapsed(_) | Status::Credits(_)) {
                             button {
                                 class: "btn btn-ghost",
+                                title: "Ask api0 again what this licence unlocks, e.g. after subscribing",
                                 disabled: *busy.read(),
                                 onclick: check_again,
                                 "Check again"
                             }
                         }
-                        if matches!(&current, Status::Pro(_)) || matches!(&current, Status::Lapsed(l) if l.account().is_some()) {
+                        // Anyone paying can reach their subscription, whatever
+                        // GitAgent makes of the plan.
+                        if matches!(&current, Status::Pro(_))
+                            || matches!(&current, Status::Credits(a) if !a.is_free())
+                            || matches!(&current, Status::Lapsed(l) if l.account().is_some())
+                        {
                             button {
                                 class: "btn",
                                 title: "Change or cancel your plan on Stripe's page, in your browser",
@@ -209,7 +261,10 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                                 "Manage subscription\u{2026}"
                             }
                         }
-                        if !current.unlimited() {
+                        if !current.is_pro() {
+                            // The two that move you forward sit together on the
+                            // right; the rest are housekeeping, on the left.
+                            span { class: "licence-actions-gap" }
                             a { class: "btn", href: "{BUY_URL}", target: "_blank", "Buy GitAgent Pro\u{2026}" }
                             button {
                                 class: "btn btn-primary",
@@ -240,7 +295,9 @@ fn PlanDetails(account: Account) -> Element {
     rsx! {
         div { class: "field-note",
             p { "Plan: " strong { "{account.plan.name}" } }
-            p { "Apps included: {account.apps()}" }
+            if !account.products.is_empty() {
+                p { "Apps included: {account.apps()}" }
+            }
             p { "AI credits left this month: {credits.left} of {credits.granted}" }
             if let Some(r) = renewal {
                 p { "{r}" }

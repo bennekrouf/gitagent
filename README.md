@@ -106,7 +106,7 @@ Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 - **Commercial use requires a licence** — including a solo consultant using it
   on client work, and an employee using it at their job. That licence is
   [GitAgent Pro](https://mayorana.ch/en/apps/gitagent), bought on GitAgent's
-  page; it also lifts the free version's limit of 5 repositories.
+  page; it also comes with monthly AI credits for the api0 model.
 
 This is deliberately not an OSI-approved open source licence: the source is
 public and readable, but companies using it for work buy GitAgent Pro.

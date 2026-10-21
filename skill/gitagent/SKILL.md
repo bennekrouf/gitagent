@@ -72,9 +72,12 @@ from a description.
   through `az` with the `azure-devops` extension (`az login`,
   `az extension add --name azure-devops`). GitAgent uses whatever account
   those tools are signed in with.
-- **GitAgent Pro.** The free version runs flows in 5 repositories; others show
-  a **🔒 Pro** tag. **Get Pro…** shows which 5 are in use and lets one be given
-  back. A licence key is pasted in the same window and checked offline.
+- **GitAgent Pro.** A monthly plan from mayorana.ch; subscribing emails a
+  licence number to paste in the GitAgent Pro window. It brings AI credits for
+  the api0 model each month (a free licence, asked for by email in the same
+  window, brings a few). GitAgent works in every repository with or without a
+  licence. The licence is checked with api0 at start and daily, and Pro keeps
+  working offline for seven days after the last check that got through.
 - **Usage statistics** are anonymous and on by default (steps run and whether
   they succeeded, OS, version, GitHub or Azure DevOps; never names, code,
   commit messages or errors). Turn off in Settings, or set `DO_NOT_TRACK`,

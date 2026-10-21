@@ -16,8 +16,8 @@
 //!     model name change.
 //!
 //! Each provider's API key is read from its environment variable and is never
-//! written to disk. api0 also takes the GitAgent Pro licence number already
-//! saved on this computer, so a subscriber needs no key of their own.
+//! written to disk. api0 also takes the licence number (free or a plan's)
+//! already saved on this computer, so it needs no key of its own.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -309,7 +309,7 @@ pub fn is_api0(remote: &Remote) -> bool {
 }
 
 /// The key to send to `remote`: its environment variable, or for api0 the
-/// GitAgent Pro licence number saved on this computer.
+/// licence number saved on this computer.
 pub fn key_for(remote: &Remote) -> Option<String> {
     api_key(remote.env).or_else(|| {
         if is_api0(remote) {
@@ -325,7 +325,7 @@ pub fn key_source(remote: &Remote) -> Option<String> {
     if api_key(remote.env).is_some() {
         Some(format!("{} found in the environment", remote.env))
     } else if is_api0(remote) && super::licence::saved_key().is_some() {
-        Some("Uses your GitAgent Pro licence".into())
+        Some("Uses the licence saved on this computer".into())
     } else {
         None
     }
@@ -922,8 +922,9 @@ fn client_app(remote: &Remote) -> reqwest::header::HeaderMap {
 fn missing_key(remote: &Remote) -> String {
     if is_api0(remote) {
         format!(
-            "api0 needs your GitAgent Pro licence — activate Pro, or export a \
-             licence number as {} and restart the app",
+            "api0 needs a licence — get free AI credits by email under Get Pro\u{2026}, \
+             or a plan for more ({}), or export a licence number as {} and restart the app",
+            super::licence::PRICING_URL,
             remote.env
         )
     } else {

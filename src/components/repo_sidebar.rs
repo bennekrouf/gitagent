@@ -195,20 +195,14 @@ pub struct RepoEntry {
     /// auth) — shown instead of the count badge, so a check that never
     /// happened never looks identical to a repository that is truly clean.
     pub prs_error: Option<String>,
-    /// The free version's repositories are taken and this is not one of them:
-    /// listed, but not checked, and selecting it opens the Pro window.
-    pub locked: bool,
     /// Set when a run here is waiting on an approval: the row offers the
     /// button itself, held or not. `None` when nothing waits, or every file is
     /// unchecked, which keeps the plain "needs you".
     pub approval: Option<Approval>,
 }
 
-/// A locked row is never shown as selected: it can't be.
-fn row_class(locked: bool, selected: bool) -> &'static str {
-    if locked {
-        "sidebar-row sidebar-row-locked"
-    } else if selected {
+fn row_class(selected: bool) -> &'static str {
+    if selected {
         "sidebar-row sidebar-row-on"
     } else {
         "sidebar-row"
@@ -405,7 +399,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                     for entry in props.entries.iter().cloned() {
                         div {
                             key: "{entry.path}",
-                            class: row_class(entry.locked, selected.as_deref() == Some(entry.path.as_str())),
+                            class: row_class(selected.as_deref() == Some(entry.path.as_str())),
                             title: "{entry.path}",
                             onclick: {
                                 let path = entry.path.clone();
@@ -460,7 +454,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 }
                             }
-                            if let Some(approval) = entry.approval.clone().filter(|_| !entry.locked) {
+                            if let Some(approval) = entry.approval.clone() {
                                 // In place of "needs you", and of the re-check
                                 // button that would otherwise take the slot on
                                 // hover — which is exactly when you reach for it.
@@ -486,13 +480,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             span { class: "row-status",
                                 // A run in progress outranks anything the probe found:
                                 // it is more recent, and it is already yours.
-                                if entry.locked {
-                                    span {
-                                        class: "pro-lock",
-                                        title: "The free version works with 5 repositories and they are taken \u{2014} click for GitAgent Pro, or to give one back",
-                                        "\u{1f512} Pro"
-                                    }
-                                } else if entry.phase.is_live() {
+                                if entry.phase.is_live() {
                                     span { class: "sidebar-note status-{entry.phase.css()}",
                                         span { class: "note-icon", "{entry.phase.icon()}" }
                                         "{entry.phase.note()}"
@@ -515,7 +503,6 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 }
                             }
-                            if !entry.locked {
                             button {
                                 class: "row-reprobe",
                                 title: "Re-check this repository",
@@ -542,7 +529,6 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     path { d: "M20 12a8 8 0 1 1-2.34-5.66" }
                                     path { d: "M20 4v5h-5" }
                                 }
-                            }
                             }
                             }
                         }
@@ -660,7 +646,6 @@ mod tests {
             behind: 0,
             open_pr_count: 0,
             prs_error: None,
-            locked: false,
             approval: None,
         }
     }

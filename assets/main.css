@@ -969,6 +969,28 @@ a.btn { text-decoration: none; }
 .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 13px; }
 .modal-wide { width: 620px; }
 
+/* One tab per flow step that picks its own model, under the modal's head.
+   Each carries the model it is set to, so the tab you are not on is not a
+   mystery — above all whether the second reviewer is on at all. */
+.modal-tabs {
+    display: flex; gap: 6px;
+    padding: 10px 16px 0;
+}
+.modal-tab {
+    flex: 1; cursor: pointer; text-align: left;
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 10px; border-radius: 8px;
+    background: var(--bg0); color: var(--text3);
+    border: 1px solid var(--border);
+}
+.modal-tab:hover { color: var(--text1); }
+.modal-tab-on { background: var(--bg2); color: var(--text1); border-color: var(--green); }
+.modal-tab-label { font-size: 12px; font-weight: 600; }
+.modal-tab-note {
+    font-family: var(--mono); font-size: 10px; color: var(--text3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ══════════════════════════════════════════════
    MCP — using GitAgent from Claude
 ══════════════════════════════════════════════ */
@@ -1056,6 +1078,20 @@ a.btn { text-decoration: none; }
 .field-head { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border2); }
 .field-head span { font-size: 12px; font-weight: 600; color: var(--text1); }
 .field-row { display: flex; gap: 8px; }
+/* The licence window's buttons: as many as five, in a 460px window, so they
+   wrap as whole buttons rather than each squeezing its own label onto three
+   lines. */
+.licence-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.licence-actions .btn { white-space: nowrap; flex-shrink: 0; }
+.licence-actions-gap { flex: 1; }
+/* A licence that has just been activated: the outcome, and nothing to do. */
+.licence-done { display: flex; align-items: flex-start; gap: 12px; padding: 4px 0; }
+.licence-done-mark {
+    flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 50%;
+    font-size: 15px; font-weight: 700; color: #fff; background: var(--green-bg);
+}
+.licence-done-title { font-size: 14px; font-weight: 600; color: var(--text1); margin-bottom: 3px; }
 .field-row .field-grow { flex: 1; min-width: 0; }
 .field-note { font-size: 11px; color: var(--text3); line-height: 1.6; }
 
@@ -1364,16 +1400,6 @@ button.update-banner-link {
 
 /* GitAgent Pro */
 .btn-pro { color: var(--blue); border-color: var(--blue); }
-.pro-lock {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--blue);
-  border: 1px solid var(--blue);
-  border-radius: 3px;
-  padding: 0 4px;
-  margin-left: 6px;
-}
 
 /* Which repositories a flow is shown on, under its name in Setup. */
 .flow-scope {
@@ -1382,8 +1408,6 @@ button.update-banner-link {
 }
 .flow-scope .btn { padding: 2px 8px; font-size: 11px; }
 .flow-picker-hint { margin-left: 6px; font-size: 10px; color: var(--text3); white-space: nowrap; }
-.sidebar-row-locked { opacity: 0.55; }
-.sidebar-row-locked:hover { opacity: 0.8; }
 
 /* ── GitAgent Pro badge, top right ─────────────────────────────────── */
 .pro-badge {

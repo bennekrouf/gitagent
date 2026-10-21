@@ -17,6 +17,47 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Free AI credits every month, without Pro: in the GitAgent Pro window, enter
+  your email under Get free AI credits and a licence number is sent to you.
+  Paste it like any licence, and the api0 model under Settings → Model
+  provider works on those credits. The window shows "Free" and the credits
+  left this month. Buy a plan later with the same email and that licence
+  becomes Pro, with nothing to paste again.
+
+### Changed
+
+- Without a licence, Settings no longer just says api0 has no key: it points
+  to the free AI credits in the GitAgent Pro window, and links to the plans
+  for more.
+- A licence whose plan doesn't include GitAgent now shows as AI credits only,
+  with the credits left this month, instead of as a lapsed Pro licence.
+- Settings → Model provider is now split into two tabs, Default and Second
+  reviewer, instead of one long panel. The Default tab holds the model every
+  step calls — the commit message, the pull request description, the review,
+  the release notes — with its focused reviews; the Second reviewer tab holds
+  the model that reviews a pull request a second time. Each tab says which
+  model it is set to, so you can see whether the second reviewer is on without
+  opening it.
+- The GitAgent Pro window no longer lists "Apps included: none" for a plan
+  that names no apps, and its buttons wrap as whole buttons instead of
+  squeezing each label onto two or three lines.
+- Activating a licence now just says it worked — **GitAgent Pro is active**,
+  with your email and this month's AI credits — and a Done button, instead of
+  putting Remove from this computer and Manage subscription in front of you
+  the moment you have subscribed. They are still there when you open the
+  window again.
+
+### Removed
+
+- The free version's limit of five repositories is gone: GitAgent runs flows
+  in every repository, with or without a licence. No repository is greyed out
+  with a 🔒 Pro tag any more, and the GitAgent Pro window no longer lists five
+  repositories or asks you to give one back.
+
 ## [0.1.116] - 2026-10-21
 
 ### Added
