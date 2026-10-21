@@ -64,7 +64,7 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
 
     let current = cfg.read().clone();
     let preset = current.preset();
-    let key_present = current.remote_key().is_some();
+    let key_source = llm::key_source(preset);
     let second = current.second.clone();
     let second_cfg = current.second_config();
 
@@ -161,12 +161,12 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                     }
                                     span { class: "item-label", "{entry.label}" }
                                     span {
-                                        class: if llm::api_key(entry.env).is_some() {
+                                        class: if llm::key_for(entry).is_some() {
                                             "item-note note-new"
                                         } else {
                                             "item-note note-deleted"
                                         },
-                                        if llm::api_key(entry.env).is_some() { "key set" } else { "no key" }
+                                        if llm::key_for(entry).is_some() { "key set" } else { "no key" }
                                     }
                                 }
                             }
@@ -188,11 +188,14 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                 oninput: move |e| cfg.write().remote_model = e.value(),
                             }
                         }
-                        div { class: if key_present { "key-state key-ok" } else { "key-state key-missing" },
-                            if key_present {
-                                "{preset.env} found in the environment"
-                            } else {
-                                "{preset.env} is not set — export it and restart GitAgent"
+                        div { class: if key_source.is_some() { "key-state key-ok" } else { "key-state key-missing" },
+                            match &key_source {
+                                Some(source) => rsx! { "{source}" },
+                                None if llm::is_api0(preset) => rsx! {
+                                    "No GitAgent Pro licence on this computer — activate Pro, \
+                                     or export a licence number as {preset.env} and restart GitAgent"
+                                },
+                                None => rsx! { "{preset.env} is not set — export it and restart GitAgent" },
                             }
                         }
                         p { class: "field-note",
@@ -201,6 +204,12 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                              them in for a proxy, a self-hosted vLLM, or a provider not listed. \
                              The key is read from the environment on every call and never written \
                              to disk."
+                        }
+                        if llm::is_api0(preset) {
+                            p { class: "field-note",
+                                "api0 runs the model for you and takes its AI credits from your \
+                                 plan each month. Test connection shows how many are left."
+                            }
                         }
                     }
 
@@ -275,7 +284,7 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                         value: "{entry.key}",
                                         selected: second.remote == entry.key,
                                         "{entry.label}"
-                                        if llm::api_key(entry.env).is_none() { " (no key)" }
+                                        if llm::key_for(entry).is_none() { " (no key)" }
                                     }
                                 }
                             }

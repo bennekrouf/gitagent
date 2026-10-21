@@ -35,6 +35,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     // The folder whose repositories are being checked before it opens, and
     // the ones that failed.
     let opening = use_signal(|| Option::<String>::None);
+    // How far that check has got: repositories answered, out of how many.
+    // Reaching one on a slow remote takes seconds, so a folder of them is
+    // worth counting rather than only spinning.
+    let progress = use_signal(|| (0usize, 0usize));
     let mut denied = use_signal(|| Option::<Denied>::None);
 
     let mut is_light = props.is_light;
@@ -121,12 +125,14 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 return;
             };
             let path = handle.path().to_string_lossy().to_string();
-            open_folder(path, registry, error, opening, denied).await;
+            open_folder(path, registry, error, opening, progress, denied).await;
         });
     };
 
     let recent = registry.read().recent.clone();
     let cfg = props.llm_config.read().clone();
+    let busy = opening.read().clone();
+    let (answered, total) = *progress.read();
 
     if *setup_open.read() {
         return rsx! { Setup {
@@ -146,9 +152,14 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                         div { class: "field-row",
                             button {
                                 class: "btn btn-primary",
-                                disabled: opening.read().is_some(),
+                                disabled: busy.is_some(),
                                 onclick: pick,
-                                "Open folder…"
+                                if busy.is_some() {
+                                    span { class: "btn-spinner" }
+                                    "Checking\u{2026}"
+                                } else {
+                                    "Open folder…"
+                                }
                             }
                         }
                         div { class: "welcome-pick-note",
@@ -164,14 +175,26 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                 disabled: *checking.read(),
                                 title: "Check every repository in these folders again, including ones cloned since",
                                 onclick: refresh,
-                                if *checking.read() { "Checking\u{2026}" } else { "\u{21bb} Refresh" }
+                                if *checking.read() {
+                                    span { class: "btn-spinner" }
+                                    "Checking\u{2026}"
+                                } else {
+                                    "\u{21bb} Refresh"
+                                }
                             }
                         }
                         div { class: "repo-list",
                             for path in recent.iter().cloned() {
                                 div {
                                     key: "{path}",
-                                    class: "repo-row",
+                                    // The folder being checked says so; the
+                                    // rest step back, since a click on them
+                                    // does nothing until it is done.
+                                    class: match busy.as_deref() {
+                                        Some(p) if p == path => "repo-row repo-row-checking",
+                                        Some(_) => "repo-row repo-row-waiting",
+                                        None => "repo-row",
+                                    },
                                     onclick: {
                                         let path = path.clone();
                                         move |_| {
@@ -180,7 +203,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             }
                                             let path = path.clone();
                                             spawn(async move {
-                                                open_folder(path, registry, error, opening, denied).await;
+                                                open_folder(path, registry, error, opening, progress, denied).await;
                                             });
                                         }
                                     },
@@ -212,7 +235,15 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             }
                                         }
                                     }
-                                    span { class: "repo-open", "Open ›" }
+                                    if busy.as_deref() == Some(path.as_str()) {
+                                        span { class: "repo-open repo-open-checking",
+                                            title: "Checking that each repository in this folder can be reached",
+                                            span { class: "btn-spinner" }
+                                            if total > 0 { "Checking {answered}/{total}" } else { "Checking\u{2026}" }
+                                        }
+                                    } else {
+                                        span { class: "repo-open", "Open ›" }
+                                    }
                                     button {
                                         class: "repo-remove",
                                         title: "Forget this folder",
@@ -254,9 +285,13 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                     }
                 }
 
-                if let Some(path) = opening.read().clone() {
+                if let Some(path) = busy.clone() {
                     div { class: "welcome-checking",
+                        span { class: "btn-spinner" }
                         "Checking access to the repositories in {folder_name(&path)}\u{2026}"
+                        if total > 0 {
+                            span { class: "welcome-checking-count", " {answered} of {total}" }
+                        }
                     }
                 }
                 if let Some((path, failed)) = denied.read().clone() {
@@ -324,6 +359,7 @@ async fn open_folder(
     registry: Signal<Registry>,
     mut error: Signal<String>,
     mut opening: Signal<Option<String>>,
+    mut progress: Signal<(usize, usize)>,
     mut denied: Signal<Option<Denied>>,
 ) {
     use futures_util::stream::StreamExt;
@@ -340,10 +376,12 @@ async fn open_folder(
         return;
     }
 
+    progress.set((0, repos.len()));
     opening.set(Some(path.clone()));
     let failed: Vec<(String, String)> = futures_util::stream::iter(repos)
         .map(|repo| async move {
             let result = git::check_access(&repo.path).await;
+            progress.with_mut(|(answered, _)| *answered += 1);
             (repo.label, result)
         })
         .buffered(6)

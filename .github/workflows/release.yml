@@ -161,9 +161,6 @@ jobs:
 
       - name: Build
         env:
-          # Public half of the key mayorana.ch signs Pro licences with (repository
-          # variable, not a secret). Without it the build can't check licences.
-          GITAGENT_LICENSE_PUBLIC_KEY: ${{ vars.GITAGENT_LICENSE_PUBLIC_KEY }}
           # Where anonymous usage statistics are sent (repository variable, not
           # a secret). Unset or empty, the build has no way to send anything and
           # never asks about it — which is also what a local build is.
@@ -322,9 +319,6 @@ jobs:
 
       - name: Build
         env:
-          # Public half of the key mayorana.ch signs Pro licences with (repository
-          # variable, not a secret). Without it the build can't check licences.
-          GITAGENT_LICENSE_PUBLIC_KEY: ${{ vars.GITAGENT_LICENSE_PUBLIC_KEY }}
           # Where anonymous usage statistics are sent (repository variable, not
           # a secret). Unset or empty, the build has no way to send anything and
           # never asks about it — which is also what a local build is.
@@ -483,9 +477,6 @@ jobs:
 
       - name: Build
         env:
-          # Public half of the key mayorana.ch signs Pro licences with (repository
-          # variable, not a secret). Without it the build can't check licences.
-          GITAGENT_LICENSE_PUBLIC_KEY: ${{ vars.GITAGENT_LICENSE_PUBLIC_KEY }}
           # Where anonymous usage statistics are sent (repository variable, not
           # a secret). Unset or empty, the build has no way to send anything and
           # never asks about it — which is also what a local build is.

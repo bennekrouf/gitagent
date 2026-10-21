@@ -1423,9 +1423,35 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut mcp_open = use_signal(|| false);
     // GitAgent Pro. `licence_open` holds the repository a refused run was
     // for, when that is why the window opened.
-    let licence_status = use_signal(licence::current);
+    let mut licence_status = use_signal(licence::current);
     let mut free_slots = use_signal(licence::load_slots);
     let mut licence_open = use_signal(|| Option::<Option<String>>::None);
+    // The licence is asked about at start and then daily; between checks,
+    // and offline, the last answer stands (for a week, for Pro).
+    use_future(move || async move {
+        loop {
+            let wait = match licence::check().await {
+                Ok(now) => {
+                    if *licence_status.peek() != now {
+                        licence_status.set(now);
+                        free_slots.set(licence::load_slots());
+                        crate::refresh_window_title();
+                    }
+                    licence::CHECK_EVERY
+                }
+                Err(_) => {
+                    // The answer on disk may just have aged past the grace.
+                    let now = licence::current();
+                    if *licence_status.peek() != now {
+                        licence_status.set(now);
+                        crate::refresh_window_title();
+                    }
+                    licence::RETRY_EVERY
+                }
+            };
+            tokio::time::sleep(wait).await;
+        }
+    });
     // Which flows the *current* repository has chosen not to see — a filter
     // on top of the shared flow list, not a copy of it. `flows.toml` never
     // changes when a flow is hidden here.
@@ -2705,38 +2731,30 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     // Last, so it sits in the corner: the one element in
                     // the bar that is about you rather than the work.
                     match licence_status.read().clone() {
-                        licence::Status::Pro(l) => rsx! {
+                        licence::Status::Pro(a) => rsx! {
                             button {
                                 class: "pro-badge",
-                                title: "GitAgent Pro · licensed to {l.email} · updates until {l.updates_until}",
+                                title: "GitAgent Pro \u{b7} {a.plan.name} plan \u{b7} {a.email}",
                                 onclick: move |_| licence_open.set(Some(None)),
                                 span { class: "pro-badge-star", "\u{2726}" }
                                 span { class: "pro-badge-text", "PRO" }
                             }
                         },
-                        licence::Status::Renew(l) => rsx! {
+                        licence::Status::Lapsed(lapse) => rsx! {
                             button {
                                 class: "pro-badge pro-badge-renew",
-                                title: "Your Pro updates ended on {l.updates_until}, before this version. Renew, or paste a new key.",
+                                title: "{lapse.explain()}",
                                 onclick: move |_| licence_open.set(Some(None)),
                                 span { class: "pro-badge-star", "\u{2726}" }
-                                span { class: "pro-badge-text", "RENEW PRO" }
+                                span { class: "pro-badge-text", "PRO INACTIVE" }
                             }
                         },
                         licence::Status::Free => rsx! {
                             button {
                                 class: "btn btn-ghost btn-pro",
-                                title: "Buy GitAgent Pro, paste your licence key, or choose the free version's repositories",
+                                title: "Buy GitAgent Pro, paste your licence number, or choose the free version's repositories",
                                 onclick: move |_| licence_open.set(Some(None)),
                                 "Get Pro\u{2026}"
-                            }
-                        },
-                        licence::Status::Unavailable => rsx! {
-                            button {
-                                class: "btn btn-ghost",
-                                title: "A build that cannot check licences, such as one built from source: nothing is limited.",
-                                onclick: move |_| licence_open.set(Some(None)),
-                                "Pro"
                             }
                         },
                     }
