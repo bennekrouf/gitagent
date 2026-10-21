@@ -26,7 +26,7 @@ use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook, FlowDef};
 use crate::services::graph::{Graph, NodeKind, NodeSpec, NodeStatus, RunState, Step};
 use crate::services::llm::LlmConfig;
-use crate::services::{catalogue, forge, git, licence, live, probe, release, store, trusted};
+use crate::services::{catalogue, forge, git, live, probe, release, store, trusted};
 use crate::telemetry;
 
 /// The newest protocol revision this server speaks. A client asking for an
@@ -777,15 +777,6 @@ async fn start_flow(
         .ok_or(format!(
             "no flow {flow_id} for this repository; see list_flows"
         ))?;
-
-    if !licence::may_run(&licence::current(), &repo) {
-        telemetry::record(telemetry::Event::LicenceWallHit);
-        return Err(
-            "The free version runs flows in 5 repositories, and this would be a sixth. \
-                    Give one back or add a GitAgent Pro licence from the app (Get Pro\u{2026})."
-                .into(),
-        );
-    }
 
     let graph = def.to_graph();
     let mut state = RunState::fresh(&graph);

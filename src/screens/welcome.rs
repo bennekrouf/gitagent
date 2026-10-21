@@ -10,7 +10,6 @@ use dioxus::prelude::*;
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::git;
-use crate::services::licence;
 use crate::services::llm::LlmConfig;
 use crate::services::probe::{self, Wants};
 use crate::services::store::{self, Registry};
@@ -64,11 +63,6 @@ pub fn Welcome(props: WelcomeProps) -> Element {
             checking.set(true);
             use futures_util::stream::StreamExt;
 
-            // Read, not filled: the home screen must not hand out a free
-            // slot just by looking. A locked repository is not checked here
-            // any more than it is in the workspace.
-            let licence_now = licence::current();
-            let slots = licence::load_slots();
             let mut todo: Vec<String> = vec![];
             for folder in recent {
                 if folder_repos.peek().contains_key(&folder) {
@@ -77,7 +71,6 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 let repos: Vec<String> = store::discover_repos(&folder)
                     .into_iter()
                     .map(|r| r.path)
-                    .filter(|p| !licence::is_locked(&licence_now, &slots, p))
                     .collect();
                 todo.extend(repos.iter().cloned());
                 folder_repos.write().insert(folder, repos);

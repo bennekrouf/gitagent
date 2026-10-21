@@ -170,8 +170,6 @@ pub enum Event {
         approved: bool,
         trusted: bool,
     },
-    /// A run was refused because the free version's repositories are used up.
-    LicenceWallHit,
     LicenceActivated,
     UpdateOffered {
         to: String,
@@ -228,7 +226,6 @@ impl Event {
                 put(&mut p, "by", if *trusted { "trusted" } else { "person" });
                 "approval_decided"
             }
-            Event::LicenceWallHit => "licence_wall_hit",
             Event::LicenceActivated => "licence_activated",
             Event::UpdateOffered { to } => {
                 put(&mut p, "to", &sanitise_version(to));
