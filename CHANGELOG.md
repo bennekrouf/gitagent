@@ -19,6 +19,13 @@ were never released.
 
 ## [Unreleased]
 
+### Added
+
+- The panel that opens beside the run map can be resized: drag its left edge
+  to widen it as far as the whole view, so a pull request's diff or a step's
+  log can be read full width, and back down again. It never gets so narrow it
+  is hard to grab, the width you leave it at is kept between launches, and a
+  double-click on the edge puts it back to its usual size.
 ### Changed
 
 - One licence number for every Mayorana app on this computer. Paste it in any

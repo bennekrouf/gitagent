@@ -620,12 +620,14 @@ fn loop_label(status: NodeStatus, rounds: u32) -> String {
 /// Must agree with `.run-drawer-folded`'s width in the stylesheet.
 const FOLDED_PANEL: f64 = 46.0;
 
-/// How wide a step's panel is over a map `area_w` wide, open or folded. Must
-/// agree with `.run-drawer`'s width in the stylesheet: this is what the map
-/// slides out from under.
-fn panel_width(area_w: f64, folded: bool) -> f64 {
+/// How wide a step's panel is over a map `area_w` wide, open or folded, at
+/// the width it was dragged to if it was. Must agree with `.run-drawer`'s
+/// width in the stylesheet: this is what the map slides out from under.
+fn panel_width(area_w: f64, folded: bool, chosen: Option<f64>) -> f64 {
     if folded {
         FOLDED_PANEL
+    } else if let Some(w) = chosen {
+        store::Layout::clamp_panel(w, area_w)
     } else {
         (area_w * 0.58).min(620.0)
     }
@@ -634,8 +636,8 @@ fn panel_width(area_w: f64, folded: bool) -> f64 {
 /// How far to slide the map left so a station at `x`, with labels `col_w`
 /// wide, stays clear of an open panel. Only as far as that takes, and not at
 /// all when it is already clear, so as much of the map stays in view as can.
-fn slide_for(x: f64, col_w: f64, area_w: f64, folded: bool) -> f64 {
-    let visible = area_w - panel_width(area_w, folded);
+fn slide_for(x: f64, col_w: f64, area_w: f64, folded: bool, chosen: Option<f64>) -> f64 {
+    let visible = area_w - panel_width(area_w, folded, chosen);
     (x + col_w / 2.0 + 16.0 - visible).max(0.0)
 }
 
@@ -1029,6 +1031,13 @@ pub struct RunViewProps {
     /// while the step stays one click away.
     #[props(default)]
     pub panel_folded: bool,
+    /// The width the panel was dragged to, or `None` for its own size.
+    #[props(default)]
+    pub panel_width: Option<f64>,
+    /// A drag of the panel's edge has ended at this width — `None` when a
+    /// double-click put it back to its own size.
+    #[props(default)]
+    pub on_panel_width: EventHandler<Option<f64>>,
     /// The step's panel itself, drawn over the map below the header — so the
     /// play controls stay in reach while it is open.
     #[props(default)]
@@ -1052,6 +1061,9 @@ pub fn RunView(props: RunViewProps) -> Element {
     // instead of scaling — scaling a wide flow down is what made the text
     // small and left the height empty.
     let mut area = use_signal(|| Option::<(f64, f64)>::None);
+    // A drag of the panel's edge: where the pointer and the panel started,
+    // and the width it has now.
+    let mut resizing = use_signal(|| Option::<(f64, f64, f64)>::None);
     // The map's zoom, remembered between runs and restarts. The map is laid
     // out for the room it would have at this zoom, then drawn scaled to it —
     // so a big flow fits zoomed out, and zoomed in everything grows, scrolls,
@@ -1188,9 +1200,12 @@ pub fn RunView(props: RunViewProps) -> Element {
     // A map wider than its window scrolls, and scrolling does the moving:
     // sliding it as well would add the two together. One that fits slides.
     let overflows = plan.width * z > area_w + 0.5;
+    // The panel's width: as it is being dragged, else as it was left.
+    let chosen = (*resizing.read()).map(|(_, _, w)| w).or(props.panel_width);
+    let open_w = panel_width(area_w, false, chosen);
     let slide = if props.panel_open && !overflows {
         plan.find(&props.selected)
-            .map(|s| slide_for(s.x * z, plan.col_w * z, area_w, props.panel_folded))
+            .map(|s| slide_for(s.x * z, plan.col_w * z, area_w, props.panel_folded, chosen))
             .unwrap_or(0.0)
     } else {
         0.0
@@ -1208,7 +1223,7 @@ pub fn RunView(props: RunViewProps) -> Element {
     };
     let follow_left = focus.as_ref().and_then(|id| plan.find(id)).map(|s| {
         let visible = if props.panel_open {
-            area_w - panel_width(area_w, props.panel_folded)
+            area_w - panel_width(area_w, props.panel_folded, chosen)
         } else {
             area_w
         };
@@ -1488,7 +1503,32 @@ pub fn RunView(props: RunViewProps) -> Element {
             {props.flows}
             div { class: "run-context", {props.context} }
 
-            div { class: "run-body",
+            div {
+                class: if resizing.read().is_some() { "run-body run-body-resizing" } else { "run-body" },
+                // The panel's width, for `.run-drawer` to take.
+                style: "--panel-w: {open_w}px;",
+                // Listened for on the whole body, not the edge: the pointer
+                // outruns a 6px grip as soon as it moves.
+                onmousemove: move |e| {
+                    let started = *resizing.peek();
+                    if let Some((from_x, from_w, _)) = started {
+                        // Leftwards widens: the panel is pinned to the right.
+                        let w = store::Layout::clamp_panel(from_w + from_x - e.client_coordinates().x, area_w);
+                        resizing.set(Some((from_x, from_w, w)));
+                    }
+                },
+                onmouseup: move |_| {
+                    if let Some((_, _, w)) = resizing.take() {
+                        props.on_panel_width.call(Some(w));
+                    }
+                },
+                // A pointer that leaves mid-drag would otherwise leave the
+                // edge stuck to it.
+                onmouseleave: move |_| {
+                    if let Some((_, _, w)) = resizing.take() {
+                        props.on_panel_width.call(Some(w));
+                    }
+                },
             div {
                 class: if *playing.read() { "run-canvas" } else { "run-canvas run-paused" },
                 // ⌘ + scroll, or a pinch, zooms the map; plain scrolling
@@ -1908,6 +1948,23 @@ pub fn RunView(props: RunViewProps) -> Element {
                     key: "zoom-flash-{zoom_flash}",
                     class: "run-zoom-flash",
                     "{(z * 100.0).round()}%"
+                }
+            }
+            // The panel's left edge, dragged to widen it as far as the whole
+            // view — for reading a diff — and back down to `PANEL_MIN`.
+            if props.panel_open && !props.panel_folded {
+                div {
+                    class: "run-drawer-grip",
+                    style: "right: {open_w}px;",
+                    title: "Drag to resize, double-click for the usual width",
+                    onmousedown: move |e| {
+                        e.prevent_default();
+                        resizing.set(Some((e.client_coordinates().x, open_w, open_w)));
+                    },
+                    ondoubleclick: move |_| {
+                        resizing.set(None);
+                        props.on_panel_width.call(None);
+                    },
                 }
             }
             {props.children}
@@ -2508,9 +2565,9 @@ mod tests {
     #[test]
     fn a_step_under_the_panel_slides_out_just_far_enough() {
         let area = 1200.0;
-        let visible = area - panel_width(area, false);
+        let visible = area - panel_width(area, false, None);
         let x = 1000.0;
-        let slide = slide_for(x, 200.0, area, false);
+        let slide = slide_for(x, 200.0, area, false, None);
         assert!(slide > 0.0);
         // Its labels end right at the panel's edge.
         assert_eq!(x - slide + 100.0 + 16.0, visible);
@@ -2518,23 +2575,35 @@ mod tests {
 
     #[test]
     fn a_step_already_clear_of_the_panel_does_not_move_the_map() {
-        assert_eq!(slide_for(150.0, 200.0, 1200.0, false), 0.0);
+        assert_eq!(slide_for(150.0, 200.0, 1200.0, false, None), 0.0);
     }
 
     #[test]
     fn a_folded_panel_gives_the_map_almost_all_its_room_back() {
-        let open = slide_for(1000.0, 200.0, 1200.0, false);
-        let folded = slide_for(1000.0, 200.0, 1200.0, true);
+        let open = slide_for(1000.0, 200.0, 1200.0, false, None);
+        let folded = slide_for(1000.0, 200.0, 1200.0, true, None);
         assert!(folded < open);
         // A step clear of the strip does not move at all.
-        assert_eq!(slide_for(900.0, 200.0, 1200.0, true), 0.0);
+        assert_eq!(slide_for(900.0, 200.0, 1200.0, true, None), 0.0);
     }
 
     #[test]
     fn the_panel_never_takes_more_than_its_cap() {
-        assert_eq!(panel_width(3000.0, false), 620.0);
-        assert_eq!(panel_width(1000.0, false), 580.0);
-        assert_eq!(panel_width(1000.0, true), FOLDED_PANEL);
+        assert_eq!(panel_width(3000.0, false, None), 620.0);
+        assert_eq!(panel_width(1000.0, false, None), 580.0);
+        assert_eq!(panel_width(1000.0, true, None), FOLDED_PANEL);
+    }
+
+    #[test]
+    fn a_dragged_panel_can_cover_the_view_but_not_shrink_away() {
+        // As wide as the whole view, and no wider.
+        assert_eq!(panel_width(1200.0, false, Some(5000.0)), 1200.0);
+        assert_eq!(panel_width(1200.0, false, Some(800.0)), 800.0);
+        // Never below the minimum, unless the view itself is narrower.
+        assert_eq!(panel_width(1200.0, false, Some(10.0)), store::PANEL_MIN);
+        assert_eq!(panel_width(300.0, false, Some(10.0)), 300.0);
+        // Folded is folded, whatever width it was dragged to.
+        assert_eq!(panel_width(1200.0, true, Some(800.0)), FOLDED_PANEL);
     }
 
     #[test]
