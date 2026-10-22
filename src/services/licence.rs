@@ -300,11 +300,86 @@ fn save_check(check: &Check) {
     }
 }
 
-/// The licence number saved on this computer. A key from before licence
-/// numbers (a signed key) counts as none.
+/// What the licence file every Mayorana app shares says. One plan unlocks
+/// every app, so its number is typed once per computer: each app keeps only
+/// its own last answer from the gateway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shared {
+    /// No app has written it yet.
+    Missing,
+    /// Removed from this computer, in any app: none of them is licensed.
+    Removed,
+    Licence(String),
+}
+
+/// `~/Library/Application Support/mayorana/licence` on a Mac,
+/// `%APPDATA%\mayorana\licence` on Windows, `~/.config/mayorana/licence` on Linux.
+fn shared_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("mayorana").join("licence"))
+}
+
+fn load_shared() -> Shared {
+    let Some(path) = shared_path() else {
+        return Shared::Missing;
+    };
+    match std::fs::read_to_string(path) {
+        Ok(text) => normalise(&text).map_or(Shared::Removed, Shared::Licence),
+        Err(_) => Shared::Missing,
+    }
+}
+
+/// Writes `text` as the shared licence: a number, or nothing once removed.
+fn save_shared(text: &str) {
+    let write = || -> std::io::Result<()> {
+        let path = shared_path().ok_or_else(|| std::io::Error::other("no config folder"))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Named after this app, so two apps writing at once don't share it.
+        let tmp = path.with_extension(format!("{PRODUCT}.tmp"));
+        std::fs::write(&tmp, text)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&tmp, &path)
+    };
+    let _ = write();
+}
+
+/// The licence number to use, from the shared one and the one GitAgent saved
+/// itself: a number typed in another app wins, one removed there is removed
+/// here. `true` when GitAgent's number should be shared, as it predates the
+/// shared file.
+pub fn reconcile(shared: Shared, own: Option<String>) -> (Option<String>, bool) {
+    match shared {
+        Shared::Licence(licence) => (Some(licence), false),
+        Shared::Removed => (None, false),
+        Shared::Missing => {
+            let share = own.is_some();
+            (own, share)
+        }
+    }
+}
+
+/// The licence number saved on this computer, by GitAgent or any other
+/// Mayorana app. A key from before licence numbers (a signed key) counts as
+/// none.
 pub fn saved_key() -> Option<String> {
-    let text = std::fs::read_to_string(licence_path()).ok()?;
-    normalise(&text).ok()
+    let shared = load_shared();
+    if shared == Shared::Removed {
+        let _ = std::fs::remove_file(licence_path());
+        let _ = std::fs::remove_file(check_path());
+    }
+    let own = std::fs::read_to_string(licence_path())
+        .ok()
+        .and_then(|text| normalise(&text).ok());
+    let (licence, share) = reconcile(shared, own);
+    if let (Some(licence), true) = (&licence, share) {
+        save_shared(licence);
+    }
+    licence
 }
 
 /// The licence on this computer as of its last check — no network. Read
@@ -369,6 +444,7 @@ pub async fn activate(input: &str) -> Result<Status, String> {
     let _ = std::fs::create_dir_all(store::data_dir());
     store::write_atomic(&licence_path(), licence.as_bytes())
         .map_err(|e| format!("The licence couldn't be saved: {e}"))?;
+    save_shared(&licence);
     let check = Check {
         licence: licence.clone(),
         checked: now(),
@@ -378,10 +454,12 @@ pub async fn activate(input: &str) -> Result<Status, String> {
     Ok(status_at(Some(&licence), Some(&check), check.checked))
 }
 
-/// Removes the licence from this computer (to move it to another one).
+/// Removes the licence from this computer (to move it to another one), for
+/// every Mayorana app on it.
 pub fn deactivate() {
     let _ = std::fs::remove_file(licence_path());
     let _ = std::fs::remove_file(check_path());
+    save_shared("");
 }
 
 /// The address of Stripe's page for changing or cancelling the subscription.
@@ -673,5 +751,41 @@ mod tests {
         assert!(Status::Pro(account(true, &["*"])).is_pro());
         assert!(!Status::Free.is_pro());
         assert!(!Status::Lapsed(Lapse::Offline(account(true, &["*"]))).is_pro());
+    }
+
+    #[test]
+    fn the_licence_typed_in_one_app_is_shared_with_every_other() {
+        let mine = "ABCDE-FGHJK-LMNPQ-RSTUV".to_string();
+        let other = "BCDEF-GHJKL-MNPQR-STUVW".to_string();
+        // Typed in another app: it wins, and is checked again (an answer
+        // about another number doesn't count).
+        assert_eq!(
+            reconcile(Shared::Licence(other.clone()), Some(mine.clone())),
+            (Some(other.clone()), false)
+        );
+        assert_eq!(
+            reconcile(Shared::Licence(other.clone()), None),
+            (Some(other.clone()), false)
+        );
+        let check = Check {
+            licence: mine.clone(),
+            checked: 0,
+            account: Some(account(true, &["*"])),
+        };
+        assert_eq!(
+            status_at(Some(&other), Some(&check), 0),
+            Status::Lapsed(Lapse::NotChecked)
+        );
+        // Removed in another app: removed here too.
+        assert_eq!(
+            reconcile(Shared::Removed, Some(mine.clone())),
+            (None, false)
+        );
+        // Saved before the shared file existed: shared with the others.
+        assert_eq!(
+            reconcile(Shared::Missing, Some(mine.clone())),
+            (Some(mine), true)
+        );
+        assert_eq!(reconcile(Shared::Missing, None), (None, false));
     }
 }
