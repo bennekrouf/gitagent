@@ -222,7 +222,10 @@ fn default_selection(
 fn row_start(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<(String, String)> {
     let wants = status.wants();
     let need = wants.need()?;
-    let flow = book.runnable_for(hidden).into_iter().find(|f| f.answers(need))?;
+    let flow = book
+        .runnable_for(hidden)
+        .into_iter()
+        .find(|f| f.answers(need))?;
     let label = match wants {
         Wants::Commit if status.changes == 1 => "Commit 1 file".to_string(),
         Wants::Commit => format!("Commit {} files", status.changes),
@@ -1769,7 +1772,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
             approval: approval_for(&states_snapshot, &flows, &repo.path),
             start: status_map.get(&repo.path).and_then(|s| {
-                row_start(&book.read(), s, &repo_flows.read().hidden_for(&repo.path)).map(|(_, label)| label)
+                row_start(&book.read(), s, &repo_flows.read().hidden_for(&repo.path))
+                    .map(|(_, label)| label)
             }),
         })
         .collect();
@@ -3953,8 +3957,14 @@ mod tests {
         let mut book = FlowBook::defaults();
 
         let (flow, label) = row_start(&book, &status(3, false), &[]).unwrap();
-        assert_eq!((flow.as_str(), label.as_str()), ("commit_and_pr", "Commit 3 files"));
-        assert_eq!(row_start(&book, &status(1, false), &[]).unwrap().1, "Commit 1 file");
+        assert_eq!(
+            (flow.as_str(), label.as_str()),
+            ("commit_and_pr", "Commit 3 files")
+        );
+        assert_eq!(
+            row_start(&book, &status(1, false), &[]).unwrap().1,
+            "Commit 1 file"
+        );
         // Hidden here: nothing to offer, the note stays.
         assert!(row_start(&book, &status(3, false), &["commit_and_pr".into()]).is_none());
         // Clean: nothing at all.

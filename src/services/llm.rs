@@ -332,6 +332,9 @@ pub struct Region {
 }
 
 /// In the order Settings shows them.
+// One line per region on purpose: this reads as a table, and rustfmt would
+// spread each entry over five lines.
+#[rustfmt::skip]
 pub const REGIONS: &[Region] = &[
     Region { id: "europe", flag: "🇪🇺", label: "Europe", display: "🇪🇺 Europe" },
     Region { id: "china", flag: "🇨🇳", label: "China", display: "🇨🇳 China" },
@@ -599,7 +602,9 @@ impl LlmConfig {
     pub fn active_model(&self) -> &str {
         match self.kind {
             ProviderKind::Ollama => &self.ollama_model,
-            ProviderKind::Remote => self.region().map_or_else(|| self.remote_model_name(), |r| r.display),
+            ProviderKind::Remote => self
+                .region()
+                .map_or_else(|| self.remote_model_name(), |r| r.display),
             ProviderKind::Off => "no AI",
         }
     }
@@ -642,7 +647,10 @@ impl LlmConfig {
 
     /// The api0 region this is set to, if any.
     pub fn region(&self) -> Option<&'static Region> {
-        if self.kind != ProviderKind::Remote || !is_api0(self.preset()) || !self.remote_url.trim().is_empty() {
+        if self.kind != ProviderKind::Remote
+            || !is_api0(self.preset())
+            || !self.remote_url.trim().is_empty()
+        {
             return None;
         }
         REGIONS.iter().find(|r| r.id == self.remote_model.trim())
