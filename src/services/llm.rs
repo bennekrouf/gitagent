@@ -320,6 +320,84 @@ pub fn key_for(remote: &Remote) -> Option<String> {
     })
 }
 
+/// One of the AI regions api0 offers. Picking it sends its id as the model;
+/// api0 decides what runs there, and its answers only ever name the region.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Region {
+    pub id: &'static str,
+    pub flag: &'static str,
+    pub label: &'static str,
+    /// Flag and name, for the tab note and the step log.
+    pub display: &'static str,
+}
+
+/// In the order Settings shows them.
+pub const REGIONS: &[Region] = &[
+    Region { id: "europe", flag: "🇪🇺", label: "Europe", display: "🇪🇺 Europe" },
+    Region { id: "china", flag: "🇨🇳", label: "China", display: "🇨🇳 China" },
+    Region { id: "usa", flag: "🇺🇸", label: "United States", display: "🇺🇸 United States" },
+];
+
+/// Tokens in a typical model step — a commit message, a pull request
+/// description, one review — as measured on api0. Only for the estimate.
+pub const TYPICAL_STEP_TOKENS: f64 = 7000.0;
+
+/// What api0 says one of its regions costs right now.
+#[derive(Clone, PartialEq, Debug)]
+pub struct RegionOffer {
+    pub id: String,
+    /// Credits on this region cost this many times the plain rate.
+    pub multiplier: f64,
+    pub tokens_per_credit: i64,
+}
+
+impl RegionOffer {
+    /// What a typical step costs, as api0 charges it: rounded up, at least 1.
+    pub fn credits_per_step(&self) -> i64 {
+        let per = self.tokens_per_credit.max(1) as f64;
+        ((TYPICAL_STEP_TOKENS * self.multiplier.max(0.0) / per).ceil() as i64).max(1)
+    }
+}
+
+/// The regions in a `/v1/models` reply from api0.
+fn parse_region_offers(v: &Value) -> Vec<RegionOffer> {
+    let tokens_per_credit = v["tokens_per_credit"].as_i64().unwrap_or(10_000);
+    v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = m["id"].as_str()?;
+            REGIONS.iter().any(|r| r.id == id).then(|| RegionOffer {
+                id: id.to_string(),
+                multiplier: m["multiplier"].as_f64().unwrap_or(1.0),
+                tokens_per_credit,
+            })
+        })
+        .collect()
+}
+
+/// The regions api0 offers this licence now, with what each costs.
+pub async fn api0_regions() -> Result<Vec<RegionOffer>, String> {
+    let api0 = remote("api0");
+    let key = key_for(api0).ok_or_else(|| missing_key(api0))?;
+    let url = format!("{}/models", api0.base_url);
+    let resp = client(PROBE_TIMEOUT)?
+        .get(&url)
+        .bearer_auth(key)
+        .headers(client_app(api0))
+        .send()
+        .await
+        .map_err(|e| format!("api0 is unreachable: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("api0 returned {status}: {}", error_message(&text)));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("bad reply: {e}"))?;
+    Ok(parse_region_offers(&v))
+}
+
 /// Where `remote`'s key comes from, for Settings.
 pub fn key_source(remote: &Remote) -> Option<String> {
     if api_key(remote.env).is_some() {
@@ -468,7 +546,7 @@ impl LlmConfig {
     pub fn active_model(&self) -> &str {
         match self.kind {
             ProviderKind::Ollama => &self.ollama_model,
-            ProviderKind::Remote => self.remote_model_name(),
+            ProviderKind::Remote => self.region().map_or_else(|| self.remote_model_name(), |r| r.display),
             ProviderKind::Off => "no AI",
         }
     }
@@ -507,6 +585,33 @@ impl LlmConfig {
 
     pub fn preset(&self) -> &'static Remote {
         remote(&self.remote)
+    }
+
+    /// The api0 region this is set to, if any.
+    pub fn region(&self) -> Option<&'static Region> {
+        if self.kind != ProviderKind::Remote || !is_api0(self.preset()) || !self.remote_url.trim().is_empty() {
+            return None;
+        }
+        REGIONS.iter().find(|r| r.id == self.remote_model.trim())
+    }
+
+    /// One click in Settings: api0, in this region.
+    pub fn use_region(&mut self, id: &str) {
+        self.kind = ProviderKind::Remote;
+        self.remote = "api0".into();
+        self.remote_url.clear();
+        self.remote_model = id.to_string();
+    }
+
+    /// A provider of the user's own, with their own key: the one they had,
+    /// or the default when they were on api0.
+    pub fn use_own_key(&mut self) {
+        self.kind = ProviderKind::Remote;
+        if is_api0(self.preset()) {
+            self.remote = default_remote();
+            self.remote_url.clear();
+            self.remote_model.clear();
+        }
     }
 
     /// The preset's value unless overridden — so switching provider needs one
@@ -1085,6 +1190,40 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_region_is_api0_with_the_region_as_its_model() {
+        let mut cfg = LlmConfig::default();
+        assert_eq!(cfg.region(), None);
+        cfg.use_region("china");
+        assert_eq!(cfg.region().map(|r| r.id), Some("china"));
+        assert_eq!(cfg.remote_model_name(), "china");
+        assert_eq!(cfg.active_model(), "🇨🇳 China");
+        // api0 through a proxy, or with a model named by hand, is not a region.
+        cfg.remote_url = "https://proxy.example.com/v1".into();
+        assert_eq!(cfg.region(), None);
+
+        cfg.use_own_key();
+        assert_eq!(cfg.remote, DEFAULT_REMOTE);
+        assert!(cfg.remote_model.is_empty() && cfg.remote_url.is_empty());
+    }
+
+    #[test]
+    fn a_region_costs_what_a_typical_step_spends_rounded_up() {
+        let v = json!({
+            "object": "list",
+            "tokens_per_credit": 10000,
+            "data": [
+                { "id": "europe", "multiplier": 1.0 },
+                { "id": "usa", "multiplier": 4.0 },
+                { "id": "default" }
+            ]
+        });
+        let offers = parse_region_offers(&v);
+        assert_eq!(offers.len(), 2, "only the regions");
+        assert_eq!(offers[0].credits_per_step(), 1);
+        assert_eq!(offers[1].credits_per_step(), 3);
+    }
 
     #[test]
     fn a_bearer_token_is_not_sent_over_plain_http() {

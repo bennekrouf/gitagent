@@ -216,6 +216,21 @@ fn default_selection(
         .unwrap_or_default()
 }
 
+/// The flow a repository list row offers to start, and its button's words:
+/// a commit for uncommitted files, a release that is due. `None` for anything
+/// else, or when no flow shown in this repository answers it.
+fn row_start(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<(String, String)> {
+    let label = match status.wants() {
+        Wants::Commit if status.changes == 1 => "Commit 1 file".to_string(),
+        Wants::Commit => format!("Commit {} files", status.changes),
+        Wants::Release => "Run release".to_string(),
+        _ => return None,
+    };
+    let need = status.wants().need()?;
+    let flow = book.runnable_for(hidden).into_iter().find(|f| f.answers(need))?;
+    Some((flow.id.clone(), label))
+}
+
 /// Woken whenever an approval decision is recorded, or a run's trusted flag
 /// changes — the two things a node parked in `AwaitingApproval` is waiting to
 /// hear about.
@@ -1748,6 +1763,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
             prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
             approval: approval_for(&states_snapshot, &flows, &repo.path),
+            start: status_map.get(&repo.path).and_then(|s| {
+                row_start(&book.read(), s, &repo_flows.read().hidden_for(&repo.path)).map(|(_, label)| label)
+            }),
         })
         .collect();
 
@@ -2817,6 +2835,24 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             }
                         }
                     },
+                    on_start: move |path: String| {
+                        let Some((flow_id, _)) = statuses.read().get(&path).and_then(|s| {
+                            row_start(&book.read(), s, &repo_flows.read().hidden_for(&path))
+                        }) else {
+                            return;
+                        };
+                        let first = book.read().get(&flow_id).map(|f| f.first_node()).unwrap_or_default();
+                        // Opens the repository on that flow, as a click on
+                        // the row would, and starts it there — so the run,
+                        // and any approval it stops at, is in view.
+                        selected_repo.set(Some(path));
+                        selected_flow.set(flow_id);
+                        selected_node.set(first);
+                        selected_pr.set(String::new());
+                        drawer.set(None);
+                        diff_panel.set(None);
+                        begin(false);
+                    },
                     on_reprobe: move |path: String| {
                         forget_finished(&mut states.write(), &running.read(), Some(&path));
                         reprobe(path, statuses);
@@ -3880,6 +3916,48 @@ mod tests {
         let (flow_id, _, _) =
             default_selection(&book, &states, "/repo", Some(Wants::Commit), &[], &[]);
         assert_eq!(flow_id, "commit_and_pr");
+    }
+
+    #[test]
+    fn a_row_offers_the_commit_or_release_its_repository_is_ready_for() {
+        use crate::services::release::ReleaseState;
+        let status = |changes: usize, release: bool| RepoStatus {
+            branch: "main".into(),
+            changes,
+            forge: crate::services::forge::Forge::GitHub,
+            pr: None,
+            prs: vec![],
+            prs_error: None,
+            ahead: 0,
+            behind: 0,
+            unmerged: 0,
+            release: ReleaseState {
+                last_tag: Some("v1".into()),
+                commits: if release { 2 } else { 0 },
+                prs: vec![],
+                releases: release,
+                since_shipped: false,
+            },
+            in_progress: None,
+        };
+        let mut book = FlowBook::defaults();
+
+        let (flow, label) = row_start(&book, &status(3, false), &[]).unwrap();
+        assert_eq!((flow.as_str(), label.as_str()), ("commit_and_pr", "Commit 3 files"));
+        assert_eq!(row_start(&book, &status(1, false), &[]).unwrap().1, "Commit 1 file");
+        // Hidden here: nothing to offer, the note stays.
+        assert!(row_start(&book, &status(3, false), &["commit_and_pr".into()]).is_none());
+        // Clean: nothing at all.
+        assert!(row_start(&book, &status(0, false), &[]).is_none());
+
+        // A release is only offered once a flow can cut it.
+        assert!(row_start(&book, &status(0, true), &[]).is_none());
+        let mut release = book.get("commit_and_pr").unwrap().clone();
+        release.id = "release".into();
+        release.handles = vec![Need::Release.key().to_string()];
+        book.flows.push(release);
+        let (flow, label) = row_start(&book, &status(0, true), &[]).unwrap();
+        assert_eq!((flow.as_str(), label.as_str()), ("release", "Run release"));
     }
 
     #[test]
