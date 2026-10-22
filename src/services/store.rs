@@ -354,10 +354,9 @@ pub fn save_settings_for(folder: Option<&str>, cfg: &LlmConfig) {
         return save_settings(cfg);
     };
     let mut models = load_folder_models();
-    models.by_folder.insert(
-        folder.trim_end_matches('/').to_string(),
-        cfg.model_choice(),
-    );
+    models
+        .by_folder
+        .insert(folder.trim_end_matches('/').to_string(), cfg.model_choice());
     save_folder_models(&models);
     let mut shared = load_settings();
     shared.second = cfg.second.clone();
@@ -892,7 +891,10 @@ mod tests {
             "china"
         );
         assert_eq!(
-            models.choice_for("/code/api0/gateway").unwrap().remote_model,
+            models
+                .choice_for("/code/api0/gateway")
+                .unwrap()
+                .remote_model,
             "europe"
         );
     }

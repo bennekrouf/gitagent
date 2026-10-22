@@ -36,6 +36,17 @@ were never released.
 
 ### Changed
 
+- A new install only asks what writes the commit messages when there is a
+  model on this machine to offer. With ollama running it is the same one-click
+  question as before, now naming the model it found — and a model other than
+  the usual one is picked up rather than reported as missing. Without ollama
+  the question is skipped: GitAgent starts on the Europe model and opens
+  straight onto your repositories, and Settings changes it whenever you like.
+
+- "No AI" is no longer offered as a way to set up GitAgent. Every flow still
+  runs without a model where one is unreachable, and the second reviewer is
+  still off until you turn it on.
+
 - The repository list offers the next step instead of only naming it: a
   repository with uncommitted files shows a "Commit 3 files" button where it
   said "uncommitted", and one with a release due shows a button named after

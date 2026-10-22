@@ -123,7 +123,10 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                 Some(Ok(list)) => match list.iter().find(|o| o.id == r.id) {
                     Some(o) => {
                         let n = o.credits_per_step();
-                        format!("\u{2248} {n} {} a step", if n == 1 { "credit" } else { "credits" })
+                        format!(
+                            "\u{2248} {n} {} a step",
+                            if n == 1 { "credit" } else { "credits" }
+                        )
                     }
                     None => "not offered".to_string(),
                 },

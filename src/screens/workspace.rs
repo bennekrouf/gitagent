@@ -222,7 +222,10 @@ fn default_selection(
 fn row_start(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<(String, String)> {
     let wants = status.wants();
     let need = wants.need()?;
-    let flow = book.runnable_for(hidden).into_iter().find(|f| f.answers(need))?;
+    let flow = book
+        .runnable_for(hidden)
+        .into_iter()
+        .find(|f| f.answers(need))?;
     let label = match wants {
         Wants::Commit if status.changes == 1 => "Commit 1 file".to_string(),
         Wants::Commit => format!("Commit {} files", status.changes),
@@ -1769,7 +1772,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
             approval: approval_for(&states_snapshot, &flows, &repo.path),
             start: status_map.get(&repo.path).and_then(|s| {
-                row_start(&book.read(), s, &repo_flows.read().hidden_for(&repo.path)).map(|(_, label)| label)
+                row_start(&book.read(), s, &repo_flows.read().hidden_for(&repo.path))
+                    .map(|(_, label)| label)
             }),
         })
         .collect();
@@ -1804,8 +1808,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let trust = trust || *global_trust.read();
         // Settings live in a per-window signal but one file on disk. Re-reading
         // here is what stops a second window running against a stale provider
-        // — for this window's folder, so a window set to China stays on China
-        // however the one next to it was changed.
+        // — for the folder this repository sits in, so a window set to China
+        // stays on China however the one next to it was changed.
         llm_config_mut.set(store::load_settings_for(Some(&repo)));
         chain_note.set(String::new());
 
@@ -3953,8 +3957,14 @@ mod tests {
         let mut book = FlowBook::defaults();
 
         let (flow, label) = row_start(&book, &status(3, false), &[]).unwrap();
-        assert_eq!((flow.as_str(), label.as_str()), ("commit_and_pr", "Commit 3 files"));
-        assert_eq!(row_start(&book, &status(1, false), &[]).unwrap().1, "Commit 1 file");
+        assert_eq!(
+            (flow.as_str(), label.as_str()),
+            ("commit_and_pr", "Commit 3 files")
+        );
+        assert_eq!(
+            row_start(&book, &status(1, false), &[]).unwrap().1,
+            "Commit 1 file"
+        );
         // Hidden here: nothing to offer, the note stays.
         assert!(row_start(&book, &status(3, false), &["commit_and_pr".into()]).is_none());
         // Clean: nothing at all.
@@ -3972,7 +3982,10 @@ mod tests {
         assert_eq!((flow.as_str(), label.as_str()), ("release", "Release"));
 
         book.flows.last_mut().unwrap().label = "Deploy VPS".into();
-        assert_eq!(row_start(&book, &status(0, true), &[]).unwrap().1, "Deploy VPS");
+        assert_eq!(
+            row_start(&book, &status(0, true), &[]).unwrap().1,
+            "Deploy VPS"
+        );
     }
 
     #[test]
