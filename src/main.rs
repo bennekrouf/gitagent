@@ -149,7 +149,15 @@ fn App() -> Element {
 #[component]
 pub fn WindowRoot(initial: Option<String>) -> Element {
     let mut workspace = use_signal(|| initial);
-    let llm_config = use_signal(store::load_settings);
+    let mut llm_config = use_signal(|| store::load_settings_for(workspace.read().as_deref()));
+
+    // Each folder keeps its own model, so opening a different folder in this
+    // window has to pick up that folder's choice — and leave the window next
+    // to it on whatever it was set to.
+    use_effect(move || {
+        let folder = workspace.read().clone();
+        llm_config.set(store::load_settings_for(folder.as_deref()));
+    });
 
     // Follow the OS theme until the user overrides it, exactly as ais-monitor does.
     let system_light = dark_light::detect() != dark_light::Mode::Dark;

@@ -11,12 +11,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use super::llm::LlmConfig;
+use super::llm::{LlmConfig, ModelChoice};
 
 const REPOS_FILE: &str = "repos.json";
 const SETTINGS_FILE: &str = "settings.json";
 const REPO_FLOWS_FILE: &str = "repo_flows.json";
 const REPO_BASES_FILE: &str = "repo_bases.json";
+const FOLDER_MODELS_FILE: &str = "folder_models.json";
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Repo {
@@ -278,6 +279,89 @@ pub fn load_settings() -> LlmConfig {
 
 pub fn save_settings(cfg: &LlmConfig) {
     write(SETTINGS_FILE, cfg);
+}
+
+/// The model each folder has chosen for itself, keyed by the folder's path.
+///
+/// A window is one open folder, so this is what lets two windows run
+/// different models at the same time. A folder with no entry runs whatever
+/// `settings.json` says — which is also what a folder inherits the first
+/// time it is opened, so nothing has to be chosen twice.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct FolderModels {
+    #[serde(default)]
+    pub by_folder: BTreeMap<String, ModelChoice>,
+}
+
+/// Whether `path` is `folder` or sits somewhere under it.
+fn is_within(path: &str, folder: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    let folder = folder.trim_end_matches('/');
+    path == folder
+        || path
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+impl FolderModels {
+    /// The choice made for `path`, or for the nearest folder above it.
+    ///
+    /// Walking upwards is what lets a run started from the MCP server, which
+    /// knows a repository rather than a folder, use the same model the window
+    /// on that folder is set to.
+    pub fn choice_for(&self, path: &str) -> Option<&ModelChoice> {
+        self.by_folder
+            .iter()
+            .filter(|(folder, _)| is_within(path, folder))
+            .max_by_key(|(folder, _)| folder.trim_end_matches('/').len())
+            .map(|(_, choice)| choice)
+    }
+}
+
+pub fn load_folder_models() -> FolderModels {
+    read(FOLDER_MODELS_FILE)
+}
+
+pub fn save_folder_models(models: &FolderModels) {
+    write(FOLDER_MODELS_FILE, models);
+}
+
+/// The settings a window with `folder` open should run on: the shared file,
+/// with that folder's own model laid over it once it has chosen one.
+///
+/// `None` — the welcome screen, the first run, anywhere with no folder to
+/// scope to — is the shared settings as they stand.
+pub fn load_settings_for(folder: Option<&str>) -> LlmConfig {
+    let shared = load_settings();
+    let Some(folder) = folder else {
+        return shared;
+    };
+    match load_folder_models().choice_for(folder) {
+        Some(choice) => shared.with_model_choice(choice),
+        None => shared,
+    }
+}
+
+/// Writes what Settings was closed on.
+///
+/// With a folder open, the model becomes that folder's and the shared default
+/// is left exactly as it was — that is the whole point: picking China here
+/// must not move another window off the United States. Everything else in the
+/// panel is not per folder, so it still goes to the shared file. Without a
+/// folder there is nothing to scope to, and the lot is the shared default.
+pub fn save_settings_for(folder: Option<&str>, cfg: &LlmConfig) {
+    let Some(folder) = folder else {
+        return save_settings(cfg);
+    };
+    let mut models = load_folder_models();
+    models
+        .by_folder
+        .insert(folder.trim_end_matches('/').to_string(), cfg.model_choice());
+    save_folder_models(&models);
+    let mut shared = load_settings();
+    shared.second = cfg.second.clone();
+    shared.lenses = cfg.lenses.clone();
+    save_settings(&shared);
 }
 
 /// Which flows each repository has chosen not to see, keyed by repository
@@ -743,5 +827,101 @@ mod tests {
     fn settings_fall_back_to_defaults_when_the_file_is_corrupt() {
         let cfg: LlmConfig = serde_json::from_str("{ not json").unwrap_or_default();
         assert_eq!(cfg, LlmConfig::default());
+    }
+
+    fn in_region(id: &str) -> ModelChoice {
+        let mut cfg = LlmConfig::default();
+        cfg.use_region(id);
+        cfg.model_choice()
+    }
+
+    #[test]
+    fn two_folders_keep_their_own_models() {
+        let mut models = FolderModels::default();
+        models
+            .by_folder
+            .insert("/code/api0".into(), in_region("china"));
+        models
+            .by_folder
+            .insert("/code/desktop".into(), in_region("usa"));
+
+        assert_eq!(
+            models.choice_for("/code/api0").unwrap().remote_model,
+            "china"
+        );
+        assert_eq!(
+            models.choice_for("/code/desktop").unwrap().remote_model,
+            "usa"
+        );
+        // Nothing chosen here: the shared default stands.
+        assert!(models.choice_for("/code/elsewhere").is_none());
+    }
+
+    #[test]
+    fn a_repository_inside_a_folder_uses_that_folders_model() {
+        // How a run started from the MCP server, which knows a repository
+        // rather than a folder, lands on the same model as the window.
+        let mut models = FolderModels::default();
+        models
+            .by_folder
+            .insert("/code/desktop".into(), in_region("usa"));
+        assert_eq!(
+            models
+                .choice_for("/code/desktop/gitagent")
+                .unwrap()
+                .remote_model,
+            "usa"
+        );
+        // A sibling folder whose name merely starts the same is not inside it.
+        assert!(models.choice_for("/code/desktop-old/thing").is_none());
+    }
+
+    #[test]
+    fn the_nearest_folder_above_a_repository_wins() {
+        let mut models = FolderModels::default();
+        models.by_folder.insert("/code".into(), in_region("europe"));
+        models
+            .by_folder
+            .insert("/code/desktop".into(), in_region("china"));
+        assert_eq!(
+            models
+                .choice_for("/code/desktop/gitagent")
+                .unwrap()
+                .remote_model,
+            "china"
+        );
+        assert_eq!(
+            models
+                .choice_for("/code/api0/gateway")
+                .unwrap()
+                .remote_model,
+            "europe"
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_is_the_same_folder() {
+        let mut models = FolderModels::default();
+        models
+            .by_folder
+            .insert("/code/desktop/".into(), in_region("china"));
+        assert_eq!(
+            models.choice_for("/code/desktop").unwrap().remote_model,
+            "china"
+        );
+    }
+
+    #[test]
+    fn a_folders_model_does_not_carry_the_shared_review_settings() {
+        // Picking China for one folder must not turn another window's second
+        // opinion or focused reviews on or off.
+        let mut shared = LlmConfig::default();
+        shared.second.kind = crate::services::llm::ProviderKind::Remote;
+        shared.lenses.security = true;
+
+        let laid_over = shared.with_model_choice(&in_region("china"));
+        assert_eq!(laid_over.remote_model, "china");
+        assert_eq!(laid_over.second, shared.second);
+        assert_eq!(laid_over.lenses, shared.lenses);
     }
 }
