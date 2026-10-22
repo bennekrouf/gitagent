@@ -764,9 +764,9 @@ mod tests {
         s.artifacts
             .insert("second_finding_count".into(), "2".into());
         s.artifacts
-            .insert("second_model".into(), "deepseek-chat".into());
+            .insert("second_model".into(), "gpt-4o-mini".into());
         let held = decide(&node(Step::Merge), &s);
-        assert!(held.reason().unwrap().contains("deepseek-chat"));
+        assert!(held.reason().unwrap().contains("gpt-4o-mini"));
     }
 
     #[test]

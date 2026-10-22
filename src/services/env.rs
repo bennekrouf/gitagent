@@ -24,7 +24,6 @@
 /// actually reads. Nothing new is exposed either way, since launching from a
 /// terminal would hand over the entire environment.
 const INHERITED: &[&str] = &[
-    "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
     "MISTRAL_API_KEY",
     "COHERE_API_KEY",
@@ -394,15 +393,15 @@ mod tests {
 
     #[test]
     fn exported_secrets_are_read_out_of_the_shell_output() {
-        let pairs = parse_env_lines("DEEPSEEK_API_KEY=sk-abc\nGH_TOKEN=ghp_1\n");
+        let pairs = parse_env_lines("OPENAI_API_KEY=sk-abc\nGH_TOKEN=ghp_1\n");
         assert_eq!(pairs.len(), 2);
-        assert_eq!(pairs[0], ("DEEPSEEK_API_KEY".into(), "sk-abc".into()));
+        assert_eq!(pairs[0], ("OPENAI_API_KEY".into(), "sk-abc".into()));
     }
 
     #[test]
     fn a_variable_that_is_not_set_contributes_nothing() {
         // The shell prints `KEY=` for anything unset.
-        assert!(parse_env_lines("DEEPSEEK_API_KEY=\nGH_TOKEN=\n").is_empty());
+        assert!(parse_env_lines("OPENAI_API_KEY=\nGH_TOKEN=\n").is_empty());
     }
 
     #[test]
@@ -419,7 +418,7 @@ mod tests {
     #[test]
     fn only_variables_the_app_reads_are_carried_over() {
         // An allowlist, not a wholesale copy of the shell environment.
-        assert!(INHERITED.contains(&"DEEPSEEK_API_KEY"));
+        assert!(INHERITED.contains(&"OPENAI_API_KEY"));
         assert!(INHERITED.contains(&"AZURE_DEVOPS_EXT_PAT"));
         assert!(!INHERITED.contains(&"AWS_SECRET_ACCESS_KEY"));
     }
@@ -431,18 +430,18 @@ mod tests {
         let stdout = "nvm: using node v20.11.0\n\
                       CONDA_PREFIX=/opt/miniconda3\n\
                       AWS_SECRET_ACCESS_KEY=leaked\n\
-                      DEEPSEEK_API_KEY=sk-real\n\
+                      OPENAI_API_KEY=sk-real\n\
                       AZURE_DEVOPS_EXT_PAT=\n\
                       GH_TOKEN=\n";
         let found = adoptable(stdout);
         let adopted: Vec<&str> = found.iter().map(|(k, _)| k.as_str()).collect();
         // Only what was asked for, and only what was actually set.
-        assert_eq!(adopted, vec!["DEEPSEEK_API_KEY"]);
+        assert_eq!(adopted, vec!["OPENAI_API_KEY"]);
     }
 
     #[test]
     fn the_requested_variables_still_come_through() {
-        let stdout = "DEEPSEEK_API_KEY=sk-abc\nAZURE_DEVOPS_EXT_PAT=pat-1\nGH_TOKEN=ghp_1\n";
+        let stdout = "OPENAI_API_KEY=sk-abc\nAZURE_DEVOPS_EXT_PAT=pat-1\nGH_TOKEN=ghp_1\n";
         assert_eq!(adoptable(stdout).len(), 3);
     }
 

@@ -8,6 +8,7 @@ pub mod licence_panel;
 pub mod mcp_panel;
 pub mod node_card;
 pub mod pr_card;
+pub mod provider_picker;
 pub mod repo_sidebar;
 pub mod run_view;
 pub mod settings_panel;
