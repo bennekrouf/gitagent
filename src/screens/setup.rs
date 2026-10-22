@@ -26,6 +26,10 @@ pub struct SetupProps {
     /// it alone until another repository adds it from its flow list.
     #[props(default)]
     pub repo: Option<String>,
+    /// The folder the window Setup was opened from has open, so Settings
+    /// reached from here writes that folder's model and not the default.
+    #[props(default)]
+    pub folder: Option<String>,
     /// Read to tell whether a step just added has anything to run with, and
     /// handed to Settings when you go and set that up from here.
     pub llm_config: Signal<LlmConfig>,
@@ -889,6 +893,7 @@ pub fn Setup(props: SetupProps) -> Element {
         if *settings_open.read() {
             SettingsPanel {
                 llm_config: props.llm_config,
+                folder: props.folder.clone(),
                 on_close: move |_| settings_open.set(false),
             }
         }

@@ -542,6 +542,59 @@ impl Default for LlmConfig {
     }
 }
 
+/// The part of the settings one open folder chooses for itself: which model
+/// its steps call, and where that model runs.
+///
+/// Running one GitAgent window per folder is the ordinary way to work, and
+/// the two windows need not agree — China in the folder holding one project,
+/// the United States in another. Only the model is scoped this way. The
+/// second opinion and the focused reviews are about *how* a review is done
+/// rather than where, and nobody wants those to change with the folder.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub kind: ProviderKind,
+    pub ollama_url: String,
+    pub ollama_model: String,
+    pub ollama_num_ctx: u32,
+    #[serde(default = "default_remote")]
+    pub remote: String,
+    #[serde(default)]
+    pub remote_url: String,
+    #[serde(default)]
+    pub remote_model: String,
+}
+
+impl LlmConfig {
+    /// Just the per-folder part, to be stored against a folder.
+    pub fn model_choice(&self) -> ModelChoice {
+        ModelChoice {
+            kind: self.kind,
+            ollama_url: self.ollama_url.clone(),
+            ollama_model: self.ollama_model.clone(),
+            ollama_num_ctx: self.ollama_num_ctx,
+            remote: self.remote.clone(),
+            remote_url: self.remote_url.clone(),
+            remote_model: self.remote_model.clone(),
+        }
+    }
+
+    /// This config with a folder's model laid over it — the shared second
+    /// opinion and lenses kept as they are.
+    pub fn with_model_choice(&self, choice: &ModelChoice) -> Self {
+        Self {
+            kind: choice.kind,
+            ollama_url: choice.ollama_url.clone(),
+            ollama_model: choice.ollama_model.clone(),
+            ollama_num_ctx: choice.ollama_num_ctx,
+            remote: choice.remote.clone(),
+            remote_url: choice.remote_url.clone(),
+            remote_model: choice.remote_model.clone(),
+            second: self.second.clone(),
+            lenses: self.lenses.clone(),
+        }
+    }
+}
+
 impl LlmConfig {
     pub fn active_model(&self) -> &str {
         match self.kind {

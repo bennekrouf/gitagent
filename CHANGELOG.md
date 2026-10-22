@@ -27,13 +27,21 @@ were never released.
   can weigh them before a run. Ollama sits beside them, and a provider with
   a key of your own is still one click away.
 
+- Each open folder keeps its own model. Set one window to China and the one
+  beside it to the United States, and both stay that way — the model shown in
+  the top bar is the folder's, and changing it there no longer moves any other
+  window. A folder you have not chosen for runs the model set with no folder
+  open, so nothing has to be picked twice. The second reviewer and the focused
+  reviews are still one setting for the whole computer.
+
 ### Changed
 
 - The repository list offers the next step instead of only naming it: a
   repository with uncommitted files shows a "Commit 3 files" button where it
-  said "uncommitted", and one with a release due shows "Run release". A click
-  opens the repository and starts that flow, so any approval it stops at is
-  right in front of you.
+  said "uncommitted", and one with a release due shows a button named after
+  the flow that will run it — "Release", or "Deploy VPS" if that is what cuts
+  releases here. A click opens the repository and starts that flow, so any
+  approval it stops at is right in front of you.
 
 ## [0.1.118] - 2026-10-22
 
