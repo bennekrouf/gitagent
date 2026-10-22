@@ -17,6 +17,20 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- A new install only asks what writes the commit messages when there is a model
+  on this machine to offer. With ollama running it is the same one-click
+  question as before, now naming the model it found — and a model other than the
+  usual one is picked up rather than reported as missing. Without ollama the
+  question is skipped: GitAgent starts on the Europe model and opens straight
+  onto your repositories, and Settings changes it whenever you like. "No AI" is
+  no longer offered as a way to set up GitAgent; every flow still runs without a
+  model where one is unreachable, and the second reviewer is still off until you
+  turn it on.
+
 ## [0.1.119] - 2026-10-22
 
 ### Added
