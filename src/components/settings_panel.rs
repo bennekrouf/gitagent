@@ -22,6 +22,11 @@ use crate::telemetry;
 #[derive(Props, Clone, PartialEq)]
 pub struct SettingsPanelProps {
     pub llm_config: Signal<LlmConfig>,
+    /// The folder this window has open. The model is that folder's own
+    /// choice, so two windows can run different ones; `None` — the welcome
+    /// screen, the first run — sets the default every folder starts from.
+    #[props(default)]
+    pub folder: Option<String>,
     pub on_close: EventHandler<()>,
 }
 
@@ -35,6 +40,9 @@ enum Tab {
 #[component]
 pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     let mut cfg = props.llm_config;
+    // In a signal so the close handler below stays `Copy`. The panel is a
+    // modal: the folder cannot change under it while it is open.
+    let folder = use_signal(|| props.folder.clone());
     let mut tab = use_signal(|| Tab::Default);
     let mut probe_result = use_signal(|| Option::<Result<String, String>>::None);
     let mut probing = use_signal(|| false);
@@ -84,9 +92,19 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     };
 
     let close = move |_| {
-        store::save_settings(&cfg.read());
+        store::save_settings_for(folder.read().as_deref(), &cfg.read());
         props.on_close.call(());
     };
+
+    // Named, because the model chosen here belongs to this folder alone: the
+    // window beside it is not about to change under you.
+    let scope_path = props.folder.clone().unwrap_or_default();
+    let scope_name = props.folder.as_deref().map(|f| {
+        std::path::Path::new(f)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| f.to_string())
+    });
 
     let current = cfg.read().clone();
     let preset = current.preset();
@@ -159,6 +177,21 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
 
                 div { class: "modal-body",
                     if showing == Tab::Default {
+                        match scope_name.clone() {
+                            Some(name) => rsx! {
+                                p { class: "field-note", title: "{scope_path}",
+                                    "The model is this folder\u{2019}s own \u{2014} {name}. A window with "
+                                    "a different folder open keeps the model it was set to, so one can "
+                                    "run in China while another runs in the United States."
+                                }
+                            },
+                            None => rsx! {
+                                p { class: "field-note",
+                                    "No folder is open, so this is the model a folder starts on until "
+                                    "one is chosen for it."
+                                }
+                            },
+                        }
                         div { class: "region-row",
                             for (r, note) in region_notes {
                                 button {

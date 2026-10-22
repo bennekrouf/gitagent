@@ -220,14 +220,19 @@ fn default_selection(
 /// a commit for uncommitted files, a release that is due. `None` for anything
 /// else, or when no flow shown in this repository answers it.
 fn row_start(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<(String, String)> {
-    let label = match status.wants() {
+    let wants = status.wants();
+    let need = wants.need()?;
+    let flow = book.runnable_for(hidden).into_iter().find(|f| f.answers(need))?;
+    let label = match wants {
         Wants::Commit if status.changes == 1 => "Commit 1 file".to_string(),
         Wants::Commit => format!("Commit {} files", status.changes),
-        Wants::Release => "Run release".to_string(),
+        // The flow's own name rather than a generic "Run release": several
+        // flows can answer a release — "Release", "Deploy VPS", "Deploy
+        // API0" — and a button that does not say which one it starts is
+        // worse than no button.
+        Wants::Release => flow.label.clone(),
         _ => return None,
     };
-    let need = status.wants().need()?;
-    let flow = book.runnable_for(hidden).into_iter().find(|f| f.answers(need))?;
     Some((flow.id.clone(), label))
 }
 
@@ -1798,8 +1803,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         let chosen_for_you = trust;
         let trust = trust || *global_trust.read();
         // Settings live in a per-window signal but one file on disk. Re-reading
-        // here is what stops a second window running against a stale provider.
-        llm_config_mut.set(store::load_settings());
+        // here is what stops a second window running against a stale provider
+        // — for this window's folder, so a window set to China stays on China
+        // however the one next to it was changed.
+        llm_config_mut.set(store::load_settings_for(Some(&repo)));
         chain_note.set(String::new());
 
         // An ordinary Start runs the flow on screen. A trusted run is for the
@@ -2623,6 +2630,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         return rsx! {
             Setup {
                 repo: selected_repo.read().clone(),
+                folder: Some(props.workspace.clone()),
                 llm_config: props.llm_config,
                 on_close: move |_| {
                     // Pick up whatever Setup wrote, without disturbing any run.
@@ -2706,6 +2714,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     }
                     button {
                         class: "btn btn-ghost",
+                        title: "The model this folder runs on \u{2014} click to change it here without touching any other window",
                         onclick: move |_| settings_open.set(true),
                         "{cfg.active_model()}"
                     }
@@ -3255,6 +3264,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         if *settings_open.read() {
             SettingsPanel {
                 llm_config: props.llm_config,
+                folder: Some(props.workspace.clone()),
                 on_close: move |_| settings_open.set(false),
             }
         }
@@ -3954,10 +3964,15 @@ mod tests {
         assert!(row_start(&book, &status(0, true), &[]).is_none());
         let mut release = book.get("commit_and_pr").unwrap().clone();
         release.id = "release".into();
+        release.label = "Release".into();
         release.handles = vec![Need::Release.key().to_string()];
         book.flows.push(release);
+        // The button says which flow it starts, not "Run release".
         let (flow, label) = row_start(&book, &status(0, true), &[]).unwrap();
-        assert_eq!((flow.as_str(), label.as_str()), ("release", "Run release"));
+        assert_eq!((flow.as_str(), label.as_str()), ("release", "Release"));
+
+        book.flows.last_mut().unwrap().label = "Deploy VPS".into();
+        assert_eq!(row_start(&book, &status(0, true), &[]).unwrap().1, "Deploy VPS");
     }
 
     #[test]

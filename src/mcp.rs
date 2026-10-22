@@ -943,8 +943,10 @@ async fn advance(run: &mut Run) {
 /// each of the stand-ins below exists.
 async fn run_node(run: &mut Run, node: &NodeSpec) {
     // Read each time: Settings may change in the window while a client holds
-    // a run open, and the next step should use what is set now.
-    let cfg: LlmConfig = store::load_settings();
+    // a run open, and the next step should use what is set now. Scoped to the
+    // repository, so a run here uses the model chosen for the folder it sits
+    // in rather than a different window's.
+    let cfg: LlmConfig = store::load_settings_for(Some(&run.repo));
     run.state.set_status(&node.id, NodeStatus::Running);
     publish(run);
     let state = &mut run.state;
@@ -1033,7 +1035,7 @@ async fn report_finished(run: &Run) {
         &run.flow,
         telemetry::outcome_of(&statuses),
         &forge,
-        store::load_settings().kind,
+        store::load_settings_for(Some(&run.repo)).kind,
     ));
     tokio::spawn(telemetry::flush());
 }
