@@ -3603,9 +3603,12 @@ mod tests {
     fn a_step_a_trusted_run_held_back_is_offered_with_its_reason() {
         let mut held = waiting_at_push();
         held.runs.get_mut("push").unwrap().held = "CI is failing".into();
-        let approval =
-            approval_for(&states_with("commit_and_pr", "", held), &FlowBook::defaults(), "repo")
-                .unwrap();
+        let approval = approval_for(
+            &states_with("commit_and_pr", "", held),
+            &FlowBook::defaults(),
+            "repo",
+        )
+        .unwrap();
         let tooltip = approval.tooltip();
         assert!(tooltip.starts_with("CI is failing"));
         assert!(tooltip.contains("git push -u origin feat/x"));

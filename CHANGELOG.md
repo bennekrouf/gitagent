@@ -26,6 +26,12 @@ were never released.
   log can be read full width, and back down again. It never gets so narrow it
   is hard to grab, the width you leave it at is kept between launches, and a
   double-click on the edge puts it back to its usual size.
+### Changed
+
+- One licence number for every Mayorana app on this computer. Paste it in any
+  of them and the others are Pro too the next time they start, with nothing to
+  paste again; a number already pasted in one app is shared the same way.
+  Removing the licence in the Pro window removes it from all of them.
 
 ## [0.1.117] - 2026-10-21
 
