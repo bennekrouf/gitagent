@@ -2179,6 +2179,9 @@ button.update-banner-link {
 
 /* Settings: api0's regions and the local ollama, one click each. */
 .region-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 8px; }
+/* The api0 regions, under the provider row that led to them. */
+.region-row-3 { grid-template-columns: repeat(3, 1fr); }
+.api0-mark { display: block; }
 .region {
     display: flex; flex-direction: column; align-items: center; gap: 3px;
     padding: 10px 6px; border-radius: 8px; cursor: pointer;
