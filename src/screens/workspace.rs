@@ -3269,6 +3269,12 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             SettingsPanel {
                 llm_config: props.llm_config,
                 folder: Some(props.workspace.clone()),
+                // api0 asks for a licence where it is needed, rather than
+                // sending you to look for the button in the top bar.
+                on_licence: move |_| {
+                    settings_open.set(false);
+                    licence_open.set(true);
+                },
                 on_close: move |_| settings_open.set(false),
             }
         }

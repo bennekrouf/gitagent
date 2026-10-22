@@ -1,10 +1,11 @@
 //! Model settings — pick the model the flow's steps call, and prove it works
 //! before a run depends on it.
 //!
-//! The default model is one click among api0's three regions (Europe, China,
-//! the United States) and the local ollama, each region with what a typical
-//! step costs in credits. Which model api0 runs in a region is not shown — it
-//! is api0's to choose. A provider with a key of your own is one more click.
+//! One picker, used twice: api0 (with the region it runs in), a local ollama,
+//! a provider with a key of your own, or no model at all. The second opinion
+//! chooses from exactly the same row, so the two tabs read the same way and
+//! the long list of providers — DeepSeek, OpenAI and the rest — stays out of
+//! sight until you say you have a key.
 //!
 //! Two tabs, one per flow step that chooses its own model: the default every
 //! model step uses, and the second opinion that reviews a pull request again.
@@ -27,6 +28,11 @@ pub struct SettingsPanelProps {
     /// screen, the first run — sets the default every folder starts from.
     #[props(default)]
     pub folder: Option<String>,
+    /// Opens the GitAgent Pro window, where a licence is activated. Without
+    /// it — a window that has no such panel — api0 says where to find it
+    /// instead of offering a button that would go nowhere.
+    #[props(default)]
+    pub on_licence: Option<EventHandler<()>>,
     pub on_close: EventHandler<()>,
 }
 
@@ -35,6 +41,25 @@ pub struct SettingsPanelProps {
 enum Tab {
     Default,
     Second,
+}
+
+/// The four ways a step can be answered. One row of these, the same in both
+/// tabs: which provider, not yet which model.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pick {
+    Api0,
+    Ollama,
+    OwnKey,
+    Off,
+}
+
+fn pick_of(kind: ProviderKind, remote_key: &str) -> Pick {
+    match kind {
+        ProviderKind::Off => Pick::Off,
+        ProviderKind::Ollama => Pick::Ollama,
+        ProviderKind::Remote if llm::is_api0(llm::remote(remote_key)) => Pick::Api0,
+        ProviderKind::Remote => Pick::OwnKey,
+    }
 }
 
 #[component]
@@ -107,39 +132,10 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     });
 
     let current = cfg.read().clone();
-    let preset = current.preset();
-    let key_source = llm::key_source(preset);
     let second = current.second.clone();
     let second_cfg = current.second_config();
     let showing = *tab.read();
-    let has_licence = llm::key_for(llm::remote("api0")).is_some();
-    let region_notes: Vec<(&'static llm::Region, String)> = llm::REGIONS
-        .iter()
-        .map(|r| {
-            let note = match offers.read().as_ref() {
-                _ if !has_licence => "needs a licence".to_string(),
-                None => "\u{2026}".to_string(),
-                Some(Err(_)) => "unavailable".to_string(),
-                Some(Ok(list)) => match list.iter().find(|o| o.id == r.id) {
-                    Some(o) => {
-                        let n = o.credits_per_step();
-                        format!(
-                            "\u{2248} {n} {} a step",
-                            if n == 1 { "credit" } else { "credits" }
-                        )
-                    }
-                    None => "not offered".to_string(),
-                },
-            };
-            (r, note)
-        })
-        .collect();
-    let region = current.region();
-    let own_key = current.kind == ProviderKind::Remote && region.is_none();
-    let offers_error = match offers.read().as_ref() {
-        Some(Err(e)) if has_licence => Some(e.clone()),
-        _ => None,
-    };
+    let on_licence = props.on_licence;
     // Each tab says which model it is set to, so the one you are not looking
     // at is not a mystery — above all whether the second reviewer is on.
     let notes = [
@@ -195,191 +191,14 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                 }
                             },
                         }
-                        div { class: "region-row",
-                            for (r, note) in region_notes {
-                                button {
-                                    key: "{r.id}",
-                                    class: if region == Some(r) { "region region-on" } else { "region" },
-                                    title: "api0, in {r.label}",
-                                    onclick: move |_| {
-                                        cfg.write().use_region(r.id);
-                                        probe_result.set(None);
-                                    },
-                                    span { class: "region-flag", "{r.flag}" }
-                                    span { class: "region-label", "{r.label}" }
-                                    span { class: "region-note", "{note}" }
-                                }
-                            }
-                            button {
-                                class: if current.kind == ProviderKind::Ollama { "region region-on" } else { "region" },
-                                title: "A model running on this computer",
-                                onclick: move |_| {
-                                    cfg.write().kind = ProviderKind::Ollama;
-                                    probe_result.set(None);
-                                },
-                                span { class: "region-flag", "\u{1F4BB}" }
-                                span { class: "region-label", "Ollama" }
-                                span { class: "region-note", "on this computer, free" }
-                            }
-                        }
-                        div { class: "field-row",
-                            button {
-                                class: if own_key { "seg seg-on" } else { "seg" },
-                                onclick: move |_| {
-                                    cfg.write().use_own_key();
-                                    probe_result.set(None);
-                                },
-                                "your own API key"
-                            }
-                        }
 
-                        if let Some(r) = region {
-                            div { class: if has_licence { "key-state key-ok" } else { "key-state key-missing" },
-                                if has_licence {
-                                    "Uses the licence saved on this computer"
-                                } else {
-                                    "api0 needs a licence. Get free AI credits by email under Get Pro\u{2026} in \
-                                     the top bar, or a plan for more: "
-                                    a { href: "{licence::PRICING_URL}", target: "_blank", "see the plans" }
-                                    "."
-                                }
-                            }
-                            if let Some(e) = offers_error.clone() {
-                                div { class: "probe probe-bad", "{e}" }
-                            }
-                            p { class: "field-note",
-                                "api0 runs the model in {r.label} and takes AI credits from your plan each \
-                                 month. Which model runs there is api0's choice. A step is one model call \
-                                 \u{2014} a commit message, a pull request description, one review \u{2014} \
-                                 of about {llm::TYPICAL_STEP_TOKENS} tokens; a large diff costs more, and \
-                                 each focused review below is one more step. Test connection shows the \
-                                 credits left."
-                            }
-                        } else if current.kind == ProviderKind::Ollama {
-                            label { class: "field",
-                                span { "Base URL" }
-                                input {
-                                    value: "{current.ollama_url}",
-                                    oninput: move |e| cfg.write().ollama_url = e.value(),
-                                }
-                            }
-                            label { class: "field",
-                                span { "Model" }
-                                input {
-                                    value: "{current.ollama_model}",
-                                    oninput: move |e| cfg.write().ollama_model = e.value(),
-                                }
-                            }
-                            // What this ollama actually has, to pick from rather
-                            // than type exactly right. Typing still works, for a
-                            // model about to be pulled.
-                            ModelChoices {
-                                installed: installed.read().clone(),
-                                selected: current.ollama_model.clone(),
-                                on_pick: move |name: String| {
-                                    cfg.write().ollama_model = name;
-                                    probe_result.set(None);
-                                },
-                            }
-                            label { class: "field",
-                                span { "Context window" }
-                                input {
-                                    r#type: "number",
-                                    value: "{current.ollama_num_ctx}",
-                                    oninput: move |e| {
-                                        if let Ok(n) = e.value().parse::<u32>() {
-                                            cfg.write().ollama_num_ctx = n;
-                                        }
-                                    },
-                                }
-                            }
-                            p { class: "field-note",
-                                "ollama defaults to 4096 tokens whatever the model supports, which \
-                                 silently truncates a real diff. This value is sent with every call, \
-                                 and a diff is cut to fit it — about {current.input_budget()} characters \
-                                 now. Lower it for faster answers on large changes, raise it to review \
-                                 more of them."
-                            }
-                        } else {
-                            div { class: "items",
-                                for entry in REMOTES.iter() {
-                                    label {
-                                        key: "{entry.key}",
-                                        class: if current.remote == entry.key { "item" } else { "item item-off" },
-                                        input {
-                                            r#type: "radio",
-                                            name: "remote-provider",
-                                            checked: current.remote == entry.key,
-                                            onchange: move |_| {
-                                                let mut w = cfg.write();
-                                                w.remote = entry.key.to_string();
-                                                // Overrides belonged to the old
-                                                // provider; clearing them falls
-                                                // back to this one's defaults.
-                                                w.remote_url.clear();
-                                                w.remote_model.clear();
-                                            },
-                                        }
-                                        span { class: "item-label", "{entry.label}" }
-                                        span {
-                                            class: if llm::key_for(entry).is_some() {
-                                                "item-note note-new"
-                                            } else {
-                                                "item-note note-deleted"
-                                            },
-                                            if llm::key_for(entry).is_some() {
-                                                "key set"
-                                            } else if llm::is_api0(entry) {
-                                                "needs a licence"
-                                            } else {
-                                                "no key"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            label { class: "field",
-                                span { "Base URL" }
-                                input {
-                                    value: "{current.remote_url}",
-                                    placeholder: "{preset.base_url}",
-                                    oninput: move |e| cfg.write().remote_url = e.value(),
-                                }
-                            }
-                            label { class: "field",
-                                span { "Model" }
-                                input {
-                                    value: "{current.remote_model}",
-                                    placeholder: "{preset.model}",
-                                    oninput: move |e| cfg.write().remote_model = e.value(),
-                                }
-                            }
-                            div { class: if key_source.is_some() { "key-state key-ok" } else { "key-state key-missing" },
-                                match &key_source {
-                                    Some(source) => rsx! { "{source}" },
-                                    None if llm::is_api0(preset) => rsx! {
-                                        "api0 needs a licence. Get free AI credits by email under Get Pro\u{2026} in \
-                                         the top bar, or a plan for more: "
-                                        a { href: "{licence::PRICING_URL}", target: "_blank", "see the plans" }
-                                        ". Or export a licence number as {preset.env} and restart GitAgent."
-                                    },
-                                    None => rsx! { "{preset.env} is not set — export it and restart GitAgent" },
-                                }
-                            }
-                            p { class: "field-note",
-                                "All of these speak the OpenAI wire format, so they share one client. \
-                                 Leave URL and model empty to use the provider's defaults, or fill \
-                                 them in for a proxy, a self-hosted vLLM, or a provider not listed. \
-                                 The key is read from the environment on every call and never written \
-                                 to disk."
-                            }
-                            if llm::is_api0(preset) {
-                                p { class: "field-note",
-                                    "api0 runs the model for you and takes its AI credits from your \
-                                     plan each month. Test connection shows how many are left."
-                                }
-                            }
+                        ProviderFields {
+                            cfg,
+                            second: false,
+                            installed,
+                            offers,
+                            on_change: move |_| probe_result.set(None),
+                            on_licence,
                         }
 
                         div { class: "field-row",
@@ -460,75 +279,15 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                     } else {
                         // A second model that reviews every pull request again,
                         // for a second opinion. Off unless chosen.
-                        div { class: "field-row",
-                            for kind in [ProviderKind::Off, ProviderKind::Ollama, ProviderKind::Remote] {
-                                button {
-                                    key: "second-{kind:?}",
-                                    class: if second.kind == kind { "seg seg-on" } else { "seg" },
-                                    onclick: move |_| {
-                                        cfg.write().second.kind = kind;
-                                        second_probe.set(None);
-                                    },
-                                    if kind == ProviderKind::Off { "none" } else { "{kind.label()}" }
-                                }
-                            }
+                        ProviderFields {
+                            cfg,
+                            second: true,
+                            installed,
+                            offers,
+                            on_change: move |_| second_probe.set(None),
+                            on_licence,
                         }
-                        if second.kind == ProviderKind::Ollama {
-                            label { class: "field",
-                                span { "Model" }
-                                input {
-                                    value: "{second.ollama_model}",
-                                    placeholder: "{current.ollama_model}",
-                                    oninput: move |e| cfg.write().second.ollama_model = e.value(),
-                                }
-                            }
-                            // Same ollama, so the same list. Left empty, the
-                            // second opinion uses the default model — highlighted so.
-                            ModelChoices {
-                                installed: installed.read().clone(),
-                                selected: if second.ollama_model.trim().is_empty() {
-                                    current.ollama_model.clone()
-                                } else {
-                                    second.ollama_model.clone()
-                                },
-                                on_pick: move |name: String| {
-                                    cfg.write().second.ollama_model = name;
-                                    second_probe.set(None);
-                                },
-                            }
-                        } else if second.kind == ProviderKind::Remote {
-                            label { class: "field",
-                                span { "Provider" }
-                                select {
-                                    value: "{second.remote}",
-                                    onchange: move |e| {
-                                        let mut w = cfg.write();
-                                        w.second.remote = e.value();
-                                        w.second.remote_model.clear();
-                                        second_probe.set(None);
-                                    },
-                                    for entry in REMOTES.iter() {
-                                        option {
-                                            key: "{entry.key}",
-                                            value: "{entry.key}",
-                                            selected: second.remote == entry.key,
-                                            "{entry.label}"
-                                            if llm::key_for(entry).is_none() {
-                                                if llm::is_api0(entry) { " (needs a licence)" } else { " (no key)" }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            label { class: "field",
-                                span { "Model" }
-                                input {
-                                    value: "{second.remote_model}",
-                                    placeholder: "{second_cfg.preset().model}",
-                                    oninput: move |e| cfg.write().second.remote_model = e.value(),
-                                }
-                            }
-                        }
+
                         if second.kind != ProviderKind::Off {
                             div { class: "field-row",
                                 button {
@@ -558,6 +317,402 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The provider row and whatever the chosen one needs — for the default
+/// model, or for the second opinion. One component for both, so the two tabs
+/// cannot drift apart.
+#[component]
+fn ProviderFields(
+    cfg: Signal<LlmConfig>,
+    /// Writes to the second reviewer's choice rather than the default's.
+    second: bool,
+    installed: Signal<Option<Result<Vec<llm::LocalModel>, String>>>,
+    offers: Signal<Option<Result<Vec<llm::RegionOffer>, String>>>,
+    /// A choice changed, so a test result shown above it is stale.
+    on_change: EventHandler<()>,
+    on_licence: Option<EventHandler<()>>,
+) -> Element {
+    let mut cfg = cfg;
+    let current = cfg.read().clone();
+    let (kind, remote_key, region) = if second {
+        (
+            current.second.kind,
+            current.second.remote.clone(),
+            current.second.region(),
+        )
+    } else {
+        (current.kind, current.remote.clone(), current.region())
+    };
+    let pick = pick_of(kind, &remote_key);
+    let preset = llm::remote(&remote_key);
+    let key_source = llm::key_source(preset);
+    let has_licence = llm::key_for(llm::remote("api0")).is_some();
+
+    let mut set_pick = move |p: Pick| {
+        {
+            let mut w = cfg.write();
+            match p {
+                Pick::Api0 => {
+                    let id = if second {
+                        w.second.region().map_or(llm::REGIONS[0].id, |r| r.id)
+                    } else {
+                        w.region().map_or(llm::REGIONS[0].id, |r| r.id)
+                    };
+                    if second {
+                        w.second.use_region(id);
+                    } else {
+                        w.use_region(id);
+                    }
+                }
+                Pick::Ollama if second => w.second.kind = ProviderKind::Ollama,
+                Pick::Ollama => w.kind = ProviderKind::Ollama,
+                Pick::OwnKey if second => w.second.use_own_key(),
+                Pick::OwnKey => w.use_own_key(),
+                Pick::Off if second => w.second.kind = ProviderKind::Off,
+                Pick::Off => w.kind = ProviderKind::Off,
+            }
+        }
+        on_change.call(());
+    };
+
+    let mut set_region = move |id: String| {
+        {
+            let mut w = cfg.write();
+            if second {
+                w.second.use_region(&id);
+            } else {
+                w.use_region(&id);
+            }
+        }
+        on_change.call(());
+    };
+
+    let mut set_provider = move |key: String| {
+        {
+            let mut w = cfg.write();
+            if second {
+                w.second.remote = key;
+                w.second.remote_model.clear();
+            } else {
+                w.remote = key;
+                // Overrides belonged to the old provider; clearing them falls
+                // back to this one's defaults.
+                w.remote_url.clear();
+                w.remote_model.clear();
+            }
+        }
+        on_change.call(());
+    };
+
+    // What a step costs in each region, once api0 has said. Without a licence
+    // there is nothing to ask with, so the row says that instead of a price.
+    let region_notes: Vec<(&'static llm::Region, String)> = llm::REGIONS
+        .iter()
+        .map(|r| {
+            let note = match offers.read().as_ref() {
+                _ if !has_licence => "needs a licence".to_string(),
+                None => "\u{2026}".to_string(),
+                Some(Err(_)) => "unavailable".to_string(),
+                Some(Ok(list)) => match list.iter().find(|o| o.id == r.id) {
+                    Some(o) => {
+                        let n = o.credits_per_step();
+                        format!(
+                            "\u{2248} {n} {} a step",
+                            if n == 1 { "credit" } else { "credits" }
+                        )
+                    }
+                    None => "not offered".to_string(),
+                },
+            };
+            (r, note)
+        })
+        .collect();
+    let offers_error = match offers.read().as_ref() {
+        Some(Err(e)) if has_licence && pick == Pick::Api0 => Some(e.clone()),
+        _ => None,
+    };
+
+    // The model the second reviewer falls back to when its own field is left
+    // empty: whatever the default is set to.
+    let ollama_model = if second {
+        current.second.ollama_model.clone()
+    } else {
+        current.ollama_model.clone()
+    };
+    let remote_model = if second {
+        current.second.remote_model.clone()
+    } else {
+        current.remote_model.clone()
+    };
+
+    rsx! {
+        div { class: "region-row",
+            for (p, label, note) in [
+                (Pick::Api0, "api0", "AI credits, no key"),
+                (Pick::Ollama, "Ollama", "on this computer, free"),
+                (Pick::OwnKey, "Your own key", "any OpenAI API"),
+                (Pick::Off, if second { "None" } else { "No AI" }, if second { "no second review" } else { "model steps skipped" }),
+            ] {
+                button {
+                    key: "{p:?}",
+                    class: if pick == p { "region region-on" } else { "region" },
+                    title: match p {
+                        Pick::Api0 => "api0 runs the model and bills your plan's AI credits",
+                        Pick::Ollama => "A model running on this computer",
+                        Pick::OwnKey => "A provider you have an API key for",
+                        Pick::Off => "No model call at all",
+                    },
+                    onclick: move |_| set_pick(p),
+                    span { class: "region-flag",
+                        match p {
+                            Pick::Api0 => rsx! { Api0Mark {} },
+                            Pick::Ollama => rsx! { "\u{1F4BB}" },
+                            Pick::OwnKey => rsx! { "\u{1F511}" },
+                            Pick::Off => rsx! { "\u{2300}" },
+                        }
+                    }
+                    span { class: "region-label", "{label}" }
+                    span { class: "region-note", "{note}" }
+                }
+            }
+        }
+
+        match pick {
+            // Which region api0 runs it in. The flag is what every other
+            // button in GitAgent then shows for this model.
+            Pick::Api0 => rsx! {
+                div { class: "region-row region-row-3",
+                    for (r, note) in region_notes.clone() {
+                        button {
+                            key: "{r.id}",
+                            class: if region == Some(r) { "region region-on" } else { "region" },
+                            title: "api0, in {r.label}",
+                            onclick: move |_| set_region(r.id.to_string()),
+                            span { class: "region-flag", "{r.flag}" }
+                            span { class: "region-label", "{r.label}" }
+                            span { class: "region-note", "{note}" }
+                        }
+                    }
+                }
+                div { class: if has_licence { "key-state key-ok" } else { "key-state key-missing" },
+                    if has_licence {
+                        "Uses the licence saved on this computer"
+                    } else {
+                        "api0 needs a licence: free AI credits by email, or a plan for more \u{2014} "
+                        a { href: "{licence::PRICING_URL}", target: "_blank", "see the plans" }
+                        "."
+                    }
+                }
+                if !has_licence {
+                    div { class: "field-row",
+                        match on_licence {
+                            Some(open) => rsx! {
+                                button {
+                                    class: "btn btn-pro",
+                                    onclick: move |_| open.call(()),
+                                    "Sign in to api0\u{2026}"
+                                }
+                            },
+                            None => rsx! {
+                                p { class: "field-note",
+                                    "Open a folder, then Get Pro\u{2026} in the top bar to get credits \
+                                     or paste a licence number."
+                                }
+                            },
+                        }
+                    }
+                }
+                if let Some(e) = offers_error.clone() {
+                    div { class: "probe probe-bad", "{e}" }
+                }
+                if let Some(r) = region {
+                    p { class: "field-note",
+                        "api0 runs the model in {r.label} and takes AI credits from your plan each \
+                         month. Which model runs there is api0's choice. A step is one model call \
+                         \u{2014} a commit message, a pull request description, one review \u{2014} \
+                         of about {llm::TYPICAL_STEP_TOKENS} tokens; a large diff costs more. \
+                         Test connection shows the credits left."
+                    }
+                }
+            },
+
+            Pick::Ollama => rsx! {
+                if !second {
+                    label { class: "field",
+                        span { "Base URL" }
+                        input {
+                            value: "{current.ollama_url}",
+                            oninput: move |e| cfg.write().ollama_url = e.value(),
+                        }
+                    }
+                }
+                label { class: "field",
+                    span { "Model" }
+                    input {
+                        value: "{ollama_model}",
+                        placeholder: if second { "{current.ollama_model}" } else { "" },
+                        oninput: move |e| {
+                            let v = e.value();
+                            let mut w = cfg.write();
+                            if second { w.second.ollama_model = v } else { w.ollama_model = v }
+                        },
+                    }
+                }
+                // What this ollama actually has, to pick from rather than
+                // type exactly right. Typing still works, for a model about
+                // to be pulled. Left empty, the second opinion runs the
+                // default's model — shown here as the one in use.
+                ModelChoices {
+                    installed: installed.read().clone(),
+                    selected: if second && ollama_model.trim().is_empty() {
+                        current.ollama_model.clone()
+                    } else {
+                        ollama_model.clone()
+                    },
+                    on_pick: move |name: String| {
+                        {
+                            let mut w = cfg.write();
+                            if second { w.second.ollama_model = name } else { w.ollama_model = name }
+                        }
+                        on_change.call(());
+                    },
+                }
+                if second {
+                    p { class: "field-note",
+                        "The same ollama as the default model \u{2014} its address and context \
+                         window are shared. Leave the model empty to review twice with the \
+                         default's model."
+                    }
+                } else {
+                    label { class: "field",
+                        span { "Context window" }
+                        input {
+                            r#type: "number",
+                            value: "{current.ollama_num_ctx}",
+                            oninput: move |e| {
+                                if let Ok(n) = e.value().parse::<u32>() {
+                                    cfg.write().ollama_num_ctx = n;
+                                }
+                            },
+                        }
+                    }
+                    p { class: "field-note",
+                        "ollama defaults to 4096 tokens whatever the model supports, which \
+                         silently truncates a real diff. This value is sent with every call, \
+                         and a diff is cut to fit it — about {current.input_budget()} characters \
+                         now. Lower it for faster answers on large changes, raise it to review \
+                         more of them."
+                    }
+                }
+            },
+
+            // The providers you can bring a key for. api0 is not among them:
+            // it has its own choice above, and a licence rather than a key.
+            Pick::OwnKey => rsx! {
+                div { class: "items",
+                    for entry in REMOTES.iter().filter(|e| !llm::is_api0(e)) {
+                        label {
+                            key: "{entry.key}",
+                            class: if remote_key == entry.key { "item" } else { "item item-off" },
+                            input {
+                                r#type: "radio",
+                                name: if second { "second-provider" } else { "remote-provider" },
+                                checked: remote_key == entry.key,
+                                onchange: move |_| set_provider(entry.key.to_string()),
+                            }
+                            span { class: "item-label", "{entry.label}" }
+                            span {
+                                class: if llm::key_for(entry).is_some() {
+                                    "item-note note-new"
+                                } else {
+                                    "item-note note-deleted"
+                                },
+                                if llm::key_for(entry).is_some() { "key set" } else { "no key" }
+                            }
+                        }
+                    }
+                }
+                if !second {
+                    label { class: "field",
+                        span { "Base URL" }
+                        input {
+                            value: "{current.remote_url}",
+                            placeholder: "{preset.base_url}",
+                            oninput: move |e| cfg.write().remote_url = e.value(),
+                        }
+                    }
+                }
+                label { class: "field",
+                    span { "Model" }
+                    input {
+                        value: "{remote_model}",
+                        placeholder: "{preset.model}",
+                        oninput: move |e| {
+                            let v = e.value();
+                            let mut w = cfg.write();
+                            if second { w.second.remote_model = v } else { w.remote_model = v }
+                        },
+                    }
+                }
+                div { class: if key_source.is_some() { "key-state key-ok" } else { "key-state key-missing" },
+                    match &key_source {
+                        Some(source) => rsx! { "{source}" },
+                        None => rsx! { "{preset.env} is not set — export it and restart GitAgent" },
+                    }
+                }
+                p { class: "field-note",
+                    "All of these speak the OpenAI wire format, so they share one client. Leave \
+                     the model empty to use the provider's default. The key is read from the \
+                     environment on every call and never written to disk."
+                }
+                if second {
+                    p { class: "field-note",
+                        "A proxy or self-hosted endpoint is set once, on the default model's tab."
+                    }
+                }
+            },
+
+            Pick::Off => rsx! {
+                p { class: "field-note",
+                    if second {
+                        "One review per pull request. Nothing else changes."
+                    } else {
+                        "No model is called at all: every model step is skipped, and the flows \
+                         still run with the graph, the approvals and the git handling."
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// The mayorana mark, which is api0's too: an arch over a pillar.
+#[component]
+fn Api0Mark() -> Element {
+    rsx! {
+        svg {
+            class: "api0-mark",
+            width: "22",
+            height: "22",
+            view_box: "0 0 24 24",
+            role: "img",
+            path {
+                d: "M5.9 21.4 V 12.2 a 6.1 6.1 0 0 1 12.2 0 V 21.4",
+                fill: "none",
+                stroke: "#FF6B00",
+                stroke_width: "3.6",
+            }
+            rect {
+                x: "10.4",
+                y: "12.6",
+                width: "3.2",
+                height: "8.8",
+                rx: "0.4",
+                fill: "#FF6B00",
             }
         }
     }

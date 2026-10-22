@@ -274,7 +274,8 @@ pub fn is_configured() -> bool {
 
 pub fn load_settings() -> LlmConfig {
     let content = std::fs::read_to_string(data_dir().join(SETTINGS_FILE)).unwrap_or_default();
-    serde_json::from_str(&content).unwrap_or_default()
+    let cfg: LlmConfig = serde_json::from_str(&content).unwrap_or_default();
+    cfg.with_region_filled()
 }
 
 pub fn save_settings(cfg: &LlmConfig) {
@@ -337,7 +338,7 @@ pub fn load_settings_for(folder: Option<&str>) -> LlmConfig {
         return shared;
     };
     match load_folder_models().choice_for(folder) {
-        Some(choice) => shared.with_model_choice(choice),
+        Some(choice) => shared.with_model_choice(choice).with_region_filled(),
         None => shared,
     }
 }

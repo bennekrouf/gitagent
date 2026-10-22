@@ -525,6 +525,31 @@ impl Default for SecondModel {
     }
 }
 
+impl SecondModel {
+    /// The api0 region this reviewer is set to, if any. Same question as
+    /// `LlmConfig::region`, asked of the second opinion's own choice.
+    pub fn region(&self) -> Option<&'static Region> {
+        if self.kind != ProviderKind::Remote || !is_api0(remote(&self.remote)) {
+            return None;
+        }
+        REGIONS.iter().find(|r| r.id == self.remote_model.trim())
+    }
+
+    pub fn use_region(&mut self, id: &str) {
+        self.kind = ProviderKind::Remote;
+        self.remote = "api0".into();
+        self.remote_model = id.to_string();
+    }
+
+    pub fn use_own_key(&mut self) {
+        self.kind = ProviderKind::Remote;
+        if is_api0(remote(&self.remote)) {
+            self.remote = default_remote();
+            self.remote_model.clear();
+        }
+    }
+}
+
 fn default_remote() -> String {
     DEFAULT_REMOTE.to_string()
 }
@@ -643,6 +668,28 @@ impl LlmConfig {
 
     pub fn preset(&self) -> &'static Remote {
         remote(&self.remote)
+    }
+
+    /// Settings written before api0 had regions name none, and api0's own
+    /// model is then the word "default" — which is what every button showing
+    /// the model would have to say. Put such a choice on the first region, so
+    /// a window names where it runs instead. A model typed by hand is left
+    /// alone: only an empty one is filled in.
+    pub fn with_region_filled(mut self) -> Self {
+        if self.kind == ProviderKind::Remote
+            && is_api0(self.preset())
+            && self.remote_url.trim().is_empty()
+            && self.remote_model.trim().is_empty()
+        {
+            self.remote_model = REGIONS[0].id.to_string();
+        }
+        if self.second.kind == ProviderKind::Remote
+            && is_api0(remote(&self.second.remote))
+            && self.second.remote_model.trim().is_empty()
+        {
+            self.second.remote_model = REGIONS[0].id.to_string();
+        }
+        self
     }
 
     /// The api0 region this is set to, if any.
@@ -1560,5 +1607,50 @@ mod tests {
             ..LlmConfig::default()
         };
         assert_eq!(cfg.input_budget(), crate::services::git::DIFF_CAP);
+    }
+
+    #[test]
+    fn api0_without_a_region_comes_back_on_the_first_one() {
+        let cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            remote: "api0".into(),
+            ..LlmConfig::default()
+        }
+        .with_region_filled();
+        assert_eq!(cfg.region().map(|r| r.id), Some("europe"));
+        assert_eq!(
+            cfg.active_model(),
+            "\u{1F1EA}\u{1F1FA} Europe",
+            "a button showing the model says where it runs, never \"default\""
+        );
+    }
+
+    #[test]
+    fn a_model_named_by_hand_survives_the_region_fill_in() {
+        let cfg = LlmConfig {
+            kind: ProviderKind::Remote,
+            remote: "api0".into(),
+            remote_model: "a-model-api0-named".into(),
+            ..LlmConfig::default()
+        }
+        .with_region_filled();
+        assert_eq!(cfg.remote_model, "a-model-api0-named");
+    }
+
+    #[test]
+    fn the_second_reviewer_picks_a_region_of_its_own() {
+        let mut cfg = LlmConfig::default();
+        cfg.second.use_region("china");
+        assert_eq!(cfg.second.region().map(|r| r.id), Some("china"));
+        assert_eq!(
+            cfg.second_config().active_model(),
+            "\u{1F1E8}\u{1F1F3} China"
+        );
+        cfg.second.use_own_key();
+        assert!(
+            cfg.second.region().is_none(),
+            "a key of your own is not api0"
+        );
+        assert_eq!(cfg.second.remote, "deepseek");
     }
 }
