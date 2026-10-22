@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The panel that opens beside the run map can be resized: drag its left edge
+  to widen it as far as the whole view, so a pull request's diff or a step's
+  log can be read full width, and back down again. It never gets so narrow it
+  is hard to grab, the width you leave it at is kept between launches, and a
+  double-click on the edge puts it back to its usual size.
+
 ## [0.1.117] - 2026-10-21
 
 ### Added

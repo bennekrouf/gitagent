@@ -174,6 +174,11 @@ pub struct Layout {
     /// should not have to fold it again for every step.
     #[serde(default)]
     pub panel_folded: bool,
+    /// The run view's step panel, dragged wider or narrower by its left
+    /// edge. `None` until it is first dragged: the panel then sizes itself
+    /// to the window.
+    #[serde(default)]
+    pub panel: Option<f64>,
 }
 
 impl Default for Layout {
@@ -182,6 +187,7 @@ impl Default for Layout {
             sidebar: 224.0,
             middle: 330.0,
             panel_folded: false,
+            panel: None,
         }
     }
 }
@@ -196,7 +202,17 @@ impl Layout {
     pub fn clamp_middle(width: f64) -> f64 {
         width.clamp(220.0, 640.0)
     }
+
+    /// The step panel may grow until it covers the whole run view — a diff
+    /// read full width — but never narrower than its edge can be found and
+    /// its content read.
+    pub fn clamp_panel(width: f64, room: f64) -> f64 {
+        width.min(room).max(PANEL_MIN.min(room))
+    }
 }
+
+/// The narrowest the step panel can be dragged.
+pub const PANEL_MIN: f64 = 360.0;
 
 const LAYOUT_FILE: &str = "layout.json";
 

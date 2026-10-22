@@ -1571,6 +1571,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let saved = use_signal(store::load_layout);
     let mut sidebar_w = use_signal(|| saved.read().sidebar);
     let mut middle_w = use_signal(|| saved.read().middle);
+    // The run view's step panel, as its edge was last dragged.
+    let mut panel_w = use_signal(|| saved.read().panel);
     // 0 = not dragging, 1 = the sidebar edge, 2 = the flow-column edge.
     let mut dragging = use_signal(|| 0u8);
     let mut drag_from = use_signal(|| (0.0f64, 0.0f64));
@@ -2761,6 +2763,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             sidebar: *sidebar_w.read(),
                             middle: *middle_w.read(),
                             panel_folded: *panel_folded.read(),
+                            panel: *panel_w.read(),
                         });
                     }
                 },
@@ -2773,6 +2776,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                             sidebar: *sidebar_w.read(),
                             middle: *middle_w.read(),
                             panel_folded: *panel_folded.read(),
+                            panel: *panel_w.read(),
                         });
                     }
                 },
@@ -2967,6 +2971,14 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                 },
                                 panel_open,
                                 panel_folded: folded,
+                                panel_width: *panel_w.read(),
+                                on_panel_width: move |w: Option<f64>| {
+                                    panel_w.set(w);
+                                    store::save_layout(&Layout {
+                                        panel: w,
+                                        ..store::load_layout()
+                                    });
+                                },
                                 flows: flow_strip,
                                 context: flow_context,
                                 actions: repo_actions(&repo, &key, &can_run_actions, &other_run_actions),

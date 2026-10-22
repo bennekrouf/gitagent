@@ -1838,9 +1838,9 @@ button.update-banner-link {
    visible and clickable to its left. */
 .run-drawer {
     position: absolute; top: 0; right: 0; bottom: 0;
-    /* Kept in step with `panel_width` in run_view.rs, which slides the map
-       out from under it by this much. */
-    width: min(620px, 58%);
+    /* Worked out by `panel_width` in run_view.rs, which slides the map out
+       from under it by this much; the fallback is the same sum. */
+    width: var(--panel-w, min(620px, 58%));
     background: var(--bg0);
     border-left: 1px solid var(--border);
     box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
@@ -1909,6 +1909,25 @@ button.update-banner-link {
     font-size: 16px; line-height: 1; cursor: pointer;
 }
 .run-drawer-fold:hover { color: var(--text1); border-color: var(--text3); }
+/* The panel's left edge, dragged to resize it. Over the panel's border,
+   wider than it looks so it is easy to catch. */
+.run-drawer-grip {
+    position: absolute; top: 0; bottom: 0; z-index: 6;
+    width: 8px; margin-right: -4px;
+    cursor: col-resize;
+}
+.run-drawer-grip::after {
+    content: ""; position: absolute;
+    top: 0; bottom: 0; left: 3px; width: 2px;
+    background: transparent; transition: background 0.12s;
+}
+.run-drawer-grip:hover::after,
+.run-body-resizing .run-drawer-grip::after { background: var(--green); }
+/* Following the pointer, not easing after it; and no text turning blue. */
+.run-body-resizing { user-select: none; cursor: col-resize; }
+.run-body-resizing .run-drawer,
+.run-body-resizing .run-svg { transition: none; }
+
 /* Room for both buttons at the end of the step's header row. */
 .run-drawer .detail-head { padding-right: 84px; }
 
