@@ -1642,7 +1642,10 @@ mod tests {
         let mut cfg = LlmConfig::default();
         cfg.second.use_region("china");
         assert_eq!(cfg.second.region().map(|r| r.id), Some("china"));
-        assert_eq!(cfg.second_config().active_model(), "\u{1F1E8}\u{1F1F3} China");
+        assert_eq!(
+            cfg.second_config().active_model(),
+            "\u{1F1E8}\u{1F1F3} China"
+        );
         cfg.second.use_own_key();
         assert!(
             cfg.second.region().is_none(),
