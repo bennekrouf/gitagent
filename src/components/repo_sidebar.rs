@@ -199,6 +199,9 @@ pub struct RepoEntry {
     /// button itself, held or not. `None` when nothing waits, or every file is
     /// unchecked, which keeps the plain "needs you".
     pub approval: Option<Approval>,
+    /// What the row offers to start in place of its note — "Commit 3 files",
+    /// "Run release" — when a flow here answers what the repository needs.
+    pub start: Option<String>,
 }
 
 fn row_class(selected: bool) -> &'static str {
@@ -263,6 +266,8 @@ pub struct RepoSidebarProps {
     pub on_reprobe: EventHandler<String>,
     /// Approve the step a row is waiting on, from the list.
     pub on_approve: EventHandler<Approval>,
+    /// Start the flow a row's button names, on that repository.
+    pub on_start: EventHandler<String>,
     #[props(default = 224.0)]
     pub width: f64,
 }
@@ -470,6 +475,23 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     span { class: "row-approve-icon", "\u{2713}" }
                                     "Approve"
                                 }
+                            } else if let Some(label) = entry.start.clone().filter(|_| !entry.phase.is_live()) {
+                                // In place of "uncommitted" or "release due":
+                                // the thing to do about it, a click away. Kept
+                                // on hover like Approve, for the same reason.
+                                button {
+                                    class: "row-run",
+                                    title: "Open this repository and start: {label}",
+                                    onclick: {
+                                        let path = entry.path.clone();
+                                        move |evt: Event<MouseData>| {
+                                            evt.stop_propagation();
+                                            props.on_start.call(path.clone());
+                                        }
+                                    },
+                                    span { class: "row-approve-icon", "\u{25b6}" }
+                                    "{label}"
+                                }
                             } else {
                             // The status slot, and — on hover — the button that
                             // re-reads this one repository instead of all of
@@ -647,6 +669,7 @@ mod tests {
             open_pr_count: 0,
             prs_error: None,
             approval: None,
+            start: None,
         }
     }
 

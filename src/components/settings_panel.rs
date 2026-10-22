@@ -1,6 +1,11 @@
 //! Model settings — pick the model the flow's steps call, and prove it works
 //! before a run depends on it.
 //!
+//! The default model is one click among api0's three regions (Europe, China,
+//! the United States) and the local ollama, each region with what a typical
+//! step costs in credits. Which model api0 runs in a region is not shown — it
+//! is api0's to choose. A provider with a key of your own is one more click.
+//!
 //! Two tabs, one per flow step that chooses its own model: the default every
 //! model step uses, and the second opinion that reviews a pull request again.
 //! Settings that belong to the default model — its focused reviews — sit with
@@ -43,6 +48,13 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
             installed.set(Some(llm::local_models(&url).await));
         });
     });
+    // What each api0 region costs, asked once when the panel opens.
+    let mut offers = use_signal(|| Option::<Result<Vec<llm::RegionOffer>, String>>::None);
+    use_effect(move || {
+        spawn(async move {
+            offers.set(Some(llm::api0_regions().await));
+        });
+    });
     let mut second_probe = use_signal(|| Option::<Result<String, String>>::None);
     let mut second_probing = use_signal(|| false);
     // Read once when the panel opens; the buttons below write straight through
@@ -82,6 +94,31 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     let second = current.second.clone();
     let second_cfg = current.second_config();
     let showing = *tab.read();
+    let has_licence = llm::key_for(llm::remote("api0")).is_some();
+    let region_notes: Vec<(&'static llm::Region, String)> = llm::REGIONS
+        .iter()
+        .map(|r| {
+            let note = match offers.read().as_ref() {
+                _ if !has_licence => "needs a licence".to_string(),
+                None => "\u{2026}".to_string(),
+                Some(Err(_)) => "unavailable".to_string(),
+                Some(Ok(list)) => match list.iter().find(|o| o.id == r.id) {
+                    Some(o) => {
+                        let n = o.credits_per_step();
+                        format!("\u{2248} {n} {} a step", if n == 1 { "credit" } else { "credits" })
+                    }
+                    None => "not offered".to_string(),
+                },
+            };
+            (r, note)
+        })
+        .collect();
+    let region = current.region();
+    let own_key = current.kind == ProviderKind::Remote && region.is_none();
+    let offers_error = match offers.read().as_ref() {
+        Some(Err(e)) if has_licence => Some(e.clone()),
+        _ => None,
+    };
     // Each tab says which model it is set to, so the one you are not looking
     // at is not a mystery — above all whether the second reviewer is on.
     let notes = [
@@ -122,21 +159,67 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
 
                 div { class: "modal-body",
                     if showing == Tab::Default {
-                        div { class: "field-row",
-                            for kind in [ProviderKind::Ollama, ProviderKind::Remote] {
+                        div { class: "region-row",
+                            for (r, note) in region_notes {
                                 button {
-                                    key: "{kind:?}",
-                                    class: if current.kind == kind { "seg seg-on" } else { "seg" },
+                                    key: "{r.id}",
+                                    class: if region == Some(r) { "region region-on" } else { "region" },
+                                    title: "api0, in {r.label}",
                                     onclick: move |_| {
-                                        cfg.write().kind = kind;
+                                        cfg.write().use_region(r.id);
                                         probe_result.set(None);
                                     },
-                                    "{kind.label()}"
+                                    span { class: "region-flag", "{r.flag}" }
+                                    span { class: "region-label", "{r.label}" }
+                                    span { class: "region-note", "{note}" }
                                 }
+                            }
+                            button {
+                                class: if current.kind == ProviderKind::Ollama { "region region-on" } else { "region" },
+                                title: "A model running on this computer",
+                                onclick: move |_| {
+                                    cfg.write().kind = ProviderKind::Ollama;
+                                    probe_result.set(None);
+                                },
+                                span { class: "region-flag", "\u{1F4BB}" }
+                                span { class: "region-label", "Ollama" }
+                                span { class: "region-note", "on this computer, free" }
+                            }
+                        }
+                        div { class: "field-row",
+                            button {
+                                class: if own_key { "seg seg-on" } else { "seg" },
+                                onclick: move |_| {
+                                    cfg.write().use_own_key();
+                                    probe_result.set(None);
+                                },
+                                "your own API key"
                             }
                         }
 
-                        if current.kind == ProviderKind::Ollama {
+                        if let Some(r) = region {
+                            div { class: if has_licence { "key-state key-ok" } else { "key-state key-missing" },
+                                if has_licence {
+                                    "Uses the licence saved on this computer"
+                                } else {
+                                    "api0 needs a licence. Get free AI credits by email under Get Pro\u{2026} in \
+                                     the top bar, or a plan for more: "
+                                    a { href: "{licence::PRICING_URL}", target: "_blank", "see the plans" }
+                                    "."
+                                }
+                            }
+                            if let Some(e) = offers_error.clone() {
+                                div { class: "probe probe-bad", "{e}" }
+                            }
+                            p { class: "field-note",
+                                "api0 runs the model in {r.label} and takes AI credits from your plan each \
+                                 month. Which model runs there is api0's choice. A step is one model call \
+                                 \u{2014} a commit message, a pull request description, one review \u{2014} \
+                                 of about {llm::TYPICAL_STEP_TOKENS} tokens; a large diff costs more, and \
+                                 each focused review below is one more step. Test connection shows the \
+                                 credits left."
+                            }
+                        } else if current.kind == ProviderKind::Ollama {
                             label { class: "field",
                                 span { "Base URL" }
                                 input {

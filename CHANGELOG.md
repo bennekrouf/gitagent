@@ -17,6 +17,24 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Settings has three new choices for the model: Europe, China and the
+  United States. Each is one click, runs on your plan's AI credits with no
+  API key to set up, and shows about how many credits a step costs, so you
+  can weigh them before a run. Ollama sits beside them, and a provider with
+  a key of your own is still one click away.
+
+### Changed
+
+- The repository list offers the next step instead of only naming it: a
+  repository with uncommitted files shows a "Commit 3 files" button where it
+  said "uncommitted", and one with a release due shows "Run release". A click
+  opens the repository and starts that flow, so any approval it stops at is
+  right in front of you.
+
 ## [0.1.118] - 2026-10-22
 
 ### Added

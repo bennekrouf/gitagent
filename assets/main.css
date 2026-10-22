@@ -405,6 +405,20 @@ a.btn { text-decoration: none; }
     100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 0%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) { .row-approve { animation: none; } }
+/* Work the repository is ready for — a commit, a release: offered, not
+   asked for, so outlined and still rather than filled and pulsing. */
+.row-run {
+    flex-shrink: 0;
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: inherit; font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+    padding: 3px 9px 3px 7px; border-radius: 999px; cursor: pointer;
+    white-space: nowrap;
+    color: var(--green);
+    background: color-mix(in srgb, var(--green) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+}
+.row-run:hover { color: #fff; background: var(--green-bg); border-color: var(--green-bg); }
+.row-run:active { transform: scale(0.95); }
 .sidebar-detail {
     font-size: 10px; color: var(--text3);
     background: var(--bg3); border-radius: 9px; padding: 1px 6px;
@@ -2162,3 +2176,18 @@ button.update-banner-link {
     padding: 2px 0; font-size: 11.5px;
 }
 .conflicts-resolved-path { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Settings: api0's regions and the local ollama, one click each. */
+.region-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 8px; }
+.region {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 10px 6px; border-radius: 8px; cursor: pointer;
+    background: var(--bg0); color: var(--text2); border: 1px solid var(--border);
+    transition: border-color 0.12s, color 0.12s;
+}
+.region:hover { border-color: var(--green); color: var(--text1); }
+.region-on { color: var(--text1); border-color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.region-flag { font-size: 22px; line-height: 1; }
+.region-label { font-size: 12px; font-weight: 600; }
+.region-note { font-family: var(--mono); font-size: 10px; color: var(--text3); text-align: center; }
+.region-on .region-note { color: var(--green); }
