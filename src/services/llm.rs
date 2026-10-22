@@ -829,7 +829,11 @@ async fn call_openai_compatible(
     let (status, text) =
         awaiting_answer(request, None, cfg.remote_model_name(), asker.on_line).await?;
     if !status.is_success() {
-        return Err(format!("{} returned {status}: {}", preset.label, error_message(&text)));
+        return Err(format!(
+            "{} returned {status}: {}",
+            preset.label,
+            error_message(&text)
+        ));
     }
 
     let value: Value = serde_json::from_str(&text)
@@ -964,14 +968,14 @@ async fn probe_api0(cfg: &LlmConfig, key: &str) -> Result<String, String> {
 fn api0_balance_line(v: &Value) -> Result<String, String> {
     let credits = v["balance"].as_i64().unwrap_or(0);
     if v["plan"].as_bool() != Some(true) {
-        return Err(
-            "api0 accepted the licence, but it has no plan with AI credits".into(),
-        );
+        return Err("api0 accepted the licence, but it has no plan with AI credits".into());
     }
     if credits <= 0 {
         return Err("api0: this month's AI credits are used up".into());
     }
-    Ok(format!("api0 authenticated — {credits} AI credits left this month"))
+    Ok(format!(
+        "api0 authenticated — {credits} AI credits left this month"
+    ))
 }
 
 /// Cheap reachability check for the settings panel.
@@ -1241,8 +1245,12 @@ mod tests {
     fn the_api0_check_says_what_the_plan_has_left() {
         let ok = api0_balance_line(&json!({"plan": true, "balance": 420})).unwrap();
         assert!(ok.contains("420 AI credits"));
-        assert!(api0_balance_line(&json!({"plan": false, "balance": 0})).unwrap_err().contains("no plan"));
-        assert!(api0_balance_line(&json!({"plan": true, "balance": 0})).unwrap_err().contains("used up"));
+        assert!(api0_balance_line(&json!({"plan": false, "balance": 0}))
+            .unwrap_err()
+            .contains("no plan"));
+        assert!(api0_balance_line(&json!({"plan": true, "balance": 0}))
+            .unwrap_err()
+            .contains("used up"));
     }
 
     #[test]

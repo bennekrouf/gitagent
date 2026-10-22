@@ -233,7 +233,7 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                         if !matches!(current, Status::Free) {
                             button {
                                 class: "btn btn-ghost",
-                                title: "Remove the licence from this computer, e.g. to use it on another one",
+                                title: "Removes the licence from every Mayorana app on this computer, e.g. to use it on another one",
                                 onclick: remove,
                                 "Remove from this computer"
                             }

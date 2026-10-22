@@ -230,10 +230,16 @@ fn gh_login_steps(said: &str) -> String {
 fn azure_org_url(remote: &str) -> String {
     let remote = remote.trim();
     if let Some(rest) = remote.split("ssh.dev.azure.com:v3/").nth(1) {
-        return format!("https://dev.azure.com/{}", rest.split('/').next().unwrap_or_default());
+        return format!(
+            "https://dev.azure.com/{}",
+            rest.split('/').next().unwrap_or_default()
+        );
     }
     if let Some(rest) = remote.split("dev.azure.com/").nth(1) {
-        return format!("https://dev.azure.com/{}", rest.split('/').next().unwrap_or_default());
+        return format!(
+            "https://dev.azure.com/{}",
+            rest.split('/').next().unwrap_or_default()
+        );
     }
     if let Some(host) = remote
         .split("://")
@@ -255,7 +261,11 @@ fn azure_org_url(remote: &str) -> String {
 /// demand multi-factor authentication first, which `az login` reports
 /// only as AADSTS50079.
 fn azure_access_steps(org: &str) -> String {
-    let org = if org.is_empty() { "https://dev.azure.com/<organization>" } else { org };
+    let org = if org.is_empty() {
+        "https://dev.azure.com/<organization>"
+    } else {
+        org
+    };
     format!(
         "You are signed in to Azure, but Azure DevOps does not accept that sign-in\n\
          for this organization. Usually az signed in to another tenant (directory)\n\
@@ -626,7 +636,9 @@ mod tests {
     #[test]
     fn the_azure_organization_is_read_from_every_remote_shape() {
         assert_eq!(
-            azure_org_url("git@ssh.dev.azure.com:v3/CGI-Switzerland-SA/CGI%20Augmented%20Support/kit\n"),
+            azure_org_url(
+                "git@ssh.dev.azure.com:v3/CGI-Switzerland-SA/CGI%20Augmented%20Support/kit\n"
+            ),
             "https://dev.azure.com/CGI-Switzerland-SA"
         );
         assert_eq!(
