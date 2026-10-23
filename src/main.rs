@@ -4,6 +4,7 @@
 //! repository. The flow it runs is hardcoded today (see `services::flow`); the
 //! engine underneath it is not.
 
+mod cli;
 mod components;
 mod feedback;
 mod mcp;
@@ -120,6 +121,12 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         services::env::adopt_login_env();
         return mcp::serve();
+    }
+    // `gitagent run`: one flow from a terminal, its approvals asked there.
+    if std::env::args().nth(1).as_deref() == Some("run") {
+        services::env::adopt_login_env();
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(cli::main(&args));
     }
     // Claim the notification bundle before any run can raise one — see
     // services::notify for why an unclaimed one is worse than silence.

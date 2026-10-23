@@ -1,7 +1,8 @@
-//! Runs GitAgent's MCP server is driving, as the window should see them.
+//! Runs GitAgent is driving without a window, as the window should see them.
 //!
 //! `gitagent mcp` is its own process: a client such as Claude starts it, and
 //! it shares nothing with an open window but the files in the data directory.
+//! `gitagent run` is the same, started from a terminal instead.
 //! So after every step it writes what its runs look like here, and the window
 //! reads that and shows it — step by step, read-only. Approvals stay with the
 //! client that started the run: one place answers, never two.
@@ -41,6 +42,10 @@ pub struct LiveRun {
     /// Answering its own approvals by the Trusted run's rules.
     #[serde(default)]
     pub trusted: bool,
+    /// Started with `gitagent run` rather than by an MCP client, so its
+    /// approvals are answered in that terminal.
+    #[serde(default)]
+    pub terminal: bool,
     /// Seconds since the epoch.
     pub updated: u64,
 }
@@ -147,6 +152,7 @@ pub fn snapshot(
         waiting,
         finished: state.is_finished(graph),
         trusted,
+        terminal: false,
         updated: now(),
     }
 }
@@ -197,8 +203,17 @@ mod tests {
             waiting: None,
             finished,
             trusted: false,
+            terminal: false,
             updated,
         }
+    }
+
+    #[test]
+    fn a_run_written_before_terminals_reads_as_an_mcp_one() {
+        let mut old = serde_json::to_value(run(false, 1)).unwrap();
+        old.as_object_mut().unwrap().remove("terminal");
+        let read: LiveRun = serde_json::from_value(old).unwrap();
+        assert!(!read.terminal);
     }
 
     #[test]

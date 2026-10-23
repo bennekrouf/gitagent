@@ -29,7 +29,7 @@ use crate::services::awake;
 use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook};
 use crate::services::graph::{
-    live_subtitle, Graph, NodeKind, NodeRun, NodeSpec, NodeStatus, Remedy, RunState, Step,
+    live_subtitle, Graph, NodeRun, NodeSpec, NodeStatus, Remedy, RunState, Step,
 };
 use crate::services::licence;
 use crate::services::llm::LlmConfig;
@@ -37,6 +37,7 @@ use crate::services::notify;
 use crate::services::probe::{self, Need, RepoStatus, Wants};
 use crate::services::release;
 use crate::services::review;
+use crate::services::runner;
 use crate::services::store::Layout;
 use crate::services::trusted;
 use crate::services::{forge, git, store};
@@ -323,25 +324,10 @@ async fn drive(
             selected_node.set(node.id.clone());
         }
 
-        if node.requires_approval && !flow::nothing_to_approve(&node, &state.resolved_for(&node)) {
-            // The approval describes what will run, so it has to read the same
-            // resolved state the step will — otherwise the proposal quotes one
-            // node's `commit_subject` and the commit uses another's.
+        if runner::needs_approval(&node, &state) {
             let state = state.resolved_for(&node);
-            let proposal = flow::proposal(&node, &state);
-            let items = flow::proposal_items(&node, &state);
-            let preview_diff = flow::diff_preview(&node, &repo, &state)
-                .await
-                .unwrap_or_default();
-            {
-                let mut w = states.write();
-                let entry = w.entry(key.clone()).or_default();
-                let run = entry.runs.entry(node.id.clone()).or_default();
-                run.proposal = proposal;
-                run.items = items;
-                run.preview_diff = preview_diff;
-                entry.set_status(&node.id, NodeStatus::AwaitingApproval);
-            }
+            let proposal = runner::Proposal::read(&node, &repo, &state).await;
+            proposal.post(states.write().entry(key.clone()).or_default(), &node.id);
 
             // The run has stopped and cannot continue without a person. If they
             // are not looking at the window, say so.
@@ -460,54 +446,13 @@ async fn drive(
             .or_default()
             .set_status(&node.id, NodeStatus::Running);
 
-        // A model step on an install with no model never calls one: it writes
-        // what can be derived from the diff and is marked skipped. Done here,
-        // once, rather than in each of the three model steps — and before the
-        // approval, so what you approve is what will actually be used.
-        if node.kind == NodeKind::Model && !cfg.read().uses_model() {
-            let stand_in = flow::without_model(&node, &state);
-            let mut w = states.write();
-            let entry = w.entry(key.clone()).or_default();
-            for (k, v) in stand_in.artifacts {
-                entry
-                    .artifacts
-                    .insert(crate::services::graph::qualified(&node.id, &k), v.clone());
-                entry.artifacts.insert(k, v);
-            }
-            entry.set_status(&node.id, NodeStatus::Bypassed);
-            let run = entry.runs.entry(node.id.clone()).or_default();
-            run.summary = stand_in.summary;
-            run.log = stand_in.log;
-            continue;
-        }
-
-        // Focused reviews with no lens turned on, likewise.
-        if node.step == Step::Lenses && !cfg.read().lenses.any() {
-            let mut w = states.write();
-            let entry = w.entry(key.clone()).or_default();
-            entry.set_status(&node.id, NodeStatus::Bypassed);
-            let run = entry.runs.entry(node.id.clone()).or_default();
-            run.summary = "skipped — no focused review turned on".into();
-            run.log = "No focused review is turned on in Settings, so none ran. Turn on \
-                       alignment, security or architecture under Model provider \u{2192} \
-                       Focused reviews to have every pull request checked for it."
-                .into();
-            continue;
-        }
-
-        // A second opinion with no second model chosen is skipped the same
-        // way, and for the same reason it must not fail: the merge waits on
-        // it, and an optional reviewer nobody set up must not stop a merge.
-        if node.step == Step::SecondOpinion && !cfg.read().second_config().uses_model() {
-            let mut w = states.write();
-            let entry = w.entry(key.clone()).or_default();
-            entry.set_status(&node.id, NodeStatus::Bypassed);
-            let run = entry.runs.entry(node.id.clone()).or_default();
-            run.summary = "skipped — no second reviewer chosen".into();
-            run.log = "No second reviewer is chosen in Settings, so nothing gave a second \
-                       opinion. Pick one under Model provider \u{2192} Second reviewer to have \
-                       every pull request reviewed twice."
-                .into();
+        // No model, no focused review, no second reviewer: settled here,
+        // once, rather than in each step that would have used one.
+        if runner::bypass_unconfigured(
+            states.write().entry(key.clone()).or_default(),
+            &node,
+            &cfg.read(),
+        ) {
             continue;
         }
 
@@ -614,91 +559,21 @@ async fn drive(
             continue;
         };
 
-        let mut w = states.write();
-        let entry = w.entry(key.clone()).or_default();
-        match result {
-            Ok(outcome) => {
-                let nothing = outcome.nothing_to_do;
-                for (k, v) in outcome.artifacts {
-                    entry.artifacts.insert(k, v);
-                }
-                entry.set_status(
-                    &node.id,
-                    if nothing {
-                        NodeStatus::Skipped
-                    } else {
-                        NodeStatus::Done
-                    },
-                );
-                {
-                    let run = entry.runs.entry(node.id.clone()).or_default();
-                    run.summary = outcome.summary;
-                    run.log = outcome.log;
-                    // A step may offer files for deselection (scan does), and
-                    // a re-run must not silently restore ones already dropped.
-                    if !outcome.items.is_empty() {
-                        run.items = outcome.items;
-                    }
-                }
-                // Nothing to do is still nothing downstream can build on.
-                if nothing {
-                    entry.propagate_block(&graph);
-                }
-            }
-            Err(failure) => {
-                announce(NodeStatus::Failed, &key.0, &node.title, &failure.message);
-                entry.set_status(&node.id, NodeStatus::Failed);
-                {
-                    let run = entry.runs.entry(node.id.clone()).or_default();
-                    run.summary = "failed".into();
-                    run.log = failure.message;
-                    run.remedies = failure.remedies;
-                }
-                // A failure stays local: only what depends on this node is blocked.
-                entry.propagate_block(&graph);
-            }
+        if let Err(failure) = &result {
+            announce(NodeStatus::Failed, &key.0, &node.title, &failure.message);
         }
+        runner::settle(
+            states.write().entry(key.clone()).or_default(),
+            &graph,
+            &node.id,
+            result,
+        );
     }
 
-    release::record_shipped(&key.0, &key.1, &graph, &snapshot(&states, &key)).await;
-    report_finished(&graph, &key, cfg, &states).await;
+    let finished = snapshot(&states, &key);
+    release::record_shipped(&key.0, &key.1, &graph, &finished).await;
+    runner::report_finished(&key.0, &key.1, &graph, &finished).await;
     true
-}
-
-/// Tells the usage statistics how this drive ended, if it ended — a run that
-/// stopped with work still pending (nothing ready, nothing finished) has not
-/// produced an outcome yet.
-///
-/// Gated on `telemetry::active()` before doing anything, including the git
-/// call that names the forge: with statistics off this costs nothing.
-async fn report_finished(
-    graph: &Graph,
-    key: &Key,
-    cfg: Signal<LlmConfig>,
-    states: &Signal<States>,
-) {
-    if !telemetry::active() {
-        return;
-    }
-    let state = snapshot(states, key);
-    if !state.is_finished(graph) {
-        return;
-    }
-    let statuses: Vec<NodeStatus> = graph.nodes.iter().map(|n| state.status(&n.id)).collect();
-    let forge = match git::remote_url(&key.0).await {
-        Some(url) => forge::detect(&url),
-        None => forge::Forge::None,
-    };
-    let provider = cfg.read().kind;
-    telemetry::record(telemetry::Event::flow_finished(
-        &key.1,
-        telemetry::outcome_of(&statuses),
-        &forge,
-        provider,
-    ));
-    // A finished run is the moment worth getting to the server promptly;
-    // detached so the run never waits on the network.
-    tokio::spawn(telemetry::flush());
 }
 
 fn set_remedy(
@@ -2162,7 +2037,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         Some(repo) => {
             let pr_id = selected_pr.read().clone();
             // The MCP server names a repository by its resolved path.
-            let resolved = std::fs::canonicalize(&repo)
+            let resolved = dunce::canonicalize(&repo)
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| repo.clone());
             let live = live_runs
@@ -2171,18 +2046,28 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                 .find(|r| r.repo == resolved || r.repo == repo)
                 .cloned();
             rsx! {
-            // A run Claude started through GitAgent's MCP server, as it goes.
-            // Read-only: its approvals are answered where it was started.
+            // A run Claude started through GitAgent's MCP server, or one
+            // started with `gitagent run`, as it goes. Read-only: its
+            // approvals are answered where it was started.
             if let Some(live) = live {
                 div { class: "live-run",
                     div { class: "live-run-head",
                         span { class: if live.finished { "live-dot live-dot-done" } else { "live-dot" } }
-                        if live.finished {
-                            "Claude ran {live.flow_label} here"
+                        if live.terminal {
+                            if live.finished {
+                                "Ran {live.flow_label} here"
+                            } else {
+                                "Running {live.flow_label} here"
+                            }
+                            span { class: "live-run-via", "from a terminal" }
                         } else {
-                            "Claude is running {live.flow_label} here"
+                            if live.finished {
+                                "Claude ran {live.flow_label} here"
+                            } else {
+                                "Claude is running {live.flow_label} here"
+                            }
+                            span { class: "live-run-via", "through GitAgent\u{2019}s MCP server" }
                         }
-                        span { class: "live-run-via", "through GitAgent\u{2019}s MCP server" }
                         if live.trusted && !live.finished {
                             span {
                                 class: "live-run-trusted",
@@ -2204,7 +2089,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     }
                     if let Some((title, proposal)) = live.waiting.clone() {
                         div { class: "live-run-wait",
-                            "{title} is waiting for approval \u{2014} answer it in Claude, where the run was started."
+                            if live.terminal {
+                                "{title} is waiting for approval \u{2014} answer it in the terminal where the run was started."
+                            } else {
+                                "{title} is waiting for approval \u{2014} answer it in Claude, where the run was started."
+                            }
                         }
                         if !proposal.trim().is_empty() {
                             pre { class: "live-run-proposal", "{proposal}" }
