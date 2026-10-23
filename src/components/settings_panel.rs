@@ -386,6 +386,10 @@ fn ProviderFields(
                     label { class: "field",
                         span { "Base URL" }
                         input {
+                            autocapitalize: "off",
+                            autocomplete: "off",
+                            spellcheck: "false",
+                            "autocorrect": "off",
                             value: "{current.ollama_url}",
                             oninput: move |e| cfg.write().ollama_url = e.value(),
                         }
@@ -394,6 +398,10 @@ fn ProviderFields(
                 label { class: "field",
                     span { "Model" }
                     input {
+                        autocapitalize: "off",
+                        autocomplete: "off",
+                        spellcheck: "false",
+                        "autocorrect": "off",
                         value: "{ollama_model}",
                         placeholder: if second { "{current.ollama_model}" } else { "" },
                         oninput: move |e| {

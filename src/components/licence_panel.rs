@@ -181,7 +181,10 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                         label { class: "field",
                             span { "Licence number" }
                             input {
+                                autocapitalize: "off",
+                                autocomplete: "off",
                                 spellcheck: "false",
+                                "autocorrect": "off",
                                 placeholder: "ABCDE-FGHJK-LMNPQ-RSTUV, from your subscription email",
                                 value: "{key}",
                                 oninput: move |e| {
@@ -206,7 +209,10 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                             div { class: "field-row",
                                 input {
                                     r#type: "email",
+                                    autocapitalize: "off",
+                                    autocomplete: "off",
                                     spellcheck: "false",
+                                    "autocorrect": "off",
                                     placeholder: "you@example.com",
                                     value: "{email}",
                                     oninput: move |e| {
