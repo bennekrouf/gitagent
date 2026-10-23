@@ -50,7 +50,6 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
     let mut cfg = props.llm_config;
     let on_done = props.on_done;
     let mut detected = use_signal(|| Detected::Looking);
-    let mut key_input = use_signal(String::new);
     // What each api0 region costs, for the picker. Asked once, and only ever
     // answered for a licence that is already on this computer.
     let mut offers = use_signal(|| Option::<Result<Vec<llm::RegionOffer>, String>>::None);
@@ -97,27 +96,14 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
 
     let current = cfg.read().clone();
     let pick = current_pick(&current, false);
-    let preset = current.preset();
     let using = current.ollama_model.clone();
-    let typed_key = !key_input.read().trim().is_empty();
-    let can_continue = match pick {
-        Pick::Ollama => true,
-        // api0 can run on the licence already saved here; any other provider
-        // needs the key that is being typed, or one in the environment.
-        Pick::Api0 | Pick::OwnKey => typed_key || llm::key_for(preset).is_some(),
-        // Not offered: see the module docs.
-        Pick::Off => false,
-    };
+    // Any of the four answers the question, api0 included: a region with no
+    // licence yet runs as soon as credits arrive, and the picker says where
+    // they come from. Nothing is pasted here — the GitAgent Pro window is
+    // the one place that can really save a licence.
+    let can_continue = pick.is_some();
 
     let save = move |_| {
-        // Held for this session only. The key never reaches settings.json: a
-        // secret written to a config file outlives every reason it was put
-        // there, and the env var is the one place the rest of the app already
-        // looks.
-        let typed = key_input.read().trim().to_string();
-        if !typed.is_empty() {
-            std::env::set_var(cfg.read().preset().env, typed);
-        }
         store::save_settings(&cfg.read());
         on_done.call(());
     };
@@ -137,40 +123,17 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
                         cfg,
                         second: false,
                         offers,
-                        allow_off: false,
-                        on_change: move |_| key_input.set(String::new()),
+                        on_change: move |_| {},
                         on_licence: None,
                     }
 
-                    match pick {
-                        Pick::Ollama => rsx! {
-                            div { class: "first-run-detail",
-                                "ollama is answering at {current.ollama_url} \u{2014} {using} is ready."
-                                if installed.len() > 1 {
-                                    " It has {installed.len()} models; Settings picks another."
-                                }
+                    if pick == Some(Pick::Ollama) {
+                        div { class: "first-run-detail",
+                            "ollama is answering at {current.ollama_url} \u{2014} {using} is ready."
+                            if installed.len() > 1 {
+                                " It has {installed.len()} models; Settings picks another."
                             }
-                        },
-                        // api0 takes a licence number here as well as a key,
-                        // for someone who has one but has not pasted it yet.
-                        Pick::Api0 | Pick::OwnKey => rsx! {
-                            div { class: "first-run-detail",
-                                input {
-                                    class: "input",
-                                    r#type: "password",
-                                    placeholder: "{key_placeholder(preset)}",
-                                    value: "{key_input.read()}",
-                                    oninput: move |e| key_input.set(e.value()),
-                                }
-                                div { class: "choice-note",
-                                    "Kept for this session only and never written to disk. To keep "
-                                    "it between launches, export "
-                                    code { "{preset.env}" }
-                                    " in your shell."
-                                }
-                            }
-                        },
-                        Pick::Off => rsx! {},
+                        }
                     }
                 }
 
@@ -185,15 +148,6 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
                 }
             }
         }
-    }
-}
-
-/// What the key field asks for: api0 needs nothing more when a licence is
-/// already saved on this computer.
-fn key_placeholder(remote: &llm::Remote) -> String {
-    match llm::key_source(remote) {
-        Some(source) if llm::is_api0(remote) => format!("{source} — no key needed"),
-        _ => remote.env.to_string(),
     }
 }
 

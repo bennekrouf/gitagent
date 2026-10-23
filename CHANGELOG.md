@@ -28,6 +28,25 @@ were never released.
   merge" used to need opening one by one to tell apart. The note stays
   wherever the button cannot be offered — a hidden Review → Merge flow, or a
   pull request whose checks are red.
+- Settings → Model provider is down to four choices, side by side: the model
+  on this computer, or api0 in Europe, China or the United States. No step
+  between them and no fifth option — the flags are the choice, and what a
+  step costs in each region is on the button.
+- The second reviewer now has a switch of its own. Tick "Review every pull
+  request a second time" and the same four choices appear for it; untick it
+  and there is one review, as before.
+- The first-run question offers that same row, so the choice made on day one
+  is the one Settings shows afterwards.
+
+### Removed
+
+- Bringing your own API key is gone from Settings and from the first-run
+  screen, which no longer has anything to paste into, and so is "No AI". Every
+  model GitAgent calls is either on your computer or on api0's regions, which
+  run on your plan's AI credits with nothing to paste. A setting from an
+  earlier version that named a provider of your own, or no model at all,
+  keeps working exactly as it did; Settings says so, and one click moves it
+  to one of the four.
 
 ## [0.1.122] - 2026-10-23
 
