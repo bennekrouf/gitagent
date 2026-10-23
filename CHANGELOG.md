@@ -47,6 +47,17 @@ were never released.
   runs the model in Europe, China or the United States instead. A setting
   still on DeepSeek moves to OpenAI; pick api0 or another provider in
   Settings. The OpenRouter preset now starts on an OpenAI model.
+## [0.1.121] - 2026-10-23
+
+### Changed
+
+- The default model and the second reviewer now offer the same four choices in
+  the same row: api0, Ollama, your own key, or none. The second reviewer can be
+  set to an api0 region of its own, and the long list of providers only appears
+  once you say you have a key. When api0 needs a licence, Settings offers a
+  button that opens the licence window directly instead of pointing you to the
+  top bar. A model saved before api0 had regions now shows the region it runs in
+  rather than "default".
 
 ## [0.1.120] - 2026-10-22
 
