@@ -216,16 +216,24 @@ fn default_selection(
         .unwrap_or_default()
 }
 
-/// The flow a repository list row offers to start, and its button's words:
-/// a commit for uncommitted files, a release that is due. `None` for anything
-/// else, or when no flow shown in this repository answers it.
-fn row_start(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<(String, String)> {
+/// The flow a repository list row offers to start, its button's words, and
+/// the pull request that flow would act on — empty when it needs none.
+///
+/// A commit for uncommitted files, a release that is due, a merge for a pull
+/// request whose checks are green. `None` for anything else, or when no flow
+/// shown in this repository answers it.
+fn row_start(
+    book: &FlowBook,
+    status: &RepoStatus,
+    hidden: &[String],
+) -> Option<(String, String, String)> {
     let wants = status.wants();
     let need = wants.need()?;
     let flow = book
         .runnable_for(hidden)
         .into_iter()
         .find(|f| f.answers(need))?;
+    let mut pr = String::new();
     let label = match wants {
         Wants::Commit if status.changes == 1 => "Commit 1 file".to_string(),
         Wants::Commit => format!("Commit {} files", status.changes),
@@ -234,9 +242,18 @@ fn row_start(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> Option<
         // API0" — and a button that does not say which one it starts is
         // worse than no button.
         Wants::Release => flow.label.clone(),
+        // The decision this row is waiting on, named: four rows reading
+        // "ready to merge" are four rows you have to open to tell apart.
+        // The number is the one the state was read from, which is not
+        // always the checked-out branch's.
+        Wants::Merge => {
+            let decided = status.pr_to_act_on()?;
+            pr = decided.number.clone();
+            format!("Merge #{}", decided.number)
+        }
         _ => return None,
     };
-    Some((flow.id.clone(), label))
+    Some((flow.id.clone(), label, pr))
 }
 
 /// Woken whenever an approval decision is recorded, or a run's trusted flag
@@ -1773,7 +1790,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             approval: approval_for(&states_snapshot, &flows, &repo.path),
             start: status_map.get(&repo.path).and_then(|s| {
                 row_start(&book.read(), s, &repo_flows.read().hidden_for(&repo.path))
-                    .map(|(_, label)| label)
+                    .map(|(_, label, _)| label)
             }),
         })
         .collect();
@@ -2849,7 +2866,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         }
                     },
                     on_start: move |path: String| {
-                        let Some((flow_id, _)) = statuses.read().get(&path).and_then(|s| {
+                        let Some((flow_id, _, pr)) = statuses.read().get(&path).and_then(|s| {
                             row_start(&book.read(), s, &repo_flows.read().hidden_for(&path))
                         }) else {
                             return;
@@ -2857,11 +2874,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         let first = book.read().get(&flow_id).map(|f| f.first_node()).unwrap_or_default();
                         // Opens the repository on that flow, as a click on
                         // the row would, and starts it there — so the run,
-                        // and any approval it stops at, is in view.
+                        // and any approval it stops at, is in view. A review
+                        // flow arrives with the pull request the button named
+                        // already chosen; the others need none.
                         selected_repo.set(Some(path));
                         selected_flow.set(flow_id);
                         selected_node.set(first);
-                        selected_pr.set(String::new());
+                        selected_pr.set(pr);
                         drawer.set(None);
                         diff_panel.set(None);
                         begin(false);
@@ -3962,11 +3981,12 @@ mod tests {
         };
         let mut book = FlowBook::defaults();
 
-        let (flow, label) = row_start(&book, &status(3, false), &[]).unwrap();
+        let (flow, label, pr) = row_start(&book, &status(3, false), &[]).unwrap();
         assert_eq!(
             (flow.as_str(), label.as_str()),
             ("commit_and_pr", "Commit 3 files")
         );
+        assert!(pr.is_empty(), "a commit acts on no pull request");
         assert_eq!(
             row_start(&book, &status(1, false), &[]).unwrap().1,
             "Commit 1 file"
@@ -3984,7 +4004,7 @@ mod tests {
         release.handles = vec![Need::Release.key().to_string()];
         book.flows.push(release);
         // The button says which flow it starts, not "Run release".
-        let (flow, label) = row_start(&book, &status(0, true), &[]).unwrap();
+        let (flow, label, _) = row_start(&book, &status(0, true), &[]).unwrap();
         assert_eq!((flow.as_str(), label.as_str()), ("release", "Release"));
 
         book.flows.last_mut().unwrap().label = "Deploy VPS".into();
@@ -3992,6 +4012,64 @@ mod tests {
             row_start(&book, &status(0, true), &[]).unwrap().1,
             "Deploy VPS"
         );
+    }
+
+    #[test]
+    fn a_row_ready_to_merge_offers_that_pull_request_by_number() {
+        use crate::services::probe::{Checks, PrBrief};
+        use crate::services::release::ReleaseState;
+        let pr = |number: &str, checks: Checks| PrBrief {
+            number: number.into(),
+            title: "Add a thing".into(),
+            url: String::new(),
+            checks,
+            files: 3,
+            additions: 10,
+            deletions: 2,
+            commits: 1,
+            base: "main".into(),
+            head: "feat/x".into(),
+            failed: vec![],
+        };
+        let ready = |pr: Option<PrBrief>, others: Vec<PrBrief>| RepoStatus {
+            branch: "feat/x".into(),
+            changes: 0,
+            forge: crate::services::forge::Forge::GitHub,
+            pr,
+            prs: others,
+            prs_error: None,
+            ahead: 0,
+            behind: 0,
+            unmerged: 0,
+            release: ReleaseState {
+                last_tag: Some("v1".into()),
+                commits: 0,
+                prs: vec![],
+                releases: false,
+                since_shipped: false,
+            },
+            in_progress: None,
+        };
+        let book = FlowBook::defaults();
+
+        let status = ready(Some(pr("34", Checks::Passing)), vec![]);
+        let (flow, label, chosen) = row_start(&book, &status, &[]).unwrap();
+        assert_eq!(
+            (flow.as_str(), label.as_str(), chosen.as_str()),
+            ("review_and_merge", "Merge #34", "34"),
+            "the row names the decision, and the run arrives on that PR"
+        );
+
+        // Red checks are not a decision waiting: the note stays.
+        let failing = ready(Some(pr("34", Checks::Failing)), vec![]);
+        assert!(row_start(&book, &failing, &[]).is_none());
+
+        // Back on the base branch, the open one elsewhere is the one offered.
+        let elsewhere = ready(None, vec![pr("35", Checks::Passing)]);
+        assert_eq!(row_start(&book, &elsewhere, &[]).unwrap().1, "Merge #35");
+
+        // Hidden here: nothing to offer, "ready to merge" stays.
+        assert!(row_start(&book, &status, &["review_and_merge".into()]).is_none());
     }
 
     #[test]

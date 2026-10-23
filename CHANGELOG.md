@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- A repository whose pull request is ready now offers the decision instead of
+  reporting it: where the list said "ready to merge", it has a Merge #34
+  button that opens that repository and starts the review, with the pull
+  request it names already chosen. Four repositories all reading "ready to
+  merge" used to need opening one by one to tell apart. The note stays
+  wherever the button cannot be offered — a hidden Review → Merge flow, or a
+  pull request whose checks are red.
+
 ## [0.1.122] - 2026-10-23
 
 ### Changed
