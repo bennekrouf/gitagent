@@ -4,7 +4,7 @@
 //! the platform data directory, best-effort writes, and a sane default when the
 //! file is missing or unreadable.
 //!
-//! The DeepSeek API key is deliberately **not** in here. It is read from the
+//! API keys are deliberately **not** in here. It is read from the
 //! environment at call time so that nothing ever writes a credential to disk.
 
 use serde::{Deserialize, Serialize};

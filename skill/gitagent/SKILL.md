@@ -1,6 +1,6 @@
 ---
 name: gitagent
-description: Help someone use GitAgent, the desktop app that takes git repositories from uncommitted changes to an open pull request, a merge and a release, with an approval at every step that touches history or the remote. Use this whenever the user mentions GitAgent, or is using it and asks about flows (Commit → PR, Review → Merge, Release), approvals, trusted runs, the Branches panel, Setup or flows.toml, the model that drafts commit messages (Ollama, DeepSeek, OpenAI and other APIs), GitHub or Azure DevOps connections, GitAgent Pro, or a step that failed with a fix offered on a button. Also use it when they want to report a GitAgent bug or ask the author for help.
+description: Help someone use GitAgent, the desktop app that takes git repositories from uncommitted changes to an open pull request, a merge and a release, with an approval at every step that touches history or the remote. Use this whenever the user mentions GitAgent, or is using it and asks about flows (Commit → PR, Review → Merge, Release), approvals, trusted runs, the Branches panel, Setup or flows.toml, the model that drafts commit messages (Ollama, api0 in Europe, China or the United States, OpenAI and other APIs), GitHub or Azure DevOps connections, GitAgent Pro, or a step that failed with a fix offered on a button. Also use it when they want to report a GitAgent bug or ask the author for help.
 ---
 
 # GitAgent
@@ -53,12 +53,12 @@ from a description.
 ## Setup and settings
 
 - **First run** asks what writes commit messages: a model on this machine
-  (Ollama), a hosted API (DeepSeek, OpenAI, Mistral, Cohere, Groq, OpenRouter,
-  or any OpenAI-compatible endpoint), or **no model**, in which case GitAgent
+  (Ollama), api0 in Europe, China or the United States, a hosted API with a
+  key of your own (OpenAI, Mistral, Cohere, Groq, OpenRouter, or any
+  OpenAI-compatible endpoint), or **no model**, in which case GitAgent
   builds a plain message from the changed files. It can be changed any time in
   **Settings**.
-- **API keys** are read from the environment (`DEEPSEEK_API_KEY`,
-  `OPENAI_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`, `GROQ_API_KEY`,
+- **API keys** are read from the environment (`OPENAI_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`, `GROQ_API_KEY`,
   `OPENROUTER_API_KEY`) or typed in for the session. They are never written to
   disk. To keep one between launches, export it in the shell profile.
 - **Context window** (Settings): how much of a diff the model is sent. Lower

@@ -17,6 +17,36 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Settings → Model provider now offers the same four choices on both tabs:
+  api0, Ollama, a provider you have a key for, and none. The second reviewer
+  is picked the way the default model is, api0 region and all, instead of a
+  drop-down of its own, and the list of key-based providers (OpenAI, Mistral
+  and the rest) only appears once you say you have a key.
+- api0 carries the mayorana mark in that row, and the region you run in — its
+  flag and what a step costs — sits right under it.
+- A model set to api0 now names its region everywhere. The button in the top
+  bar that opens this window used to read "default" for a plan that had never
+  been sent to a region; it reads the region's flag and name from now on, and
+  an older setting is moved to Europe the first time it is read.
+- With no licence on this computer, api0 offers to sign in from inside the
+  window rather than sending you to look for Get Pro… in the top bar.
+- The default model can be turned off from this window. "No AI" used to be
+  offered only while setting GitAgent up for the first time.
+- The question a new install is asked — what writes the commit messages —
+  now offers that same row of providers, so the choice made on the first
+  screen looks like the one Settings offers later. A key, or an api0 licence
+  number, is still pasted right there and kept for the session only.
+
+### Removed
+
+- DeepSeek is no longer in the list of providers you bring a key for: api0
+  runs the model in Europe, China or the United States instead. A setting
+  still on DeepSeek moves to OpenAI; pick api0 or another provider in
+  Settings. The OpenRouter preset now starts on an OpenAI model.
 ## [0.1.121] - 2026-10-23
 
 ### Changed

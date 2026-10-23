@@ -52,21 +52,23 @@ Two consequences worth knowing:
 
 ## Model providers
 
-Local **ollama** or remote **DeepSeek**, switchable in Settings.
+Local **ollama**, **api0** (Europe, China or the United States, on the
+licence's AI credits) or a remote provider with a key of your own, switchable
+in Settings.
 
 * ollama sends an explicit `num_ctx` (default 16384). ollama's own default is
   4096 whatever the model claims to support, which truncates a real diff
   without telling you.
-* DeepSeek is OpenAI-compatible, so that client also covers OpenAI, vLLM,
-  LM Studio and OpenRouter later — only the base URL and model change.
+* Remote providers are OpenAI-compatible, so one client covers api0, OpenAI,
+  Mistral, vLLM, LM Studio and OpenRouter — only the base URL and model change.
 * Both run at `temperature: 0`. The same diff should produce the same commit
   message twice, or approving one is meaningless.
 
-The DeepSeek key is read from `DEEPSEEK_API_KEY` at call time and is never
-written to disk:
+A provider's key is read from its environment variable at call time and is
+never written to disk:
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...
+export OPENAI_API_KEY=sk-...
 ```
 
 ## Running it
@@ -85,7 +87,7 @@ registry, `settings.json` for the model config.
 ```
 src/services/graph.rs   engine: nodes, edges, state, scheduling. No IO.
 src/services/flow.rs    the hardcoded flow + what each node does
-src/services/llm.rs     ollama and DeepSeek behind one complete_json()
+src/services/llm.rs     ollama and remote APIs behind one complete_json()
 src/services/git.rs     git and gh as subprocesses
 src/services/store.rs   registry and settings on disk
 src/screens/            welcome (repo list), run_screen (executor + layout)

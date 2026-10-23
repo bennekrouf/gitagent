@@ -1,4 +1,4 @@
-//! Model providers: a local ollama, or a remote DeepSeek endpoint.
+//! Model providers: a local ollama, or a remote OpenAI-compatible endpoint.
 //!
 //! Both are reached through one function, `complete_json`, because every model
 //! node in the graph has the same contract: a system prompt, a user prompt, and
@@ -10,9 +10,9 @@
 //!   * **ollama** takes a JSON *schema* in `format`, and needs `num_ctx` set
 //!     explicitly — it defaults to 4096 regardless of what the model supports,
 //!     which silently truncates a diff of any size into confident nonsense.
-//!   * **DeepSeek** is OpenAI-compatible: `POST /chat/completions` with
-//!     `response_format: {"type": "json_object"}`. That path also covers
-//!     OpenAI, vLLM, LM Studio and OpenRouter later — only the base URL and
+//!   * **remote** providers are OpenAI-compatible: `POST /chat/completions`
+//!     with `response_format: {"type": "json_object"}`. That path covers api0,
+//!     OpenAI, Mistral, vLLM, LM Studio and OpenRouter — only the base URL and
 //!     model name change.
 //!
 //! Each provider's API key is read from its environment variable and is never
@@ -247,13 +247,6 @@ pub const REMOTES: &[Remote] = &[
         env: "API0_API_KEY",
     },
     Remote {
-        key: "deepseek",
-        label: "DeepSeek",
-        base_url: "https://api.deepseek.com/v1",
-        model: "deepseek-chat",
-        env: "DEEPSEEK_API_KEY",
-    },
-    Remote {
         key: "openai",
         label: "OpenAI",
         base_url: "https://api.openai.com/v1",
@@ -286,14 +279,14 @@ pub const REMOTES: &[Remote] = &[
         key: "openrouter",
         label: "OpenRouter",
         base_url: "https://openrouter.ai/api/v1",
-        model: "anthropic/claude-3.5-sonnet",
+        model: "openai/gpt-4o-mini",
         env: "OPENROUTER_API_KEY",
     },
 ];
 
 /// The provider a settings file without one gets, and the one an unknown
 /// key falls back to.
-const DEFAULT_REMOTE: &str = "deepseek";
+const DEFAULT_REMOTE: &str = "openai";
 
 pub fn remote(key: &str) -> &'static Remote {
     REMOTES
@@ -415,8 +408,8 @@ pub fn key_source(remote: &Remote) -> Option<String> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ProviderKind {
     Ollama,
-    /// Any OpenAI-compatible endpoint. `DeepSeek` is the old name for this,
-    /// kept as an alias so an existing settings.json still loads.
+    /// Any OpenAI-compatible endpoint. The alias is this kind's old name,
+    /// kept so an existing settings.json still loads.
     #[serde(alias = "DeepSeek")]
     Remote,
     /// No model at all. Every step that would have called one is skipped, and
@@ -844,7 +837,7 @@ fn client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
 /// Runs one model call and parses the reply as a JSON object.
 ///
 /// `schema` is a JSON Schema describing the expected object. ollama enforces it
-/// server-side; DeepSeek only guarantees *valid* JSON, so the schema is also
+/// server-side; an OpenAI-compatible API only guarantees *valid* JSON, so the schema is also
 /// rendered into the system prompt for both providers. Structure you asked for
 /// in the prompt and structure you validated on the way out are different
 /// things — the caller still checks the fields it needs.
@@ -1280,10 +1273,10 @@ mod tests {
         let second = cfg.second_config();
         assert_eq!(second.remote_base_url(), "https://proxy.example/v1");
         assert_eq!(second.active_model(), "gpt-5");
-        cfg.second.remote = "deepseek".into();
+        cfg.second.remote = "mistral".into();
         assert_eq!(
             cfg.second_config().remote_base_url(),
-            "https://api.deepseek.com/v1"
+            "https://api.mistral.ai/v1"
         );
     }
 
@@ -1478,7 +1471,7 @@ mod tests {
         assert!(is_api0(api0));
         assert_eq!(api0.label, "api0");
         assert_eq!(api0.model, "default");
-        assert!(!is_api0(remote("deepseek")));
+        assert!(!is_api0(remote("openai")));
     }
 
     #[test]
@@ -1545,19 +1538,19 @@ mod tests {
 
     #[test]
     fn a_settings_file_written_before_this_change_still_loads() {
-        // The old shape named DeepSeek directly and had its own url/model keys.
+        // The old shape named the provider directly and had its own url/model keys.
         let old = r#"{
             "kind": "DeepSeek",
             "ollama_url": "http://localhost:11434",
             "ollama_model": "qwen2.5-coder:14b",
             "ollama_num_ctx": 16384,
-            "deepseek_url": "https://api.deepseek.com/v1",
-            "deepseek_model": "deepseek-chat"
+            "deepseek_url": "https://llm.example/v1",
+            "deepseek_model": "chat-model"
         }"#;
         let cfg: LlmConfig = serde_json::from_str(old).expect("old settings must still parse");
         assert_eq!(cfg.kind, ProviderKind::Remote);
-        assert_eq!(cfg.remote_base_url(), "https://api.deepseek.com/v1");
-        assert_eq!(cfg.remote_model_name(), "deepseek-chat");
+        assert_eq!(cfg.remote_base_url(), "https://llm.example/v1");
+        assert_eq!(cfg.remote_model_name(), "chat-model");
     }
 
     #[test]
@@ -1651,6 +1644,6 @@ mod tests {
             cfg.second.region().is_none(),
             "a key of your own is not api0"
         );
-        assert_eq!(cfg.second.remote, "deepseek");
+        assert_eq!(cfg.second.remote, DEFAULT_REMOTE);
     }
 }

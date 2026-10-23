@@ -783,7 +783,7 @@ fn review_hub(graph: &Graph, state: &RunState, lenses: &Lenses) -> Option<Hub> {
     });
 
     // The second opinion, named after the model that gave it once one has:
-    // "deepseek-chat" says more than "second model" does.
+    // "gpt-4o-mini" says more than "second model" does.
     if let Some(n) = graph.nodes.iter().find(|n| n.step == Step::SecondOpinion) {
         let model = state.artifact("second_model");
         let findings = state.artifact("second_finding_count");
@@ -2354,15 +2354,11 @@ mod tests {
         s.started = true;
         s.set_status("second_opinion", NodeStatus::Done);
         s.artifacts
-            .insert("second_model".into(), "deepseek-chat".into());
+            .insert("second_model".into(), "gpt-4o-mini".into());
         s.artifacts
             .insert("second_verdict".into(), "looks_safe".into());
         let hub = review_hub(&g, &s, &Lenses::default()).unwrap();
-        let second = hub
-            .spokes
-            .iter()
-            .find(|s| s.name == "deepseek-chat")
-            .unwrap();
+        let second = hub.spokes.iter().find(|s| s.name == "gpt-4o-mini").unwrap();
         assert_eq!(second.note, "second opinion: looks safe");
         assert_eq!(second.tone, Tone::Good);
     }

@@ -10,7 +10,8 @@
 
 use dioxus::prelude::*;
 
-use crate::services::llm::{self, LlmConfig, ProviderKind, REMOTES};
+use crate::components::provider_picker::{current_pick, Pick, ProviderPicker};
+use crate::services::llm::{self, LlmConfig};
 use crate::services::store;
 
 #[derive(Props, Clone, PartialEq)]
@@ -49,9 +50,15 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
     let mut cfg = props.llm_config;
     let on_done = props.on_done;
     let mut detected = use_signal(|| Detected::Looking);
-    let mut choice = use_signal(|| ProviderKind::Ollama);
-    let mut remote = use_signal(|| REMOTES[0].key.to_string());
     let mut key_input = use_signal(String::new);
+    // What each api0 region costs, for the picker. Asked once, and only ever
+    // answered for a licence that is already on this computer.
+    let mut offers = use_signal(|| Option::<Result<Vec<llm::RegionOffer>, String>>::None);
+    use_effect(move || {
+        spawn(async move {
+            offers.set(Some(llm::api0_regions().await));
+        });
+    });
 
     // `local_models` rather than `probe`, deliberately: probe fails when
     // ollama is answering but the configured model is not pulled, and that
@@ -88,36 +95,30 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
         _ => return rsx! {},
     };
 
-    let picked = *choice.read();
-    let using = cfg.read().ollama_model.clone();
-    let can_continue = match picked {
-        ProviderKind::Ollama => true,
-        // api0 can run on the licence already saved here.
-        ProviderKind::Remote => {
-            !key_input.read().trim().is_empty()
-                || llm::key_for(llm::remote(&remote.read())).is_some()
-        }
+    let current = cfg.read().clone();
+    let pick = current_pick(&current, false);
+    let preset = current.preset();
+    let using = current.ollama_model.clone();
+    let typed_key = !key_input.read().trim().is_empty();
+    let can_continue = match pick {
+        Pick::Ollama => true,
+        // api0 can run on the licence already saved here; any other provider
+        // needs the key that is being typed, or one in the environment.
+        Pick::Api0 | Pick::OwnKey => typed_key || llm::key_for(preset).is_some(),
         // Not offered: see the module docs.
-        ProviderKind::Off => false,
+        Pick::Off => false,
     };
 
     let save = move |_| {
-        let mut next = cfg.read().clone();
-        next.kind = picked;
-        if picked == ProviderKind::Remote {
-            next.remote = remote.read().clone();
-            // Held for this session only. The key never reaches settings.json:
-            // a secret written to a config file outlives every reason it was
-            // put there, and the env var is the one place the rest of the app
-            // already looks.
-            let preset = llm::remote(&remote.read());
-            let typed = key_input.read().trim().to_string();
-            if !typed.is_empty() {
-                std::env::set_var(preset.env, typed);
-            }
+        // Held for this session only. The key never reaches settings.json: a
+        // secret written to a config file outlives every reason it was put
+        // there, and the env var is the one place the rest of the app already
+        // looks.
+        let typed = key_input.read().trim().to_string();
+        if !typed.is_empty() {
+            std::env::set_var(cfg.read().preset().env, typed);
         }
-        store::save_settings(&next);
-        cfg.set(next);
+        store::save_settings(&cfg.read());
         on_done.call(());
     };
 
@@ -130,58 +131,46 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
                 }
 
                 div { class: "first-run",
-                    // ── Ollama ────────────────────────────────────────────
-                    div {
-                        class: if picked == ProviderKind::Ollama { "choice choice-on" } else { "choice" },
-                        onclick: move |_| choice.set(ProviderKind::Ollama),
-                        div { class: "choice-head",
-                            span { class: if picked == ProviderKind::Ollama { "radio radio-on" } else { "radio" } }
-                            span { class: "choice-title", "Run a model on this machine" }
-                            span { class: "choice-tag choice-tag-ok", "found" }
-                        }
-                        div { class: "choice-body",
-                            "ollama is answering at localhost:11434 — {using} is ready."
-                            if installed.len() > 1 {
-                                " It has {installed.len()} models; Settings picks another."
-                            }
-                        }
+                    // The same row as the model window, so the choice made
+                    // here is recognisably the one Settings offers later.
+                    ProviderPicker {
+                        cfg,
+                        second: false,
+                        offers,
+                        allow_off: false,
+                        on_change: move |_| key_input.set(String::new()),
+                        on_licence: None,
                     }
 
-                    // ── Remote ────────────────────────────────────────────
-                    div {
-                        class: if picked == ProviderKind::Remote { "choice choice-on" } else { "choice" },
-                        onclick: move |_| choice.set(ProviderKind::Remote),
-                        div { class: "choice-head",
-                            span { class: if picked == ProviderKind::Remote { "radio radio-on" } else { "radio" } }
-                            span { class: "choice-title", "Use a hosted API" }
-                        }
-                        div { class: "choice-body",
-                            "Your key is kept for this session only and never written to disk."
-                            if picked == ProviderKind::Remote {
-                                div { class: "choice-fields",
-                                    select {
-                                        class: "input",
-                                        value: "{remote.read()}",
-                                        onchange: move |e| remote.set(e.value()),
-                                        for r in REMOTES.iter() {
-                                            option { key: "{r.key}", value: "{r.key}", "{r.label}" }
-                                        }
-                                    }
-                                    input {
-                                        class: "input",
-                                        r#type: "password",
-                                        placeholder: "{key_placeholder(llm::remote(&remote.read()))}",
-                                        value: "{key_input.read()}",
-                                        oninput: move |e| key_input.set(e.value()),
-                                    }
-                                    div { class: "choice-note",
-                                        "To keep it between launches, export "
-                                        code { "{llm::remote(&remote.read()).env}" }
-                                        " in your shell."
-                                    }
+                    match pick {
+                        Pick::Ollama => rsx! {
+                            div { class: "first-run-detail",
+                                "ollama is answering at {current.ollama_url} \u{2014} {using} is ready."
+                                if installed.len() > 1 {
+                                    " It has {installed.len()} models; Settings picks another."
                                 }
                             }
-                        }
+                        },
+                        // api0 takes a licence number here as well as a key,
+                        // for someone who has one but has not pasted it yet.
+                        Pick::Api0 | Pick::OwnKey => rsx! {
+                            div { class: "first-run-detail",
+                                input {
+                                    class: "input",
+                                    r#type: "password",
+                                    placeholder: "{key_placeholder(preset)}",
+                                    value: "{key_input.read()}",
+                                    oninput: move |e| key_input.set(e.value()),
+                                }
+                                div { class: "choice-note",
+                                    "Kept for this session only and never written to disk. To keep "
+                                    "it between launches, export "
+                                    code { "{preset.env}" }
+                                    " in your shell."
+                                }
+                            }
+                        },
+                        Pick::Off => rsx! {},
                     }
                 }
 
