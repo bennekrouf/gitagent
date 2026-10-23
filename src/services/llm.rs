@@ -394,17 +394,6 @@ pub async fn api0_regions() -> Result<Vec<RegionOffer>, String> {
     Ok(parse_region_offers(&v))
 }
 
-/// Where `remote`'s key comes from, for Settings.
-pub fn key_source(remote: &Remote) -> Option<String> {
-    if api_key(remote.env).is_some() {
-        Some(format!("{} found in the environment", remote.env))
-    } else if is_api0(remote) && super::licence::saved_key().is_some() {
-        Some("Uses the licence saved on this computer".into())
-    } else {
-        None
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ProviderKind {
     Ollama,

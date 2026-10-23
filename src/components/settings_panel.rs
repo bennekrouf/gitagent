@@ -1,11 +1,11 @@
 //! Model settings — pick the model the flow's steps call, and prove it works
 //! before a run depends on it.
 //!
-//! One picker, used twice: api0 (with the region it runs in), a local ollama,
-//! a provider with a key of your own, or no model at all. The second opinion
-//! chooses from exactly the same row, so the two tabs read the same way and
-//! the long list of providers — OpenAI, Mistral and the rest — stays out of
-//! sight until you say you have a key.
+//! One picker, used twice: a model on this computer, or api0 in Europe, China
+//! or the United States. Four choices and no fifth — no key to bring, no
+//! provider to name, and no way to end up with no model at all. The second
+//! opinion chooses from exactly the same row, so the two tabs read the same
+//! way; whether it reviews at all is a switch of its own above that row.
 //!
 //! Two tabs, one per flow step that chooses its own model: the default every
 //! model step uses, and the second opinion that reviews a pull request again.
@@ -259,17 +259,50 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                         }
                     } else {
                         // A second model that reviews every pull request again,
-                        // for a second opinion. Off unless chosen.
-                        ProviderFields {
-                            cfg,
-                            second: true,
-                            installed,
-                            offers,
-                            on_change: move |_| second_probe.set(None),
-                            on_licence,
+                        // for a second opinion. Off unless switched on: it is
+                        // one more model call per review, and the row below
+                        // offers no "none" of its own.
+                        label { class: "lens-row",
+                            input {
+                                r#type: "checkbox",
+                                checked: second.kind != ProviderKind::Off,
+                                onchange: move |e| {
+                                    {
+                                        let mut w = cfg.write();
+                                        if e.checked() {
+                                            // Somewhere other than the default,
+                                            // since a second pair of eyes that
+                                            // is the same model is not one.
+                                            let elsewhere = match w.region() {
+                                                Some(r) if r.id == llm::REGIONS[0].id => llm::REGIONS[1],
+                                                _ => llm::REGIONS[0],
+                                            };
+                                            w.second.use_region(elsewhere.id);
+                                        } else {
+                                            w.second.kind = ProviderKind::Off;
+                                        }
+                                    }
+                                    second_probe.set(None);
+                                },
+                            }
+                            div { class: "lens-text",
+                                div { class: "lens-name", "Review every pull request a second time" }
+                                div { class: "lens-about",
+                                    "A second model reads the same diff beside the first review."
+                                }
+                            }
                         }
 
                         if second.kind != ProviderKind::Off {
+                            ProviderFields {
+                                cfg,
+                                second: true,
+                                installed,
+                                offers,
+                                on_change: move |_| second_probe.set(None),
+                                on_licence,
+                            }
+
                             div { class: "field-row",
                                 button {
                                     class: "btn",
@@ -320,12 +353,6 @@ fn ProviderFields(
     let mut cfg = cfg;
     let current = cfg.read().clone();
     let pick = current_pick(&current, second);
-    let preset = if second {
-        llm::remote(&current.second.remote)
-    } else {
-        current.preset()
-    };
-    let key_source = llm::key_source(preset);
 
     // The model the second reviewer falls back to when its own field is left
     // empty: whatever the default is set to.
@@ -334,36 +361,27 @@ fn ProviderFields(
     } else {
         current.ollama_model.clone()
     };
-    let remote_model = if second {
-        current.second.remote_model.clone()
-    } else {
-        current.remote_model.clone()
-    };
 
     rsx! {
         ProviderPicker {
             cfg,
             second,
             offers,
-            allow_off: true,
             on_change,
             on_licence,
         }
 
         match pick {
-            Pick::Api0 => rsx! {
-                if let Some(r) = if second { current.second.region() } else { current.region() } {
-                    p { class: "field-note",
-                        "api0 runs the model in {r.label} and takes AI credits from your plan each \
-                         month. Which model runs there is api0's choice. A step is one model call \
-                         \u{2014} a commit message, a pull request description, one review \u{2014} \
-                         of about {llm::TYPICAL_STEP_TOKENS} tokens; a large diff costs more. \
-                         Test connection shows the credits left."
-                    }
+            Some(Pick::Api0(_)) => rsx! {
+                p { class: "field-note",
+                    "A step is one model call \u{2014} a commit message, a pull request \
+                     description, one review \u{2014} of about {llm::TYPICAL_STEP_TOKENS} \
+                     tokens; a large diff costs more, and each focused review is one more \
+                     step. Test connection shows the credits left."
                 }
             },
 
-            Pick::Ollama => rsx! {
+            Some(Pick::Ollama) => rsx! {
                 if !second {
                     label { class: "field",
                         span { "Base URL" }
@@ -433,54 +451,17 @@ fn ProviderFields(
                 }
             },
 
-            Pick::OwnKey => rsx! {
-                if !second {
-                    label { class: "field",
-                        span { "Base URL" }
-                        input {
-                            value: "{current.remote_url}",
-                            placeholder: "{preset.base_url}",
-                            oninput: move |e| cfg.write().remote_url = e.value(),
-                        }
-                    }
-                }
-                label { class: "field",
-                    span { "Model" }
-                    input {
-                        value: "{remote_model}",
-                        placeholder: "{preset.model}",
-                        oninput: move |e| {
-                            let v = e.value();
-                            let mut w = cfg.write();
-                            if second { w.second.remote_model = v } else { w.remote_model = v }
-                        },
-                    }
-                }
-                div { class: if key_source.is_some() { "key-state key-ok" } else { "key-state key-missing" },
-                    match &key_source {
-                        Some(source) => rsx! { "{source}" },
-                        None => rsx! { "{preset.env} is not set — export it and restart GitAgent" },
-                    }
-                }
-                p { class: "field-note",
-                    "All of these speak the OpenAI wire format, so they share one client. Leave \
-                     the model empty to use the provider's default. The key is read from the \
-                     environment on every call and never written to disk."
-                }
-                if second {
-                    p { class: "field-note",
-                        "A proxy or self-hosted endpoint is set once, on the default model's tab."
-                    }
-                }
-            },
-
-            Pick::Off => rsx! {
-                p { class: "field-note",
-                    if second {
-                        "One review per pull request. Nothing else changes."
+            // A settings file from a version that let you name a provider of
+            // your own, or run with no model at all. It still runs as it is;
+            // none of the four above is lit, and one click replaces it.
+            None => rsx! {
+                div { class: "key-state key-missing",
+                    if current.uses_model() {
+                        "Set to {current.active_model()}, which this window no longer offers. \
+                         Pick one of the four above to move it."
                     } else {
-                        "No model is called at all: every model step is skipped, and the flows \
-                         still run with the graph, the approvals and the git handling."
+                        "Set to run with no model at all, which this window no longer offers. \
+                         Every model step is skipped until you pick one of the four above."
                     }
                 }
             },
