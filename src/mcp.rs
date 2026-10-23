@@ -13,21 +13,19 @@
 //! settles. Fine for one client driving one repository; the place to change
 //! if that stops being true is `serve`, not the driver.
 //!
-//! The driver here mirrors `drive` in the workspace screen step for step. The
-//! two belong in one shared runner; until they are, a change to how a node
-//! runs has to be made in both.
+//! The run itself is `services::runner::Run`, the same one `gitagent run`
+//! drives from a terminal; what is here is the protocol, and the report a
+//! client reads.
 
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::services::flow;
 use crate::services::flowdef::{self, FlowBook, FlowDef};
-use crate::services::graph::{Graph, NodeKind, NodeSpec, NodeStatus, RunState, Step};
-use crate::services::llm::LlmConfig;
-use crate::services::{catalogue, forge, git, live, probe, release, store, trusted};
-use crate::telemetry;
+use crate::services::graph::{NodeKind, NodeStatus};
+use crate::services::runner::{repo_path, Next, Run};
+use crate::services::{catalogue, live, probe, store, trusted};
 
 /// The newest protocol revision this server speaks. A client asking for an
 /// older one gets its own back; everything used here exists in all of them.
@@ -53,43 +51,6 @@ shows one, save_flow creates or changes one (it is refused, with the reason, if 
 run), delete_flow removes one, and show_flow sets which repositories show it. Say what you \
 are about to change before saving, as the user would see it in Setup. repo_insight tells \
 everything GitAgent knows about one repository.";
-
-/// One flow being run for one repository.
-struct Run {
-    repo: String,
-    flow: String,
-    graph: Graph,
-    state: RunState,
-    /// Started as a trusted run: approvals it would let through are answered
-    /// here, by the same rules as the window's. Cleared at the first hold,
-    /// as there — from then on the run is the person's again.
-    trusted: bool,
-    /// Steps approved on the strength of trust, not a person — said in the
-    /// report, so the client can tell its user what went through.
-    approved_by_trust: Vec<String>,
-    /// Why a trusted run stopped where it did.
-    held: Option<String>,
-}
-
-impl Run {
-    /// Answered by trust: asked for when the run started, or "Trust all"
-    /// turned on in the window, re-read at every step so turning it off there
-    /// takes effect here too.
-    fn trusting(&self) -> bool {
-        self.held.is_none() && (self.trusted || store::trust_all())
-    }
-}
-
-impl Run {
-    /// The step stopped at an approval, if one is.
-    fn waiting(&self) -> Option<NodeSpec> {
-        self.graph
-            .nodes
-            .iter()
-            .find(|n| self.state.status(&n.id) == NodeStatus::AwaitingApproval)
-            .cloned()
-    }
-}
 
 pub fn serve() {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -276,8 +237,9 @@ fn tools() -> Value {
         {
             "name": "save_flow",
             "description": "Create a flow, or replace one with the same id, as Setup's Save \
-                            does. Take the shape from get_flow: id (optional for a new flow; \
-                            it follows the label), label, handles, and nodes, each with id, \
+                            does. Take the shape from get_flow: id (names the flow to replace; \
+                            a flow you made always ends up with the id its label reads as, \
+                            which `saved` in the result gives), label, handles, and nodes, each with id, \
                             step (a key from list_steps), deps, and optional title, config and \
                             gated. Refused, with the reasons, if the flow would not run. A \
                             script or server step always stops for approval: `gated: false` \
@@ -356,9 +318,9 @@ async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result
                                 .collect()
                         })
                         .unwrap_or_default();
-                    decide(run, true, &exclude).await
+                    run.decide(true, &exclude).await.map(|()| report(run))
                 }
-                "reject" => decide(run, false, &[]).await,
+                "reject" => run.decide(false, &[]).await.map(|()| report(run)),
                 _ => Ok(report(run)),
             }
         }
@@ -640,16 +602,6 @@ async fn repo_insight(repo: &str) -> Result<Value, String> {
     }))
 }
 
-/// The path as the app keys repositories, so a licence slot taken here is the
-/// same one the window counts.
-fn repo_path(raw: &str) -> Result<String, String> {
-    let path = std::fs::canonicalize(raw).map_err(|e| format!("{raw}: {e}"))?;
-    if !path.join(".git").exists() {
-        return Err(format!("{} is not a git repository", path.display()));
-    }
-    Ok(path.to_string_lossy().into_owned())
-}
-
 async fn list_repos(folder: &str) -> Result<Value, String> {
     if !std::path::Path::new(folder).is_dir() {
         return Err(format!("{folder} is not a folder"));
@@ -712,32 +664,16 @@ async fn run_flow(
     for _ in 0..trusted::MOST_FLOWS {
         let id = start_flow(repo, &flow_id, &pr, trusted, runs).await?;
         let run = runs.get(&id).expect("just started");
-        let report_now = report(run);
-        let carry_on = run.trusting()
-            && run.state.is_finished(&run.graph)
-            && trusted::may_continue(&run.state, &run.graph);
-        let repo_now = run.repo.clone();
-        let this = (run.flow.clone(), pr.clone());
-        legs.push(report_now);
-        if !carry_on {
-            break;
-        }
-        let status = probe::probe(&repo_now).await;
-        let hidden = store::load_repo_flows().hidden_for(&repo_now);
-        let Some(next) = trusted::next_flow(&FlowBook::load(), &status, &hidden) else {
-            if let Some(why) = trusted::why_stopped(&FlowBook::load(), &status, &hidden) {
-                if let Some(last) = legs.last_mut() {
+        legs.push(report(run));
+        match run.next().await {
+            Next::Flow(next, next_pr) => (flow_id, pr) = (next, next_pr),
+            Next::Stop(why) => {
+                if let (Some(why), Some(last)) = (why, legs.last_mut()) {
                     last["chain_stopped"] = json!(why);
                 }
+                break;
             }
-            break;
-        };
-        // The same flow again means the last one did not move the repository
-        // on; what is left needs a person.
-        if next == this {
-            break;
         }
-        (flow_id, pr) = next;
     }
     let mut last = legs.pop().expect("at least one flow ran");
     if !legs.is_empty() {
@@ -757,287 +693,18 @@ async fn start_flow(
     let repo = repo_path(repo)?;
     // One run per repository, as in the window: two flows sharing a working
     // tree is how a commit picks up a half-finished merge.
-    if let Some(busy) = runs
-        .values()
-        .find(|r| r.repo == repo && !r.state.is_finished(&r.graph))
-    {
+    if let Some(busy) = runs.values().find(|r| r.repo == repo && !r.is_finished()) {
         return Err(format!(
             "run {} ({}) is still going in this repository; finish or reject it first",
             busy.state.run, busy.flow
         ));
     }
-
-    let book = FlowBook::load();
-    let hidden = store::load_repo_flows().hidden_for(&repo);
-    let def = book
-        .runnable_for(&hidden)
-        .into_iter()
-        .find(|f| f.id == flow_id)
-        .cloned()
-        .ok_or(format!(
-            "no flow {flow_id} for this repository; see list_flows"
-        ))?;
-
-    let graph = def.to_graph();
-    let mut state = RunState::fresh(&graph);
-    state.started = true;
-    if !pr.is_empty() {
-        state
-            .artifacts
-            .insert("selected_pr_number".into(), pr.into());
-    }
-    let id = state.run;
-    runs.insert(
-        id,
-        Run {
-            repo,
-            flow: def.id,
-            graph,
-            state,
-            trusted,
-            approved_by_trust: vec![],
-            held: None,
-        },
-    );
-    let run = runs.get_mut(&id).expect("just inserted");
-    advance(run).await;
+    let mut run =
+        Run::prepare(&repo, flow_id, pr, trusted).map_err(|e| format!("{e}; see list_flows"))?;
+    run.advance().await;
+    let id = run.state.run;
+    runs.insert(id, run);
     Ok(id)
-}
-
-/// The person's answer to the step a run is waiting on, then on to the next.
-async fn decide(run: &mut Run, approved: bool, exclude: &[String]) -> Result<Value, String> {
-    let node = run
-        .waiting()
-        .ok_or("this run is not waiting on an approval")?;
-    // An exclusion that matches nothing on offer is refused rather than
-    // dropped: the user unchecked that file, and approving anyway would commit
-    // it. Scan is where this bites — its files are only offered at the commit
-    // step, once scan has found them.
-    let offered: Vec<String> = run
-        .state
-        .runs
-        .get(&node.id)
-        .map(|r| r.items.iter().map(|i| i.key.clone()).collect())
-        .unwrap_or_default();
-    let unknown: Vec<&String> = exclude.iter().filter(|p| !offered.contains(p)).collect();
-    if approved && !unknown.is_empty() {
-        return Err(if offered.is_empty() {
-            format!(
-                "{} offers no files to leave out; nothing was approved. Approve without \
-                 `exclude`, and leave files out at the commit step, which lists them.",
-                node.title
-            )
-        } else {
-            format!(
-                "not offered here: {}; nothing was approved. The files are: {}",
-                unknown
-                    .iter()
-                    .map(|p| p.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                offered.join(", ")
-            )
-        });
-    }
-    telemetry::record(telemetry::Event::ApprovalDecided {
-        approved,
-        trusted: false,
-    });
-    if !approved {
-        run.state.reject(&node.id, &run.graph);
-        advance(run).await;
-        return Ok(report(run));
-    }
-
-    // Unchecking a file here is unchecking it in the window: the commit step
-    // stages what is still included on its own node.
-    if let Some(entry) = run.state.runs.get_mut(&node.id) {
-        for item in entry.items.iter_mut() {
-            if exclude.iter().any(|path| path == &item.key) {
-                item.included = false;
-            }
-        }
-        if entry.has_nothing_selected() {
-            return Err(
-                "every file is excluded, so there is nothing to commit; reject instead".into(),
-            );
-        }
-    }
-    run.state.decisions.insert(node.id.clone(), true);
-    run_node(run, &node).await;
-    advance(run).await;
-    Ok(report(run))
-}
-
-/// Tells an open window where this run stands — see `services::live`.
-fn publish(run: &Run) {
-    let label = FlowBook::load()
-        .get(&run.flow)
-        .map(|f| f.label.clone())
-        .unwrap_or_else(|| run.flow.clone());
-    live::publish(live::snapshot(
-        run.state.run,
-        &run.repo,
-        &run.flow,
-        &label,
-        &run.graph,
-        &run.state,
-        run.trusting(),
-    ));
-}
-
-/// Runs ready steps until the run ends or one stops for approval.
-async fn advance(run: &mut Run) {
-    loop {
-        if run.waiting().is_some() {
-            return;
-        }
-        let Some(node) = run.state.next_ready(&run.graph) else {
-            break;
-        };
-        let resolved = run.state.resolved_for(&node);
-        if node.requires_approval && !flow::nothing_to_approve(&node, &resolved) {
-            let proposal = flow::proposal(&node, &resolved);
-            let items = flow::proposal_items(&node, &resolved);
-            let preview_diff = flow::diff_preview(&node, &run.repo, &resolved)
-                .await
-                .unwrap_or_default();
-            let entry = run.state.runs.entry(node.id.clone()).or_default();
-            entry.proposal = proposal;
-            entry.items = items;
-            entry.preview_diff = preview_diff;
-            run.state.set_status(&node.id, NodeStatus::AwaitingApproval);
-            // Trusted: the window's rules decide, not this server's leniency.
-            if run.trusting() {
-                match trusted::decide(&node, &resolved) {
-                    trusted::Verdict::Approve => {
-                        telemetry::record(telemetry::Event::ApprovalDecided {
-                            approved: true,
-                            trusted: true,
-                        });
-                        run.state.decisions.insert(node.id.clone(), true);
-                        run.approved_by_trust.push(node.title.clone());
-                        publish(run);
-                        run_node(run, &node).await;
-                        continue;
-                    }
-                    trusted::Verdict::Hold(why) => {
-                        if let Some(entry) = run.state.runs.get_mut(&node.id) {
-                            entry.held = why.clone();
-                        }
-                        run.held = Some(why);
-                    }
-                }
-            }
-            publish(run);
-            return;
-        }
-        run_node(run, &node).await;
-    }
-    publish(run);
-    release::record_shipped(&run.repo, &run.flow, &run.graph, &run.state).await;
-    report_finished(run).await;
-}
-
-/// One step, start to settled. See `drive` in the workspace screen for why
-/// each of the stand-ins below exists.
-async fn run_node(run: &mut Run, node: &NodeSpec) {
-    // Read each time: Settings may change in the window while a client holds
-    // a run open, and the next step should use what is set now. Scoped to the
-    // repository, so a run here uses the model chosen for the folder it sits
-    // in rather than a different window's.
-    let cfg: LlmConfig = store::load_settings_for(Some(&run.repo));
-    run.state.set_status(&node.id, NodeStatus::Running);
-    publish(run);
-    let state = &mut run.state;
-
-    let bypass = |state: &mut RunState, summary: &str, log: &str| {
-        state.set_status(&node.id, NodeStatus::Bypassed);
-        let entry = state.runs.entry(node.id.clone()).or_default();
-        entry.summary = summary.into();
-        entry.log = log.into();
-    };
-    if node.kind == NodeKind::Model && !cfg.uses_model() {
-        let stand_in = flow::without_model(node, state);
-        for (k, v) in stand_in.artifacts {
-            state
-                .artifacts
-                .insert(crate::services::graph::qualified(&node.id, &k), v.clone());
-            state.artifacts.insert(k, v);
-        }
-        bypass(state, &stand_in.summary, &stand_in.log);
-        return;
-    }
-    if node.step == Step::Lenses && !cfg.lenses.any() {
-        bypass(state, "skipped \u{2014} no focused review turned on", "");
-        return;
-    }
-    if node.step == Step::SecondOpinion && !cfg.second_config().uses_model() {
-        bypass(state, "skipped \u{2014} no second reviewer chosen", "");
-        return;
-    }
-
-    let resolved = state.resolved_for(node);
-    // Live lines have nowhere to go until the call returns; the step's own
-    // final log replaces them anyway.
-    let result = flow::execute(node, &run.repo, &cfg, &resolved, &mut |_| {}).await;
-
-    match result {
-        Ok(outcome) => {
-            let nothing = outcome.nothing_to_do;
-            for (k, v) in outcome.artifacts {
-                state.artifacts.insert(k, v);
-            }
-            state.set_status(
-                &node.id,
-                if nothing {
-                    NodeStatus::Skipped
-                } else {
-                    NodeStatus::Done
-                },
-            );
-            let entry = state.runs.entry(node.id.clone()).or_default();
-            entry.summary = outcome.summary;
-            entry.log = outcome.log;
-            if !outcome.items.is_empty() {
-                entry.items = outcome.items;
-            }
-            if nothing {
-                state.propagate_block(&run.graph);
-            }
-        }
-        Err(failure) => {
-            state.set_status(&node.id, NodeStatus::Failed);
-            let entry = state.runs.entry(node.id.clone()).or_default();
-            entry.summary = "failed".into();
-            entry.log = failure.message;
-            entry.remedies = failure.remedies;
-            state.propagate_block(&run.graph);
-        }
-    }
-}
-
-async fn report_finished(run: &Run) {
-    if !telemetry::active() || !run.state.is_finished(&run.graph) {
-        return;
-    }
-    let statuses: Vec<NodeStatus> = run
-        .graph
-        .nodes
-        .iter()
-        .map(|n| run.state.status(&n.id))
-        .collect();
-    let forge = match git::remote_url(&run.repo).await {
-        Some(url) => forge::detect(&url),
-        None => forge::Forge::None,
-    };
-    telemetry::record(telemetry::Event::flow_finished(
-        &run.flow,
-        telemetry::outcome_of(&statuses),
-        &forge,
-        store::load_settings_for(Some(&run.repo)).kind,
-    ));
-    tokio::spawn(telemetry::flush());
 }
 
 /// What a client needs to tell its user where the run stands, and to ask
@@ -1148,21 +815,15 @@ fn tail(text: &str, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::graph::RunState;
 
     fn run(trusted: bool) -> Run {
         let graph = FlowBook::defaults()
             .get("commit_and_pr")
             .expect("shipped")
             .to_graph();
-        Run {
-            repo: "/r".into(),
-            flow: "commit_and_pr".into(),
-            state: RunState::fresh(&graph),
-            graph,
-            trusted,
-            approved_by_trust: vec![],
-            held: None,
-        }
+        let state = RunState::fresh(&graph);
+        Run::new("/r".into(), "commit_and_pr".into(), graph, state, trusted)
     }
 
     #[test]

@@ -121,6 +121,12 @@ pub async fn in_progress(repo: &str) -> Option<InProgress> {
 
 /// Runs a command in `repo` and returns stdout, or stderr as the error.
 pub async fn run(repo: &str, program: &str, args: &[&str]) -> Result<String, String> {
+    // Said here rather than left to the OS: a missing working directory
+    // otherwise comes back in the system's display language, and on Windows
+    // as NotFound, which `spawn_error` would read as `program` missing.
+    if !std::path::Path::new(repo).is_dir() {
+        return Err(format!("{repo}: no such folder"));
+    }
     let output = Command::new(super::env::resolve_program(program))
         .args(args)
         .current_dir(repo)

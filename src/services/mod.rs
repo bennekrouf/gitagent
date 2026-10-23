@@ -18,6 +18,7 @@ pub mod probe;
 pub mod release;
 pub mod remote;
 pub mod review;
+pub mod runner;
 pub mod store;
 pub mod testprogress;
 pub mod testsuite;

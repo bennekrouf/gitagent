@@ -27,6 +27,9 @@ base64 = "0.22"
 # The anonymous install identifier is 128 random bits. Already in the tree via
 # other crates, so this names a dependency rather than adding one.
 getrandom = "0.3"
+# canonicalize without the `\\?\` prefix Windows puts on it, so a path
+# handed back over MCP matches the one that was sent. Already in the tree.
+dunce = "1"
 
 # Holding off App Nap while a run is going (services::awake). Both already in
 # the tree through the window and notification crates, at these versions.

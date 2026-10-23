@@ -17,6 +17,40 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- `gitagent run` runs a flow from the terminal, with no window. Leave out
+  `--flow` and it runs the one the repository needs next. Every step that
+  touches git history or the remote is put to you at a prompt, where you can
+  read the diff and leave files out of the commit before you approve.
+  `--trusted` answers approvals by the Trusted run's rules and carries on into
+  the next flow, stopping at the same things it stops at in the window.
+
+- With no terminal to ask, as in CI or a scheduled job, `gitagent run` stops
+  at the first approval rather than guessing, and its exit code says how the
+  run ended: finished, a step failed, nothing ran, stopped at an approval, or
+  an approval declined. A pull request's address and the other things a run
+  produced are printed one per line for a script to read.
+
+- An open window shows a run started from the terminal as it goes, and says
+  to answer its approvals in that terminal, as it already did for runs
+  started from Claude.
+
+### Fixed
+
+- A repository whose `origin` is a folder on your machine (`C:\...` on
+  Windows) no longer fails Preflight as an unsupported host named `c`. Every
+  step up to and including the push now runs; only opening the pull request
+  needs GitHub or Azure DevOps.
+- On Windows, repository paths in replies to Claude no longer start with
+  `\\?\`, so they match the path Claude sent.
+- A repository folder that no longer exists is now reported in English,
+  instead of in the language Windows is set to.
+- The PRO badge in the top bar is now the same height as the buttons beside
+  it.
+
 ## [0.1.124] - 2026-10-23
 
 ### Fixed

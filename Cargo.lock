@@ -2016,6 +2016,7 @@ dependencies = [
  "dark-light",
  "dioxus",
  "dirs 5.0.1",
+ "dunce",
  "futures-util",
  "getrandom 0.3.4",
  "image",

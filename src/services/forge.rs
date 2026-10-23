@@ -70,8 +70,26 @@ pub fn detect(remote_url: &str) -> Forge {
     Forge::Unsupported(host_of(&lower))
 }
 
+/// What `host_of` calls a remote that is a folder on this machine.
+const LOCAL: &str = "local folder";
+
+/// Whether a remote is a path on disk rather than a server: `C:\\...`,
+/// `C:/...`, a UNC share, an absolute or relative Unix path, or `file://`.
+/// Checked before scp-style `host:path` parsing, which would otherwise read
+/// a Windows drive letter as the host.
+fn is_local_path(url: &str) -> bool {
+    let b = url.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    drive
+        || url.starts_with("file://")
+        || url.starts_with(['/', '\\', '.', '~'])
+}
+
 /// Best-effort host extraction, for the "unsupported" message only.
 fn host_of(url: &str) -> String {
+    if is_local_path(url) {
+        return LOCAL.into();
+    }
     let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
     // SSH short form: git@host:org/repo
     let after_user = after_scheme
@@ -391,12 +409,21 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
             }
             checks
         }
-        Forge::Unsupported(host) => vec![Check::fail(
+        // Not a failure: nothing here can be fixed, and every step up to and
+        // including the push works without a forge. Only opening the pull
+        // request does not, and that step says so when it gets there.
+        Forge::Unsupported(host) => vec![Check::pass(
             "forge",
-            format!(
-                "{host} is not supported — GitHub and Azure DevOps only. \
+            if host == LOCAL {
+                "origin is a local folder — everything up to and including the push works; \
+                 pull requests need GitHub or Azure DevOps"
+                    .to_string()
+            } else {
+                format!(
+                    "{host} is not supported for pull requests — GitHub and Azure DevOps only. \
                      Everything up to and including the push still works."
-            ),
+                )
+            },
         )],
         Forge::None => vec![Check::fail(
             "remote",
@@ -598,6 +625,22 @@ mod tests {
             detect("git@gitlab.com:group/repo.git"),
             Forge::Unsupported("gitlab.com".into())
         );
+    }
+
+    #[test]
+    fn a_local_folder_remote_is_not_read_as_a_host() {
+        for url in [
+            r"C:\Users\me\remotes\demo.git",
+            "C:/Users/me/remotes/demo.git",
+            r"\\server\share\demo.git",
+            "/srv/git/demo.git",
+            "../demo.git",
+            "file:///srv/git/demo.git",
+        ] {
+            assert_eq!(detect(url), Forge::Unsupported(LOCAL.into()), "{url}");
+        }
+        // scp-style with a one-letter host still reads as a host.
+        assert_eq!(detect("git@c:org/repo.git"), Forge::Unsupported("c".into()));
     }
 
     #[test]
