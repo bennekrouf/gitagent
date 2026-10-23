@@ -49,6 +49,9 @@ body.light {
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Form controls do not inherit type by default; keep them in the shared stack. */
+input, button, textarea, select { font-family: inherit; }
+
 body {
     font-family: var(--mono);
     font-size: 13px;
