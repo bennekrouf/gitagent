@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The default model and the second reviewer now offer the same four choices in
+  the same row: api0, Ollama, your own key, or none. The second reviewer can be
+  set to an api0 region of its own, and the long list of providers only appears
+  once you say you have a key. When api0 needs a licence, Settings offers a
+  button that opens the licence window directly instead of pointing you to the
+  top bar. A model saved before api0 had regions now shows the region it runs in
+  rather than "default".
+
 ## [0.1.120] - 2026-10-22
 
 ### Changed
