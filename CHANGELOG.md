@@ -17,6 +17,13 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The run controls, the replay speed and zoom buttons and the side-by-side
+  choice buttons are now 30px tall, like every other button.
+
 ## [0.1.125] - 2026-10-23
 
 ### Added

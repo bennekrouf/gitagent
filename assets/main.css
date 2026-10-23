@@ -2182,3 +2182,7 @@ button.update-banner-link {
 /* Header controls: one height, borders included, whatever their padding or font. */
 .topbar .btn, .topbar .pro-badge, .topbar .view-switch { height: 30px; box-sizing: border-box; padding-top: 0; padding-bottom: 0; display: inline-flex; align-items: center; justify-content: center; }
 .view-switch-opt { padding-top: 0; padding-bottom: 0; }
+
+/* Action buttons outside .btn: the same 30px, borders included. */
+.run-ctl, .run-restart, .seg, .run-speeds { height: 30px; box-sizing: border-box; padding-top: 0; padding-bottom: 0; }
+.run-speed { padding-top: 0; padding-bottom: 0; }
