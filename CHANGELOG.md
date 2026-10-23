@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Fields that hold an exact value no longer correct what you type into them:
+  the target branch under Base branch, the ollama address and model name in
+  Model provider, and the licence number and email under GitAgent Pro. A
+  branch or model name is not prose, and it was being capitalised,
+  autocorrected, underlined in red and offered completions from other fields,
+  while git and the model APIs take only what is written. Setup's own fields
+  already behaved this way.
+
 ## [0.1.123] - 2026-10-23
 
 ### Changed

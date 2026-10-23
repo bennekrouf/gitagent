@@ -3520,6 +3520,16 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                                     input {
                                         value: "{base_editor_value.read()}",
                                         placeholder: "auto-detected (origin/HEAD, then main, then master)",
+                                        // A branch name is not prose: git takes
+                                        // it exactly as typed, so nothing here
+                                        // may capitalise, correct or complete
+                                        // it. `autocorrect` is WebKit's own
+                                        // rather than one dioxus knows, hence
+                                        // the quoted name.
+                                        autocapitalize: "off",
+                                        autocomplete: "off",
+                                        spellcheck: "false",
+                                        "autocorrect": "off",
                                         oninput: move |e| base_editor_value.set(e.value()),
                                     }
                                 }
