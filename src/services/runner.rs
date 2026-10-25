@@ -225,11 +225,25 @@ pub enum Next {
 /// The path as the app keys repositories, so a run here is the same
 /// repository the window shows.
 pub fn repo_path(raw: &str) -> Result<String, String> {
-    let path = dunce::canonicalize(raw).map_err(|e| format!("{raw}: {e}"))?;
+    let path = dunce::canonicalize(raw).map_err(|e| format!("{raw}: {} ({e})", io_reason(&e)))?;
     if !path.join(".git").exists() {
         return Err(format!("{} is not a git repository", path.display()));
     }
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Why a path could not be opened, in English. The OS text that follows it
+/// in brackets comes in the system's display language — French on a French
+/// Windows — and the model reading the reply should not have to translate.
+fn io_reason(e: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        NotFound => "path not found",
+        PermissionDenied => "permission denied",
+        NotADirectory => "not a folder",
+        InvalidFilename => "not a valid path",
+        _ => "could not open",
+    }
 }
 
 impl Run {
@@ -466,5 +480,19 @@ impl Run {
             settle(&mut self.state, &self.graph, &node.id, result);
         }
         (self.progress)(Progress::Settled(node, &self.state));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_repo_is_named_in_english() {
+        let err = repo_path("/gitagent/no/such/repo").unwrap_err();
+        assert!(
+            err.starts_with("/gitagent/no/such/repo: path not found ("),
+            "got {err}"
+        );
     }
 }

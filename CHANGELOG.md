@@ -17,6 +17,20 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Installing silently, as IT does for an unattended update with `/VERYSILENT`,
+  no longer hangs when GitAgent is already installed: setup waited on a
+  question nobody could see. It now replaces the installed version without
+  asking.
+- A repository with no remote can now run a flow up to the commit. Preflight
+  used to stop it for having no remote; now only the push says so, and how to
+  add one.
+- A repository path that doesn't exist is reported in English, whatever
+  language Windows is set to, rather than in Windows' own words.
+
 ## [0.1.127] - 2026-10-25
 
 ### Changed

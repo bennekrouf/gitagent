@@ -1732,6 +1732,18 @@ fn rename_remedy(branch: &str, new: &str) -> Remedy {
 
 async fn push(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let branch = state.artifact("work_branch").to_string();
+    // Preflight lets a repository without a remote through, for the steps
+    // before this one; git's own words for it ("'origin' does not appear to
+    // be a git repository") would read as a broken repository.
+    if git::remote_url(repo).await.is_none() {
+        return Err(StepFailure {
+            message: format!(
+                "this repository has no `origin` remote, so {branch} was committed but not \
+                 pushed. Add one with `git remote add origin <url>`, then run the flow again."
+            ),
+            remedies: vec![],
+        });
+    }
     let out = match git::push(repo, &branch).await {
         Ok(out) => out,
         Err(e) if push_rejected(&e) => {
