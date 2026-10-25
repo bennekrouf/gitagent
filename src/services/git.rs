@@ -590,9 +590,21 @@ pub fn parse_status_z(out: &str) -> Vec<FileChange> {
 }
 
 pub async fn status(repo: &str) -> Result<Vec<FileChange>, String> {
-    let out = run(repo, "git", &["status", "--porcelain", "-z"]).await?;
+    let out = run(
+        repo,
+        "git",
+        &["status", "--porcelain", "-z", IGNORE_DIRTY_SUBMODULES],
+    )
+    .await?;
     Ok(parse_status_z(&out))
 }
+
+/// A submodule, or another repository committed inside this one (a nested
+/// worktree, say), shows as modified whenever it has edits of its own. Those
+/// are not this repository's to commit — `git add` stages nothing for them —
+/// so a run that took them for changes failed at the commit. A submodule
+/// moved to another commit is still reported: that one can be committed.
+pub const IGNORE_DIRTY_SUBMODULES: &str = "--ignore-submodules=dirty";
 
 /// Like `run`, but returns stdout even on a non-zero exit. `git diff` uses
 /// exit code 1 to mean "there were differences", which is not a failure.
@@ -1427,6 +1439,43 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1100));
         git(&["commit", "-qam", "two"]);
         assert_ne!(change_fingerprint(&repo), before, "a commit is noticed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn edits_inside_a_nested_repository_are_not_changes() {
+        let dir = std::env::temp_dir().join(format!("gitagent-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        let git = |at: &std::path::Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(at)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+        };
+        let inner = dir.join("inner");
+        git(&inner, &["init", "-q", "-b", "main"]);
+        std::fs::write(inner.join("a"), "1").unwrap();
+        git(&inner, &["add", "a"]);
+        git(&inner, &["commit", "-qm", "one"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["add", "inner"]);
+        git(&dir, &["commit", "-qm", "with a nested repository"]);
+        std::fs::write(inner.join("a"), "2").unwrap();
+        std::fs::write(inner.join("b"), "new").unwrap();
+        let repo = dir.to_string_lossy().to_string();
+        assert!(
+            status(&repo).await.unwrap().is_empty(),
+            "work inside it is its own"
+        );
+        git(&inner, &["commit", "-qam", "two"]);
+        let changes = status(&repo).await.unwrap();
+        assert_eq!(changes.len(), 1, "a new commit in it can be committed here");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
