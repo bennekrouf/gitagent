@@ -28,6 +28,27 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
     // What asking for the free licence came to, once asked.
     let mut free_reply = use_signal(|| Option::<FreeReply>::None);
 
+    // Escape closes the window wherever the focus is: the Pro view has no
+    // field to listen on. The handler is kept on `window`, replaced on each
+    // mount so two never stack, and removed with the window.
+    let on_close = props.on_close;
+    use_future(move || async move {
+        let mut keys = document::eval(
+            "if (window._proEscape) window.removeEventListener('keydown', window._proEscape);\
+             window._proEscape = (e) => { if (e.key === 'Escape') dioxus.send(true); };\
+             window.addEventListener('keydown', window._proEscape);",
+        );
+        while keys.recv::<bool>().await.is_ok() {
+            on_close.call(());
+        }
+    });
+    use_drop(|| {
+        document::eval(
+            "if (window._proEscape) window.removeEventListener('keydown', window._proEscape);\
+             window._proEscape = null;",
+        );
+    });
+
     let ask_free = move |_| {
         let to = email.peek().clone();
         busy.set(true);
@@ -88,15 +109,49 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
 
     let current = status.read().clone();
 
+    if let Status::Pro(a) = &current {
+        let renewal = a.period_end_day().map(|day| {
+            if a.cancel_at_period_end {
+                format!("Ends on {day}")
+            } else {
+                format!("Renews on {day}")
+            }
+        });
+        return rsx! {
+            div { class: "modal-backdrop", onclick: close,
+                div {
+                    class: "modal pro-done",
+                    onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                    button { class: "modal-close", title: "Close", onclick: close, "×" }
+                    div { class: "pro-done-mark", "\u{2713}" }
+                    h2 { class: "pro-done-title",
+                        if *activated.read() { "Congratulations, you're Pro!" } else { "You're Pro" }
+                    }
+                    p { class: "pro-done-sub", "Licence validated." }
+                    p { class: "pro-done-meta",
+                        "{a.credits.left} AI credits left this month"
+                        if let Some(r) = renewal {
+                            br {}
+                            "{r}"
+                        }
+                    }
+                    button {
+                        class: "pro-done-manage",
+                        title: "Change or cancel your plan on Stripe's page, in your browser",
+                        disabled: *busy.read(),
+                        onclick: manage,
+                        "Manage subscription"
+                    }
+                    if let Some(p) = problem.read().clone() {
+                        p { class: "pro-done-error", "{p}" }
+                    }
+                }
+            }
+        };
+    }
+
     if *activated.read() {
         let (title, detail) = match &current {
-            Status::Pro(a) => (
-                "GitAgent Pro is active.".to_string(),
-                format!(
-                    "Licensed to {}, with {} AI credits this month.",
-                    a.email, a.credits.left
-                ),
-            ),
             Status::Credits(a) => (
                 "Licence saved.".to_string(),
                 format!("{} for {}.", a.credits_headline(), a.email),
@@ -276,7 +331,7 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                                 class: "btn btn-primary",
                                 disabled: key.read().trim().is_empty() || *busy.read(),
                                 onclick: activate,
-                                if *busy.read() { "Checking\u{2026}" } else { "Activate" }
+                                if *busy.read() { span { class: "pro-spinner", title: "Checking the licence" } } else { "Activate" }
                             }
                         }
                     }

@@ -2185,3 +2185,38 @@ button.update-banner-link {
 /* Header controls: one height, borders included, whatever their padding or font. */
 .topbar .btn, .topbar .pro-badge, .topbar .view-switch { height: 30px; box-sizing: border-box; padding-top: 0; padding-bottom: 0; display: inline-flex; align-items: center; justify-content: center; }
 .view-switch-opt { padding-top: 0; padding-bottom: 0; }
+
+/* ── Pro, once active ─────────────────────────────────────────────
+   One line that says so, the plan's numbers small below it, and nothing
+   to undo it with: removing or re-checking the licence just pasted is the
+   last thing to put in front of someone at that moment. */
+.pro-done { text-align: center; }
+.modal.pro-done {
+    position: relative;
+    width: 340px; max-width: calc(100vw - 32px);
+    padding: 30px 28px 22px;
+}
+.pro-done .modal-close { position: absolute; top: 10px; right: 12px; }
+.pro-done .pro-done-mark {
+    width: 44px; height: 44px; margin: 0 auto 14px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--green-bg); color: #fff; font-size: 22px; font-weight: 700;
+}
+.pro-done .pro-done-title { margin: 0 0 4px; font-size: 15px; font-weight: 700; color: var(--text1); }
+.pro-done .pro-done-sub { margin: 0; font-size: 12px; color: var(--text3); }
+.pro-done .pro-done-meta { margin: 16px 0 0; font-size: 11px; line-height: 1.6; color: var(--text3); }
+.pro-done .pro-done-manage {
+    display: inline-block; margin-top: 12px; padding: 0; border: 0; background: none;
+    font-size: 10.5px; color: var(--text3); text-decoration: underline; cursor: pointer;
+}
+.pro-done .pro-done-manage:hover:not(:disabled) { color: var(--text1); }
+.pro-done .pro-done-manage:disabled { opacity: 0.6; cursor: default; }
+.pro-done .pro-done-error { margin: 8px 0 0; font-size: 11px; color: var(--red); }
+
+/* The licence being checked: a small ring in place of the button's label. */
+.pro-spinner {
+    display: inline-block; width: 11px; height: 11px; vertical-align: -1px;
+    border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+    animation: pro-spin 0.7s linear infinite;
+}
+@keyframes pro-spin { to { transform: rotate(360deg); } }
