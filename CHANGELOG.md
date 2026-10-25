@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- When an AI assistant saves a flow you made under an id that doesn't match
+  its name, GitAgent still stores it under the id its name reads as, and now
+  says so in its reply, with the id to use from then on. Before, the assistant
+  kept using its own id and was told the flow didn't exist.
+
 ## [0.1.129] - 2026-10-25
 
 ### Fixed

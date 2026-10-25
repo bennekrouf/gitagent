@@ -239,7 +239,8 @@ fn tools() -> Value {
             "description": "Create a flow, or replace one with the same id, as Setup's Save \
                             does. Take the shape from get_flow: id (names the flow to replace; \
                             a flow you made always ends up with the id its label reads as, \
-                            which `saved` in the result gives), label, handles, and nodes, each with id, \
+                            which `saved` in the result gives, with a `note` when it \
+                            is not the id you gave), label, handles, and nodes, each with id, \
                             step (a key from list_steps), deps, and optional title, config and \
                             gated. Refused, with the reasons, if the flow would not run. A \
                             script or server step always stops for approval: `gated: false` \
@@ -419,11 +420,13 @@ fn save_flow(raw: &Value, repo: &str) -> Result<Value, String> {
     if label.is_empty() {
         return Err("a flow needs a `label` — the name shown on its tab".into());
     }
-    if obj
+    let given = obj
         .get("id")
         .and_then(|i| i.as_str())
-        .is_none_or(|i| i.trim().is_empty())
-    {
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .map(String::from);
+    if given.is_none() {
         obj.insert("id".into(), json!(flowdef::id_from_label(&label)));
     }
     let flow: FlowDef = serde_json::from_value(raw)
@@ -483,11 +486,25 @@ fn save_flow(raw: &Value, repo: &str) -> Result<Value, String> {
     book.save();
     store::save_repo_flows(&shown);
     let saved = book.get(&id).ok_or("saved, but could not read it back")?;
-    Ok(json!({
+    let mut out = json!({
         "saved": id,
         "created": created,
         "flow": flow_json(saved, &shown),
-    }))
+    });
+    if let Some(note) = id_note(given.as_deref(), &id) {
+        out["note"] = json!(note);
+    }
+    Ok(out)
+}
+
+/// Says so when a flow was stored under another id than the one given: a
+/// client that keeps using its own id would find no such flow.
+fn id_note(given: Option<&str>, saved: &str) -> Option<String> {
+    let given = given.filter(|g| *g != saved)?;
+    Some(format!(
+        "stored as {saved}, not {given}: a flow you made takes the id its label \
+         reads as. Use {saved} with get_flow, show_flow, delete_flow and run_flow."
+    ))
 }
 
 fn delete_flow(id: &str) -> Result<Value, String> {
@@ -845,5 +862,13 @@ mod tests {
         }
         let out = report(&run(false));
         assert!(out.get("trusted").is_none() && out.get("approved_automatically").is_none());
+    }
+
+    #[test]
+    fn a_flow_stored_under_another_id_says_which() {
+        let note = id_note(Some("wintest_tmp"), "win_test_tmp").expect("ids differ");
+        assert!(note.starts_with("stored as win_test_tmp, not wintest_tmp"));
+        assert_eq!(id_note(Some("win_test_tmp"), "win_test_tmp"), None);
+        assert_eq!(id_note(None, "win_test_tmp"), None, "no id given, nothing to correct");
     }
 }
