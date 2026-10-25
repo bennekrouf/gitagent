@@ -21,6 +21,11 @@ were never released.
 
 ### Changed
 
+- Activating a licence now shows a small spinner while it is checked, then
+  a window that says you're Pro, with the AI credits left and the renewal
+  date in small type below. Removing the licence and checking it again no
+  longer sit beside it; Manage subscription is a small link. Press Esc or
+  the × to close it.
 - The run controls, the replay speed and zoom buttons and the side-by-side
   choice buttons are now 30px tall, like every other button.
 
