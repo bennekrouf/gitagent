@@ -425,9 +425,12 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
                 )
             },
         )],
-        Forge::None => vec![Check::fail(
+        // Not a failure either: scanning, testing and committing need no
+        // remote, and a run stopped here could do none of them. The push and
+        // the pull request say so themselves when they get there.
+        Forge::None => vec![Check::pass(
             "remote",
-            "this repository has no `origin` remote",
+            "no `origin` remote — committing works; pushing and pull requests need one",
         )],
     }
 }
@@ -767,5 +770,15 @@ mod tests {
     fn a_malformed_azure_response_does_not_panic() {
         assert!(azure_pr_url("not json").is_none());
         assert!(azure_pr_url(r#"{"pullRequestId": 1}"#).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_repository_without_a_remote_passes_preflight() {
+        let checks = check_credentials(&Forge::None, ".").await;
+        assert!(
+            checks.iter().all(|c| c.ok),
+            "got {:?}",
+            checks.iter().map(|c| &c.detail).collect::<Vec<_>>()
+        );
     }
 }

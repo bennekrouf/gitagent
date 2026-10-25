@@ -147,11 +147,14 @@ begin
            'Your settings and data will be preserved.' + NL + NL +
            'Continue?';
 
-  if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
-  begin
-    Result := False;
-    Exit;
-  end;
+  // A silent install was already told to go ahead, and nobody is there to
+  // answer a question: Setup would wait on it forever.
+  if not WizardSilent then
+    if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
+    begin
+      Result := False;
+      Exit;
+    end;
 
   // Silent uninstall of the previous version
   UninstStr := GetUninstallString();
