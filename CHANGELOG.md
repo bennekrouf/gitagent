@@ -26,6 +26,8 @@ were never released.
   date in small type below. Removing the licence and checking it again no
   longer sit beside it; Manage subscription is a small link. Press Esc or
   the × to close it.
+- The run controls, the replay speed and zoom buttons and the side-by-side
+  choice buttons are now 30px tall, like every other button.
 
 ## [0.1.125] - 2026-10-23
 

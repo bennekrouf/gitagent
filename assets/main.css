@@ -2220,3 +2220,7 @@ button.update-banner-link {
     animation: pro-spin 0.7s linear infinite;
 }
 @keyframes pro-spin { to { transform: rotate(360deg); } }
+
+/* Action buttons outside .btn: the same 30px, borders included. */
+.run-ctl, .run-restart, .seg, .run-speeds { height: 30px; box-sizing: border-box; padding-top: 0; padding-bottom: 0; }
+.run-speed { padding-top: 0; padding-bottom: 0; }
