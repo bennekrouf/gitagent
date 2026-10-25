@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Activating a licence now shows a small spinner while it is checked, then a
+  window that says you're Pro, with the AI credits left and the renewal date in
+  small type below. Removing the licence and checking it again no longer sit
+  beside it; Manage subscription is a small link. Press Esc or the × to close
+  it.
+
 ## [0.1.126] - 2026-10-25
 
 ### Changed
