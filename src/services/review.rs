@@ -1074,7 +1074,12 @@ async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> 
     let edited = git::run(
         repo,
         "git",
-        &["status", "--porcelain", "--untracked-files=no"],
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            git::IGNORE_DIRTY_SUBMODULES,
+        ],
     )
     .await
     .map(|out| !out.trim().is_empty())

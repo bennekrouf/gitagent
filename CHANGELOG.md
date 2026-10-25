@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A repository with another repository inside it, such as a submodule or a
+  worktree folder committed by mistake, no longer starts a commit that can only
+  fail. Edits made inside that inner repository belong to it, so GitAgent no
+  longer counts them as changes here; moving it to another commit still counts.
+
 ## [0.1.128] - 2026-10-25
 
 ### Fixed

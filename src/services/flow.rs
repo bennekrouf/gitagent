@@ -643,7 +643,12 @@ pub(crate) async fn settle_own_notes(repo: &str, upstream: &str) -> Result<Optio
     let clean = git::run(
         repo,
         "git",
-        &["status", "--porcelain", "--untracked-files=no"],
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            git::IGNORE_DIRTY_SUBMODULES,
+        ],
     )
     .await
     .is_ok_and(|out| out.trim().is_empty());
