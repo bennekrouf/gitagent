@@ -7,16 +7,14 @@
 //! The shape is a diamond, not a chain:
 //!
 //! ```text
-//!                            ┌──> commit ──> push ──┐
-//!   scan ──> draft_commit ──>┤                      ├──> open_pr
-//!                            └──> draft_pr ─────────┘
+//!                                      ┌──> push ──────┐
+//!   scan ──> draft_commit ──> commit ──>┤               ├──> open_pr
+//!                                      └──> draft_pr ──┘
 //! ```
 //!
-//! `draft_pr` reads the diff and the commit message; it never reads anything
-//! `commit` or `push` produce, so there is no edge between them. Today the
-//! executor still runs one node at a time, but the dependency is honest, and
-//! that is what makes running the ready set concurrently a scheduler change
-//! rather than a redesign.
+//! `draft_pr` waits for `commit`, so a run stopped at the commit approval
+//! never spends a model call on a description. It does not wait for `push`:
+//! neither reads what the other writes, and `open_pr` waits for both.
 
 use serde_json::json;
 
@@ -2263,11 +2261,12 @@ hint: Updates were rejected because the tip of your current branch is behind";
     #[test]
     fn drafting_the_pr_does_not_wait_on_the_push() {
         // The diamond: if this edge ever appears, the flow has silently become
-        // a chain and the PR text cannot be prepared while git works.
+        // a chain and the PR text cannot be prepared while the push runs. It
+        // does wait for the commit, so a stopped commit costs no model call.
         let g = commit_and_pr_flow();
         let draft_pr = g.get("draft_pr").unwrap();
         assert!(!draft_pr.deps.contains(&"push".to_string()));
-        assert!(!draft_pr.deps.contains(&"commit".to_string()));
+        assert!(draft_pr.deps.contains(&"commit".to_string()));
     }
 
     #[test]

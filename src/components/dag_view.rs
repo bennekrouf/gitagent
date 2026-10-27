@@ -1,7 +1,7 @@
 //! Draws a flow as the graph it is.
 //!
 //! The run view lists steps top to bottom, which quietly reads as a sequence.
-//! It is not one: in the commit flow, `commit` and `draft_pr` hang off the same
+//! It is not one: in the commit flow, `push` and `draft_pr` hang off the same
 //! parent and neither waits for the other. That is the single most important
 //! fact about a flow and a list cannot show it, so Setup draws the real thing.
 //!
@@ -277,15 +277,15 @@ mod tests {
 
     #[test]
     fn siblings_share_a_layer_and_are_drawn_apart() {
-        // commit and draft_pr both hang off draft_commit — the diamond a list
-        // view cannot show.
+        // push and draft_pr both hang off commit — the diamond a list view
+        // cannot show.
         let flow = commit();
         let plan = layout(&flow);
-        let commit_node = plan.find("commit").unwrap();
+        let push = plan.find("push").unwrap();
         let draft_pr = plan.find("draft_pr").unwrap();
-        assert_eq!(commit_node.layer, draft_pr.layer);
-        assert_ne!(commit_node.x, draft_pr.x);
-        assert_eq!(commit_node.y, draft_pr.y);
+        assert_eq!(push.layer, draft_pr.layer);
+        assert_ne!(push.x, draft_pr.x);
+        assert_eq!(push.y, draft_pr.y);
     }
 
     #[test]

@@ -79,10 +79,9 @@ const LOCAL: &str = "local folder";
 /// a Windows drive letter as the host.
 fn is_local_path(url: &str) -> bool {
     let b = url.as_bytes();
-    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
-    drive
-        || url.starts_with("file://")
-        || url.starts_with(['/', '\\', '.', '~'])
+    let drive =
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    drive || url.starts_with("file://") || url.starts_with(['/', '\\', '.', '~'])
 }
 
 /// Best-effort host extraction, for the "unsupported" message only.
@@ -272,6 +271,98 @@ fn azure_org_url(remote: &str) -> String {
     String::new()
 }
 
+/// Organization URL, project and repository name from an Azure DevOps remote,
+/// with `%20` and the like decoded. `None` for any other remote.
+fn azure_coordinates(remote: &str) -> Option<(String, String, String)> {
+    let org = azure_org_url(remote);
+    if org.is_empty() {
+        return None;
+    }
+    let remote = remote.trim().trim_end_matches('/');
+    let path: Vec<&str> = if let Some(rest) = remote.split("ssh.dev.azure.com:v3/").nth(1) {
+        // org/project/repo
+        rest.split('/').skip(1).collect()
+    } else if let Some(rest) = remote.split("dev.azure.com/").nth(1) {
+        // org/project/_git/repo
+        rest.split('/').skip(1).filter(|s| *s != "_git").collect()
+    } else {
+        // {org}.visualstudio.com/[DefaultCollection/]project/_git/repo
+        let rest = remote.split("://").nth(1)?;
+        rest.split('/')
+            .skip(1)
+            .filter(|s| *s != "_git" && *s != "DefaultCollection")
+            .collect()
+    };
+    match path.as_slice() {
+        [project, repo] if !project.is_empty() && !repo.is_empty() => Some((
+            org,
+            percent_decode(project),
+            percent_decode(repo.trim_end_matches(".git")),
+        )),
+        _ => None,
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(b) = text
+                .get(i + 1..i + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The arguments that tell `az repos …` which organization, project and
+/// repository `origin` points at. Left to itself, az finds them by running
+/// git on its own, and on Windows that can fail even inside the repository
+/// ("no Azure DevOps remote was found … --organization must be specified").
+/// Each command accepts only some of them, hence `Scope`. Empty when the
+/// remote cannot be read, so az falls back to detecting them itself.
+pub async fn azure_scope(repo: &str, scope: Scope) -> Vec<String> {
+    let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
+        .await
+        .unwrap_or_default();
+    azure_scope_for(&remote, scope)
+}
+
+/// How much of the remote an `az` command takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    /// `az repos pr show` and `update`: the pull request id says the rest.
+    Organization,
+    /// `az repos list`.
+    Project,
+    /// `az repos pr list` and `create`.
+    Repository,
+}
+
+fn azure_scope_for(remote: &str, scope: Scope) -> Vec<String> {
+    let Some((org, project, name)) = azure_coordinates(remote) else {
+        return vec![];
+    };
+    let mut args = vec!["--organization".to_string(), org];
+    if scope != Scope::Organization {
+        args.extend(["--project".into(), project]);
+    }
+    if scope == Scope::Repository {
+        args.extend(["--repository".into(), name]);
+    }
+    args.extend(["--detect".into(), "false".into()]);
+    args
+}
+
 /// What to do when `az login` is fine but Azure DevOps turns it away. The
 /// usual reason is the tenant: an account in several directories signs in
 /// to whichever `az` picked as default, often a customer's, and the
@@ -376,7 +467,10 @@ pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
             // very end of a run — after a branch and a push. This exercises the
             // same path (including org/project detection from the remote), so
             // the failure lands here instead.
-            match git::run(repo, "az", &["repos", "list", "--output", "none"]).await {
+            let scope = azure_scope(repo, Scope::Project).await;
+            let mut args = vec!["repos", "list", "--output", "none"];
+            args.extend(scope.iter().map(String::as_str));
+            match git::run(repo, "az", &args).await {
                 Ok(_) => checks.push(Check::pass("azure devops auth", "can reach the project")),
                 Err(e) if e.contains("you need to run the login command") => {
                     checks.push(Check::fixable(
@@ -484,50 +578,42 @@ pub async fn create_pr(
             Err(e) => Err(e),
         },
         Forge::AzureDevOps => {
-            // `--detect true` is the default: az reads the org, project and
-            // repository straight off the git remote.
-            let out = git::run(
-                repo,
-                "az",
-                &[
-                    "repos",
-                    "pr",
-                    "create",
-                    "--source-branch",
-                    head,
-                    "--target-branch",
-                    base,
-                    "--title",
-                    title,
-                    "--description",
-                    body,
-                    "--output",
-                    "json",
-                ],
-            )
-            .await;
+            let scope = azure_scope(repo, Scope::Repository).await;
+            let mut args = vec![
+                "repos",
+                "pr",
+                "create",
+                "--source-branch",
+                head,
+                "--target-branch",
+                base,
+                "--title",
+                title,
+                "--description",
+                body,
+                "--output",
+                "json",
+            ];
+            args.extend(scope.iter().map(String::as_str));
+            let out = git::run(repo, "az", &args).await;
 
             let out = match out {
                 Ok(out) => out,
                 Err(e) if already_exists(&e) => {
                     // az does not name the pull request in the error, so ask.
-                    let listed = git::run(
-                        repo,
-                        "az",
-                        &[
-                            "repos",
-                            "pr",
-                            "list",
-                            "--source-branch",
-                            head,
-                            "--status",
-                            "active",
-                            "--output",
-                            "json",
-                        ],
-                    )
-                    .await
-                    .map_err(|_| e.clone())?;
+                    let mut args = vec![
+                        "repos",
+                        "pr",
+                        "list",
+                        "--source-branch",
+                        head,
+                        "--status",
+                        "active",
+                        "--output",
+                        "json",
+                    ];
+                    args.extend(scope.iter().map(String::as_str));
+                    let listed = git::run(repo, "az", &args).await.map_err(|_| e.clone())?;
 
                     let first = serde_json::from_str::<serde_json::Value>(&listed)
                         .ok()
@@ -696,6 +782,62 @@ mod tests {
             "https://dev.azure.com/org"
         );
         assert_eq!(azure_org_url("git@github.com:a/b.git"), "");
+    }
+
+    #[test]
+    fn az_is_told_the_organization_project_and_repository() {
+        let expected = |org: &str, project: &str, repo: &str| -> Vec<String> {
+            [
+                "--organization",
+                org,
+                "--project",
+                project,
+                "--repository",
+                repo,
+                "--detect",
+                "false",
+            ]
+            .map(String::from)
+            .to_vec()
+        };
+        assert_eq!(
+            azure_scope_for(
+                "git@ssh.dev.azure.com:v3/CGI-Switzerland-SA/CGI%20Augmented%20Support/kit\n",
+                Scope::Repository
+            ),
+            expected(
+                "https://dev.azure.com/CGI-Switzerland-SA",
+                "CGI Augmented Support",
+                "kit"
+            )
+        );
+        assert_eq!(
+            azure_scope_for(
+                "https://org@dev.azure.com/org/project/_git/repo",
+                Scope::Repository
+            ),
+            expected("https://dev.azure.com/org", "project", "repo")
+        );
+        assert_eq!(
+            azure_scope_for(
+                "https://org.visualstudio.com/DefaultCollection/project/_git/repo",
+                Scope::Repository
+            ),
+            expected("https://dev.azure.com/org", "project", "repo")
+        );
+        assert_eq!(
+            azure_scope_for(
+                "https://dev.azure.com/org/project/_git/repo",
+                Scope::Organization
+            ),
+            vec![
+                "--organization",
+                "https://dev.azure.com/org",
+                "--detect",
+                "false"
+            ]
+        );
+        assert!(azure_scope_for("git@github.com:a/b.git", Scope::Repository).is_empty());
     }
 
     #[test]

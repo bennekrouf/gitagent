@@ -13,18 +13,17 @@ rewriting anything else.
 ## The flow
 
 ```text
-                           ┌──> commit ──> push ──┐
-  scan ──> draft_commit ──>┤                      ├──> open_pr
-                           └──> draft_pr ─────────┘
+                                     ┌──> push ──────┐
+  scan ──> draft_commit ──> commit ──>┤               ├──> open_pr
+                                     └──> draft_pr ──┘
 ```
 
 Six nodes. Three are deterministic shell work, two are model calls, and three
 are gated on a human saying yes.
 
-`draft_pr` reads the diff and the commit message; it never reads anything
-`commit` or `push` produce, so there is no edge between them. The executor
-still runs one node at a time, but the dependency is honest — running the ready
-set concurrently is a change to `drive()` alone.
+`draft_pr` waits for `commit`, so a run stopped at the commit approval never
+spends a model call on a pull request description. It still runs beside
+`push`: neither reads what the other writes, and `open_pr` waits for both.
 
 | Node | Kind | Gated | Writes |
 |---|---|---|---|

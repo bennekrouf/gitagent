@@ -2177,7 +2177,8 @@ button.update-banner-link {
 }
 .region:hover { border-color: var(--green); color: var(--text1); }
 .region-on { color: var(--text1); border-color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
-.region-flag { font-size: 22px; line-height: 1; }
+.region-flag { font-size: 22px; line-height: 1; height: 22px; display: flex; align-items: center; }
+.region-flag-svg { display: block; border-radius: 2px; box-shadow: 0 0 0 1px var(--border); }
 .region-label { font-size: 12px; font-weight: 600; }
 .region-note { font-family: var(--mono); font-size: 10px; color: var(--text3); text-align: center; }
 .region-on .region-note { color: var(--green); }

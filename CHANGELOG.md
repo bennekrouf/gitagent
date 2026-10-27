@@ -17,6 +17,28 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- In the shipped Commit → PR flow, the pull request description is now drafted
+  after the commit rather than alongside it, so a run you stop at the commit
+  approval no longer spends a model call on a description. It is still written
+  while the branch is pushed. Flows you have saved keep their shape; Restore
+  defaults in Setup brings in the new one.
+
+### Fixed
+
+- On Windows, the Europe, China and United States choices in the model window
+  and on the first-run screen now show their flags instead of two bare letters
+  each. Wherever the chosen model is named in text, Windows now shows the
+  region's name alone.
+- On Windows, an Azure DevOps repository could show "Couldn't check for open
+  pull requests" with an error asking for `--organization`, even though its
+  remote points at Azure DevOps. GitAgent now tells the Azure CLI the
+  organization, project and repository from the remote itself, for listing,
+  opening, reviewing and merging pull requests.
+
 ## [0.1.131] - 2026-10-27
 
 ### Changed
