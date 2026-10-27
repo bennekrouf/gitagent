@@ -123,7 +123,7 @@ pub fn ProviderPicker(
                     span { class: "region-flag",
                         match p {
                             Pick::Ollama => rsx! { "\u{1F4BB}" },
-                            Pick::Api0(r) => rsx! { "{r.flag}" },
+                            Pick::Api0(r) => rsx! { RegionFlag { id: r.id } },
                         }
                     }
                     span { class: "region-label", "{label}" }
@@ -166,6 +166,83 @@ pub fn ProviderPicker(
             }
         }
     }
+}
+
+/// A region's flag, drawn rather than typed: Windows has no glyphs for flag
+/// emoji and shows the two letters of the country code instead.
+#[component]
+pub fn RegionFlag(id: &'static str) -> Element {
+    let shapes = match id {
+        "europe" => {
+            // Twelve stars in a ring on blue.
+            let stars = (0..12).map(|i| {
+                let a = (i as f64) * std::f64::consts::TAU / 12.0;
+                star(15.0 + 6.0 * a.sin(), 10.0 - 6.0 * a.cos(), 1.1)
+            });
+            rsx! {
+                rect { width: "30", height: "20", fill: "#003399" }
+                for (i, points) in stars.enumerate() {
+                    polygon { key: "{i}", points: "{points}", fill: "#FFCC00" }
+                }
+            }
+        }
+        "china" => {
+            // The flag's own 30 × 20 grid: one large star and four small.
+            let small = [(10.0, 2.0), (12.0, 4.0), (12.0, 7.0), (10.0, 9.0)];
+            rsx! {
+                rect { width: "30", height: "20", fill: "#EE1C25" }
+                polygon { points: "{star(5.0, 5.0, 3.0)}", fill: "#FFFF00" }
+                for (i, (x, y)) in small.into_iter().enumerate() {
+                    polygon { key: "{i}", points: "{star(x, y, 1.0)}", fill: "#FFFF00" }
+                }
+            }
+        }
+        "usa" => {
+            // Thirteen stripes and a canton; at this size the fifty stars
+            // read as a few dots.
+            let h = 20.0 / 13.0;
+            let dots = (0..4).flat_map(|row| (0..5).map(move |col| (row, col)));
+            rsx! {
+                rect { width: "30", height: "20", fill: "#FFFFFF" }
+                for i in (0..13).step_by(2) {
+                    rect { key: "{i}", y: "{i as f64 * h}", width: "30", height: "{h}", fill: "#B22234" }
+                }
+                rect { width: "12", height: "{7.0 * h}", fill: "#3C3B6E" }
+                for (row, col) in dots {
+                    circle {
+                        key: "{row}-{col}",
+                        cx: "{1.4 + col as f64 * 2.3}",
+                        cy: "{1.5 + row as f64 * 2.6}",
+                        r: "0.55",
+                        fill: "#FFFFFF",
+                    }
+                }
+            }
+        }
+        _ => rsx! {},
+    };
+    rsx! {
+        svg {
+            class: "region-flag-svg",
+            width: "30",
+            height: "20",
+            view_box: "0 0 30 20",
+            role: "img",
+            {shapes}
+        }
+    }
+}
+
+/// A five-pointed star, point up, as polygon points.
+fn star(cx: f64, cy: f64, r: f64) -> String {
+    (0..10)
+        .map(|i| {
+            let a = (i as f64) * std::f64::consts::PI / 5.0;
+            let len = if i % 2 == 0 { r } else { r * 0.382 };
+            format!("{:.2},{:.2}", cx + len * a.sin(), cy - len * a.cos())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The mayorana mark, which is api0's too: an arch over a pillar.

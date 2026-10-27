@@ -2102,10 +2102,10 @@ mod tests {
 
     #[test]
     fn steps_that_run_side_by_side_share_a_column() {
-        // commit and draft_pr both leave draft_commit, and neither waits for
-        // the other.
+        // push and draft_pr both leave commit, and neither waits for the
+        // other.
         let plan = map(&commit(), None, false, false, 0.0, false);
-        let a = plan.find("commit").unwrap();
+        let a = plan.find("push").unwrap();
         let b = plan.find("draft_pr").unwrap();
         assert_eq!(a.x, b.x);
         assert!((a.y - b.y).abs() >= ROW_MIN);
@@ -2129,7 +2129,7 @@ mod tests {
         let big = map(&commit(), Some((2400.0, 1000.0)), false, false, 0.0, false);
         assert!(big.col_w > small.col_w);
         assert_eq!((big.width, big.height), (2400.0, 1000.0));
-        let gap = |m: &Map| (m.find("commit").unwrap().y - m.find("draft_pr").unwrap().y).abs();
+        let gap = |m: &Map| (m.find("push").unwrap().y - m.find("draft_pr").unwrap().y).abs();
         assert!(gap(&big) > gap(&small));
     }
 
@@ -2154,9 +2154,15 @@ mod tests {
 
     #[test]
     fn a_step_following_only_the_upper_parent_sits_above_one_following_both() {
-        // draft_pr follows draft_commit alone; commit follows draft_commit and
-        // test. Stacking commit on top crosses their tracks for no reason.
-        let plan = map(&commit(), None, false, false, 0.0, false);
+        // The shape the commit flow shipped with before draft_pr waited for
+        // the commit, and one a flow of your own can still have: draft_pr
+        // follows draft_commit alone; commit follows draft_commit and test.
+        // Stacking commit on top crosses their tracks for no reason.
+        let mut graph = commit();
+        for n in graph.nodes.iter_mut().filter(|n| n.id == "draft_pr") {
+            n.deps = vec!["draft_commit".into()];
+        }
+        let plan = map(&graph, None, false, false, 0.0, false);
         assert!(plan.find("draft_pr").unwrap().y < plan.find("commit").unwrap().y);
     }
 

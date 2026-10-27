@@ -20,7 +20,7 @@
 use serde_json::json;
 
 use super::flow::{self, StepFailure, StepOutcome};
-use super::forge::Forge;
+use super::forge::{self, Forge, Scope};
 use super::git;
 use super::graph::{Remedy, RunState, Step};
 use super::llm::{complete_json, Asker, LlmConfig};
@@ -187,12 +187,10 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
         }
         Forge::AzureDevOps => {
             let (pr, head): (serde_json::Value, String) = if !selected.is_empty() {
-                let out = git::run(
-                    repo,
-                    "az",
-                    &["repos", "pr", "show", "--id", selected, "--output", "json"],
-                )
-                .await?;
+                let scope = forge::azure_scope(repo, Scope::Organization).await;
+                let mut args = vec!["repos", "pr", "show", "--id", selected, "--output", "json"];
+                args.extend(scope.iter().map(String::as_str));
+                let out = git::run(repo, "az", &args).await?;
                 let pr: serde_json::Value = serde_json::from_str(&out)
                     .map_err(|e| format!("could not read az output: {e}"))?;
                 let head = pr["sourceRefName"]
@@ -202,22 +200,20 @@ async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
                     .to_string();
                 (pr, head)
             } else {
-                let out = git::run(
-                    repo,
-                    "az",
-                    &[
-                        "repos",
-                        "pr",
-                        "list",
-                        "--source-branch",
-                        &branch,
-                        "--status",
-                        "active",
-                        "--output",
-                        "json",
-                    ],
-                )
-                .await?;
+                let scope = forge::azure_scope(repo, Scope::Repository).await;
+                let mut args = vec![
+                    "repos",
+                    "pr",
+                    "list",
+                    "--source-branch",
+                    &branch,
+                    "--status",
+                    "active",
+                    "--output",
+                    "json",
+                ];
+                args.extend(scope.iter().map(String::as_str));
+                let out = git::run(repo, "az", &args).await?;
                 let list: serde_json::Value = serde_json::from_str(&out)
                     .map_err(|e| format!("could not read az output: {e}"))?;
                 let pr = list
@@ -531,8 +527,15 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
         .ok()
         .and_then(|n| n.trim().parse().ok())
         .unwrap_or(0);
+        let forge = Forge::from_key(state.artifact("forge"));
+        let scope = if forge == Forge::AzureDevOps {
+            forge::azure_scope(repo, Scope::Organization).await
+        } else {
+            vec![]
+        };
         return Err(empty_pr(
-            &Forge::from_key(state.artifact("forge")),
+            &forge,
+            &scope,
             state.artifact("pr_number"),
             base,
             head,
@@ -555,8 +558,16 @@ async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailur
 
 /// An open pull request that changes nothing still wants a decision, so this
 /// is a failure with a fix on offer rather than a quiet "nothing to do" that
-/// leaves the sidebar saying "ready to merge" and no way forward.
-fn empty_pr(forge: &Forge, number: &str, base: &str, head: &str, ahead: usize) -> StepFailure {
+/// leaves the sidebar saying "ready to merge" and no way forward. `az_scope`
+/// is what `forge::azure_scope` gave for the repository.
+fn empty_pr(
+    forge: &Forge,
+    az_scope: &[String],
+    number: &str,
+    base: &str,
+    head: &str,
+    ahead: usize,
+) -> StepFailure {
     let why = if ahead == 0 {
         format!("Everything on `{head}` is already in `{base}`.")
     } else {
@@ -578,10 +589,8 @@ fn empty_pr(forge: &Forge, number: &str, base: &str, head: &str, ahead: usize) -
             "gh",
             &["pr", "close", number, "--comment", comment],
         )],
-        Forge::AzureDevOps => vec![Remedy::terminal(
-            &format!("Abandon !{number} — it changes nothing"),
-            "az",
-            &[
+        Forge::AzureDevOps => {
+            let mut args = vec![
                 "repos",
                 "pr",
                 "update",
@@ -591,8 +600,14 @@ fn empty_pr(forge: &Forge, number: &str, base: &str, head: &str, ahead: usize) -
                 "abandoned",
                 "--output",
                 "none",
-            ],
-        )],
+            ];
+            args.extend(az_scope.iter().map(String::as_str));
+            vec![Remedy::terminal(
+                &format!("Abandon !{number} — it changes nothing"),
+                "az",
+                &args,
+            )]
+        }
         _ => vec![],
     };
     StepFailure { message, remedies }
@@ -1022,24 +1037,22 @@ async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure>
         .await
         .map_err(|e| merge_failure(&number, state.artifact("pr_base"), e))?,
         Forge::AzureDevOps => {
-            git::run(
-                repo,
-                "az",
-                &[
-                    "repos",
-                    "pr",
-                    "update",
-                    "--id",
-                    &number,
-                    "--status",
-                    "completed",
-                    "--delete-source-branch",
-                    "true",
-                    "--output",
-                    "none",
-                ],
-            )
-            .await?
+            let scope = forge::azure_scope(repo, Scope::Organization).await;
+            let mut args = vec![
+                "repos",
+                "pr",
+                "update",
+                "--id",
+                &number,
+                "--status",
+                "completed",
+                "--delete-source-branch",
+                "true",
+                "--output",
+                "none",
+            ];
+            args.extend(scope.iter().map(String::as_str));
+            git::run(repo, "az", &args).await?
         }
         other => {
             return Err(StepFailure::from(format!(
@@ -1668,7 +1681,7 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
 
     #[test]
     fn an_empty_pull_request_offers_closing_it() {
-        let failure = empty_pr(&Forge::GitHub, "11", "feat/a", "chore/b", 3);
+        let failure = empty_pr(&Forge::GitHub, &[], "11", "feat/a", "chore/b", 3);
         assert!(failure.message.contains("#11"));
         assert!(
             failure.message.contains("3 commit(s)"),
@@ -1689,7 +1702,7 @@ fmt\tUNKNOWN STEP\t2026-08-25T14:09:13.0508478Z git version 2.55.0";
 
     #[test]
     fn an_empty_pull_request_already_in_its_base_says_so() {
-        let failure = empty_pr(&Forge::AzureDevOps, "4", "main", "topic", 0);
+        let failure = empty_pr(&Forge::AzureDevOps, &[], "4", "main", "topic", 0);
         assert!(failure.message.contains("already in `main`"));
         assert_eq!(failure.remedies[0].program, "az");
     }

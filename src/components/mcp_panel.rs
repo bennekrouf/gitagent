@@ -34,6 +34,12 @@ pub fn code_command(command: &str) -> String {
     format!("claude mcp add gitagent --scope user -- \"{command}\" mcp")
 }
 
+/// The one line that adds it to Codex. Its CLI, IDE extension and app share
+/// one list of servers, each one there for every project.
+pub fn codex_command(command: &str) -> String {
+    format!("codex mcp add gitagent -- \"{command}\" mcp")
+}
+
 /// Where Claude Desktop keeps its config, for the person who would rather
 /// open it themselves than go through the app's menu.
 fn desktop_config_path() -> &'static str {
@@ -51,6 +57,7 @@ pub fn McpPanel(props: McpPanelProps) -> Element {
     let command = command();
     let desktop = desktop_config(&command);
     let code = code_command(&command);
+    let codex = codex_command(&command);
     let close = move |_| props.on_close.call(());
 
     rsx! {
@@ -59,7 +66,7 @@ pub fn McpPanel(props: McpPanelProps) -> Element {
                 class: "modal modal-wide",
                 onclick: move |e: Event<MouseData>| e.stop_propagation(),
                 div { class: "modal-head",
-                    span { "Use GitAgent from Claude" }
+                    span { "Use GitAgent from Claude or Codex" }
                     button { class: "modal-close", onclick: close, "×" }
                 }
                 div { class: "modal-body mcp-body",
@@ -96,7 +103,16 @@ pub fn McpPanel(props: McpPanelProps) -> Element {
                     }
 
                     div { class: "mcp-step",
-                        div { class: "mcp-step-title", span { class: "mcp-num", "3" } "Try it" }
+                        div { class: "mcp-step-title", span { class: "mcp-num", "3" } "Codex" }
+                        p { class: "field-note", "Run this once in a terminal:" }
+                        div { class: "log-wrap",
+                            pre { class: "log mcp-snippet", "{codex}" }
+                            CopyButton { text: codex.clone() }
+                        }
+                    }
+
+                    div { class: "mcp-step",
+                        div { class: "mcp-step-title", span { class: "mcp-num", "4" } "Try it" }
                         p { class: "field-note",
                             "Ask: \u{201c}What do my repositories need?\u{201d}, or \u{201c}Commit my \
                              changes in gitagent and open a pull request.\u{201d}"
@@ -145,6 +161,14 @@ mod tests {
         assert_eq!(
             code_command("/Apps/Git Agent/gitagent"),
             "claude mcp add gitagent --scope user -- \"/Apps/Git Agent/gitagent\" mcp"
+        );
+    }
+
+    #[test]
+    fn the_codex_command_quotes_a_path_with_spaces() {
+        assert_eq!(
+            codex_command("/A B/gitagent"),
+            "codex mcp add gitagent -- \"/A B/gitagent\" mcp"
         );
     }
 }

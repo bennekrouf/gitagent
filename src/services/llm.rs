@@ -324,6 +324,18 @@ pub struct Region {
     pub display: &'static str,
 }
 
+impl Region {
+    /// What text shows for this region: flag and name, or the name alone on
+    /// Windows, which draws flag emoji as two bare letters.
+    pub fn shown(&self) -> &'static str {
+        if cfg!(windows) {
+            self.label
+        } else {
+            self.display
+        }
+    }
+}
+
 /// In the order Settings shows them.
 // One line per region on purpose: this reads as a table, and rustfmt would
 // spread each entry over five lines.
@@ -611,7 +623,7 @@ impl LlmConfig {
             ProviderKind::Ollama => &self.ollama_model,
             ProviderKind::Remote => self
                 .region()
-                .map_or_else(|| self.remote_model_name(), |r| r.display),
+                .map_or_else(|| self.remote_model_name(), |r| r.shown()),
             ProviderKind::Off => "no AI",
         }
     }
@@ -1288,7 +1300,8 @@ mod tests {
         cfg.use_region("china");
         assert_eq!(cfg.region().map(|r| r.id), Some("china"));
         assert_eq!(cfg.remote_model_name(), "china");
-        assert_eq!(cfg.active_model(), "🇨🇳 China");
+        assert_eq!(cfg.active_model(), REGIONS[1].shown());
+        assert_eq!(REGIONS[1].display, "🇨🇳 China");
         // api0 through a proxy, or with a model named by hand, is not a region.
         cfg.remote_url = "https://proxy.example.com/v1".into();
         assert_eq!(cfg.region(), None);
@@ -1602,7 +1615,11 @@ mod tests {
         assert_eq!(cfg.region().map(|r| r.id), Some("europe"));
         assert_eq!(
             cfg.active_model(),
-            "\u{1F1EA}\u{1F1FA} Europe",
+            if cfg!(windows) {
+                "Europe"
+            } else {
+                "\u{1F1EA}\u{1F1FA} Europe"
+            },
             "a button showing the model says where it runs, never \"default\""
         );
     }
@@ -1626,7 +1643,11 @@ mod tests {
         assert_eq!(cfg.second.region().map(|r| r.id), Some("china"));
         assert_eq!(
             cfg.second_config().active_model(),
-            "\u{1F1E8}\u{1F1F3} China"
+            if cfg!(windows) {
+                "China"
+            } else {
+                "\u{1F1E8}\u{1F1F3} China"
+            }
         );
         cfg.second.use_own_key();
         assert!(

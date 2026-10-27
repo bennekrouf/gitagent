@@ -695,9 +695,12 @@ impl FlowBook {
                             NodeDef::from_catalogue("commit", "commit"),
                             &["draft_commit", "test"],
                         ),
+                        // After the commit rather than beside it, so a run the
+                        // commit approval stops never spends a model call on
+                        // a description nobody will open.
                         dep(
                             NodeDef::from_catalogue("draft_pr", "draft_pr"),
-                            &["draft_commit"],
+                            &["commit"],
                         ),
                         dep(NodeDef::from_catalogue("push", "push"), &["commit"]),
                         dep(
@@ -1300,7 +1303,7 @@ mod tests {
         let book = FlowBook::defaults();
         let commit = book.get("commit_and_pr").unwrap();
         let draft_pr = commit.nodes.iter().find(|n| n.id == "draft_pr").unwrap();
-        assert_eq!(draft_pr.deps, vec!["draft_commit".to_string()]);
+        assert_eq!(draft_pr.deps, vec!["commit".to_string()]);
 
         let review = book.get("review_and_merge").unwrap();
         let status = review.nodes.iter().find(|n| n.id == "pr_status").unwrap();

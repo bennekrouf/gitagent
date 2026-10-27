@@ -794,14 +794,12 @@ async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBrief>, String
                 .unwrap_or_default())
         }
         Forge::AzureDevOps => {
-            let out = git::run(
-                repo,
-                "az",
-                &[
-                    "repos", "pr", "list", "--status", "active", "--output", "json",
-                ],
-            )
-            .await?;
+            let scope = forge::azure_scope(repo, forge::Scope::Repository).await;
+            let mut args = vec![
+                "repos", "pr", "list", "--status", "active", "--output", "json",
+            ];
+            args.extend(scope.iter().map(String::as_str));
+            let out = git::run(repo, "az", &args).await?;
             let list: serde_json::Value =
                 serde_json::from_str(&out).map_err(|e| format!("could not read az output: {e}"))?;
             Ok(list
@@ -851,23 +849,20 @@ async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
         }
         Forge::AzureDevOps => {
             let branch = git::current_branch(repo).await.ok()?;
-            let out = git::run(
-                repo,
-                "az",
-                &[
-                    "repos",
-                    "pr",
-                    "list",
-                    "--source-branch",
-                    &branch,
-                    "--status",
-                    "active",
-                    "--output",
-                    "json",
-                ],
-            )
-            .await
-            .ok()?;
+            let scope = forge::azure_scope(repo, forge::Scope::Repository).await;
+            let mut args = vec![
+                "repos",
+                "pr",
+                "list",
+                "--source-branch",
+                &branch,
+                "--status",
+                "active",
+                "--output",
+                "json",
+            ];
+            args.extend(scope.iter().map(String::as_str));
+            let out = git::run(repo, "az", &args).await.ok()?;
             let list: serde_json::Value = serde_json::from_str(&out).ok()?;
             let pr = list.as_array()?.first()?;
             let number = pr["pullRequestId"].as_i64()?.to_string();
