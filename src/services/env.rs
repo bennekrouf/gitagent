@@ -134,6 +134,21 @@ pub fn adopt_login_path() {
     std::env::set_var("PATH", merged);
 }
 
+/// Stops the Azure CLI from asking questions nobody can answer.
+///
+/// Missing the azure-devops extension, `az repos …` asks "install it now?"
+/// by default. Every `az` the app runs has no stdin, so the question died as
+/// an EOFError traceback that never named the extension, and no fix button
+/// could be offered for it. With dynamic install off, `az` says "'repos' is
+/// misspelled or not recognized" instead, which `pr_list_remedy` answers
+/// with adding the extension. A value already in the environment wins.
+pub fn quiet_cli_prompts() {
+    const KEY: &str = "AZURE_EXTENSION_USE_DYNAMIC_INSTALL";
+    if std::env::var(KEY).ok().filter(|v| !v.is_empty()).is_none() {
+        std::env::set_var(KEY, "no");
+    }
+}
+
 /// Login shell first (it is the informed answer), then what we already had,
 /// then the fallbacks. Order is preserved and duplicates are dropped, so the
 /// first place a tool is found stays the one that wins.
