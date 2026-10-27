@@ -238,6 +238,9 @@ fn row_start(
     let label = match wants {
         Wants::Commit if status.changes == 1 => "Commit 1 file".to_string(),
         Wants::Commit => format!("Commit {} files", status.changes),
+        // In place of "needs a PR": the commits are made, so what is left is
+        // the push and the pull request. Short, since the row is narrow.
+        Wants::OpenPr => "Push & open PR".to_string(),
         // The flow's own name rather than a generic "Run release": several
         // flows can answer a release — "Release", "Deploy VPS", "Deploy
         // API0" — and a button that does not say which one it starts is
@@ -3894,6 +3897,17 @@ mod tests {
         assert!(row_start(&book, &status(3, false), &["commit_and_pr".into()]).is_none());
         // Clean: nothing at all.
         assert!(row_start(&book, &status(0, false), &[]).is_none());
+        // Committed on a branch with no pull request: push and open one.
+        let unpushed = RepoStatus {
+            branch: "topic".into(),
+            unmerged: 1,
+            ..status(0, false)
+        };
+        let (flow, label, _) = row_start(&book, &unpushed, &[]).unwrap();
+        assert_eq!(
+            (flow.as_str(), label.as_str()),
+            ("commit_and_pr", "Push & open PR")
+        );
 
         // A release is only offered once a flow can cut it.
         assert!(row_start(&book, &status(0, true), &[]).is_none());

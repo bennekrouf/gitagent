@@ -116,6 +116,7 @@ fn main() {
     // inherit the terminal's PATH, so gh, az and cargo would all read as
     // "not installed".
     services::env::adopt_login_path();
+    services::env::quiet_cli_prompts();
     // `gitagent mcp`: the flows over stdio for an MCP client, and no window.
     // Before the notification bundle is claimed, which needs one.
     if std::env::args().nth(1).as_deref() == Some("mcp") {

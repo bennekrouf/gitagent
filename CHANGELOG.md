@@ -17,6 +17,21 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- A repository with commits on a branch but no pull request no longer just
+  says "needs a PR" in the repository list. The row now has a Push & open PR
+  button that pushes the branch and opens the pull request in one click.
+
+### Fixed
+
+- On an Azure DevOps repository where the Azure CLI's azure-devops extension
+  isn't installed yet, the pull request list showed a long Python traceback
+  ending in "EOF when reading a line". It now says the extension is missing
+  and offers a button to add it.
+
 ## [0.1.130] - 2026-10-25
 
 ### Changed
