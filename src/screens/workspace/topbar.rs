@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::services::licence::Status;
+use desktop_kit::ui::{Header, ModelBadge, ProBadge, ProLook, Theme};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn topbar(
@@ -15,20 +16,40 @@ pub(super) fn topbar(
     mut mcp_open: Signal<bool>,
     licence_status: Signal<Status>,
     mut licence_open: Signal<bool>,
-    mut is_light: Signal<bool>,
-    mut theme_overridden: Signal<bool>,
+    is_light: Signal<bool>,
+    theme_overridden: Signal<bool>,
     cfg: LlmConfig,
     props: WorkspaceProps,
 ) -> Element {
+    let theme = Theme {
+        light: is_light,
+        picked: theme_overridden,
+    };
+    let (look, pro_title) = match licence_status.read().clone() {
+        licence::Status::Pro(a) => (
+            ProLook::Pro,
+            format!("GitAgent Pro \u{b7} {} plan \u{b7} {}", a.plan.name, a.email),
+        ),
+        licence::Status::Lapsed(lapse) => (ProLook::Renew, lapse.explain()),
+        licence::Status::Credits(a) => (
+            ProLook::Get,
+            format!(
+                "{}. Buy GitAgent Pro, or choose the free version's repositories",
+                a.credits_headline()
+            ),
+        ),
+        licence::Status::Free => (
+            ProLook::Get,
+            "Buy GitAgent Pro, get free AI credits, paste your licence number, or choose the free version's repositories".to_string(),
+        ),
+    };
     rsx! {
-        div { class: "topbar",
-            span { class: "topbar-brand", "GitAgent" }
-            div { class: "topbar-title",
-                span { class: "topbar-path", "{props.workspace}" }
-            }
-            div { class: "topbar-right",
+        Header {
+            theme,
+            on_mcp: move |_| mcp_open.set(true),
+            actions: rsx! {
                 button {
-                    class: if *global_trust.read() { "btn btn-trusted btn-trusted-on" } else { "btn btn-ghost" },
+                    class: if *global_trust.read() { "kit-btn kit-on" } else { "kit-btn" },
                     title: if *global_trust.read() {
                         "Every repository and every flow is running trusted. Click to go back to approving each one yourself."
                     } else {
@@ -43,94 +64,36 @@ pub(super) fn topbar(
                             approvals().notify_waiters();
                         }
                     },
-                    if *global_trust.read() { "Trusting everything…" } else { "Trust all" }
+                    if *global_trust.read() { "Trusting everything\u{2026}" } else { "Trust all" }
                 }
-                div { class: "view-switch",
+                div { class: "kit-tabs",
                     button {
-                        class: if *run_view.read() { "view-switch-opt" } else { "view-switch-opt view-switch-on" },
+                        class: if *run_view.read() { "kit-tab" } else { "kit-tab kit-on" },
                         title: "Each step as a card, with the selected one's detail beside it",
                         onclick: move |_| run_view.set(false),
                         "List"
                     }
                     button {
-                        class: if *run_view.read() { "view-switch-opt view-switch-on" } else { "view-switch-opt" },
+                        class: if *run_view.read() { "kit-tab kit-on" } else { "kit-tab" },
                         title: "The selected repository's flow as a line that fills in while it runs",
                         onclick: move |_| run_view.set(true),
                         "Run"
                     }
                 }
-                button {
-                    class: "btn btn-ghost",
-                    onclick: move |_| setup_open.set(true),
-                    "Setup"
-                }
-                button {
-                    class: "btn btn-ghost",
-                    title: "Use GitAgent from Claude Desktop or Claude Code",
-                    onclick: move |_| mcp_open.set(true),
-                    "MCP"
-                }
-                a {
-                    class: "btn btn-ghost",
-                    href: "{crate::feedback::contact_url()}",
-                    target: "_blank",
-                    title: "Ideas, bugs, questions: send them to the person who makes GitAgent",
-                    "Feedback"
-                }
-                button {
-                    class: "btn btn-ghost",
+                button { class: "kit-btn", onclick: move |_| setup_open.set(true), "Setup" }
+            },
+            model: rsx! {
+                ModelBadge {
+                    label: cfg.active_region().map_or(cfg.active_model(), |r| r.label).to_string(),
+                    region: cfg.active_region().map(|r| r.id),
                     title: "The model this folder runs on \u{2014} click to change it here without touching any other window",
                     onclick: move |_| settings_open.set(true),
-                    "{cfg.active_model()}"
                 }
-                button {
-                    class: "btn btn-ghost",
-                    onclick: move |_| {
-                        theme_overridden.set(true);
-                        let now = *is_light.read();
-                        is_light.set(!now);
-                    },
-                    if *props.is_light.read() { "Dark" } else { "Light" }
-                }
-                // Last, so it sits in the corner: the one element in
-                // the bar that is about you rather than the work.
-                match licence_status.read().clone() {
-                    licence::Status::Pro(a) => rsx! {
-                        button {
-                            class: "pro-badge",
-                            title: "GitAgent Pro \u{b7} {a.plan.name} plan \u{b7} {a.email}",
-                            onclick: move |_| licence_open.set(true),
-                            span { class: "pro-badge-star", "\u{2726}" }
-                            span { class: "pro-badge-text", "PRO" }
-                        }
-                    },
-                    licence::Status::Lapsed(lapse) => rsx! {
-                        button {
-                            class: "pro-badge pro-badge-renew",
-                            title: "{lapse.explain()}",
-                            onclick: move |_| licence_open.set(true),
-                            span { class: "pro-badge-star", "\u{2726}" }
-                            span { class: "pro-badge-text", "PRO INACTIVE" }
-                        }
-                    },
-                    licence::Status::Credits(a) => rsx! {
-                        button {
-                            class: "btn btn-ghost btn-pro",
-                            title: "{a.credits_headline()}. Buy GitAgent Pro, or choose the free version's repositories",
-                            onclick: move |_| licence_open.set(true),
-                            "Get Pro\u{2026}"
-                        }
-                    },
-                    licence::Status::Free => rsx! {
-                        button {
-                            class: "btn btn-ghost btn-pro",
-                            title: "Buy GitAgent Pro, get free AI credits, paste your licence number, or choose the free version's repositories",
-                            onclick: move |_| licence_open.set(true),
-                            "Get Pro\u{2026}"
-                        }
-                    },
-                }
-            }
+            },
+            pro: rsx! {
+                ProBadge { look, title: pro_title, onclick: move |_| licence_open.set(true) }
+            },
+            span { class: "kit-detail", "{props.workspace}" }
         }
     }
 }

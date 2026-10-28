@@ -20,7 +20,7 @@ concurrency:
 
 env:
   # The desktop-kit tag the apps build against; move it to take a kit change.
-  DESKTOP_KIT_REF: v0.1.0
+  DESKTOP_KIT_REF: v0.1.1
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 

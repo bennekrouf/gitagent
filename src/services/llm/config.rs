@@ -148,6 +148,14 @@ impl LlmConfig {
 }
 
 impl LlmConfig {
+    /// The api0 region in use, when the model is api0's.
+    pub fn active_region(&self) -> Option<&'static Region> {
+        match self.kind {
+            ProviderKind::Remote => self.region(),
+            ProviderKind::Ollama | ProviderKind::Off => None,
+        }
+    }
+
     pub fn active_model(&self) -> &str {
         match self.kind {
             ProviderKind::Ollama => &self.ollama_model,

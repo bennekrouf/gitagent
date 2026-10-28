@@ -317,38 +317,7 @@ pub fn key_for(remote: &Remote) -> Option<String> {
     })
 }
 
-/// One of the AI regions api0 offers. Picking it sends its id as the model;
-/// api0 decides what runs there, and its answers only ever name the region.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Region {
-    pub id: &'static str,
-    pub flag: &'static str,
-    pub label: &'static str,
-    /// Flag and name, for the tab note and the step log.
-    pub display: &'static str,
-}
-
-impl Region {
-    /// What text shows for this region: flag and name, or the name alone on
-    /// Windows, which draws flag emoji as two bare letters.
-    pub fn shown(&self) -> &'static str {
-        if cfg!(windows) {
-            self.label
-        } else {
-            self.display
-        }
-    }
-}
-
-/// In the order Settings shows them.
-// One line per region on purpose: this reads as a table, and rustfmt would
-// spread each entry over five lines.
-#[rustfmt::skip]
-pub const REGIONS: &[Region] = &[
-    Region { id: "europe", flag: "🇪🇺", label: "Europe", display: "🇪🇺 Europe" },
-    Region { id: "china", flag: "🇨🇳", label: "China", display: "🇨🇳 China" },
-    Region { id: "usa", flag: "🇺🇸", label: "United States", display: "🇺🇸 United States" },
-];
+pub use desktop_kit::region::{Region, REGIONS};
 
 /// Tokens in a typical model step — a commit message, a pull request
 /// description, one review — as measured on api0. Only for the estimate.

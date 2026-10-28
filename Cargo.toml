@@ -9,7 +9,7 @@ description = "Agentic graph for commit and deploy workflows"
 dioxus = { version = "=0.7.10", features = ["desktop"] }
 # What every mayorana desktop app shares: statistics, update check, notice and
 # licence. Beside this repository; CI checks it out there at a pinned tag.
-desktop-kit = { path = "../desktop-kit" }
+desktop-kit = { path = "../desktop-kit", features = ["ui"] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }

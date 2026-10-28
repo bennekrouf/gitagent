@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use desktop_kit::ui::{Header, ModelBadge, Theme};
 use dioxus::prelude::*;
 
 use crate::components::settings_panel::SettingsPanel;
@@ -40,8 +41,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let progress = use_signal(|| (0usize, 0usize));
     let mut denied = use_signal(|| Option::<Denied>::None);
 
-    let mut is_light = props.is_light;
-    let mut theme_overridden = props.theme_overridden;
+    let is_light = props.is_light;
+    let theme_overridden = props.theme_overridden;
 
     // What each recent folder's repositories want, so the list says which
     // folder has work waiting before you open it. Keyed by repository rather
@@ -134,7 +135,25 @@ pub fn Welcome(props: WelcomeProps) -> Element {
         } };
     }
 
+    let theme = Theme {
+        light: is_light,
+        picked: theme_overridden,
+    };
     rsx! {
+        Header {
+            theme,
+            actions: rsx! {
+                button { class: "kit-btn", onclick: move |_| setup_open.set(true), "Setup" }
+            },
+            model: rsx! {
+                ModelBadge {
+                    label: cfg.active_region().map_or(cfg.active_model(), |r| r.label).to_string(),
+                    region: cfg.active_region().map(|r| r.id),
+                    title: "The model GitAgent runs on \u{2014} click to change it",
+                    onclick: move |_| settings_open.set(true),
+                }
+            },
+        }
         div { class: "welcome",
             div { class: "welcome-card",
                 h1 { "GitAgent" }
@@ -255,27 +274,6 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                         }
                     }
 
-                    div { class: "welcome-actions",
-                        button {
-                            class: "btn",
-                            onclick: move |_| setup_open.set(true),
-                            "Setup"
-                        }
-                        button {
-                            class: "btn",
-                            onclick: move |_| settings_open.set(true),
-                            "Model: {cfg.active_model()}"
-                        }
-                        button {
-                            class: "btn btn-ghost",
-                            onclick: move |_| {
-                                theme_overridden.set(true);
-                                let now = *is_light.read();
-                                is_light.set(!now);
-                            },
-                            if *props.is_light.read() { "Dark" } else { "Light" }
-                        }
-                    }
                 }
 
                 if let Some(path) = busy.clone() {
@@ -325,7 +323,6 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 if !error.read().is_empty() {
                     div { class: "welcome-error", "{error}" }
                 }
-                crate::feedback::FeedbackLine {}
             }
         }
 

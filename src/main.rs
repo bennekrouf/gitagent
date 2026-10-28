@@ -6,7 +6,6 @@
 
 mod cli;
 mod components;
-mod feedback;
 mod kit;
 mod mcp;
 mod notice;
