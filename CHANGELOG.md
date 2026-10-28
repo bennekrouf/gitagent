@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The update banner and the occasional message from mayorana.ch now sit just
+  under the bar at the top of the window instead of covering it, and look the
+  same in every mayorana app. Download opens the new build in your browser and
+  shows its SHA-256 when one is published, to compare with the file you
+  downloaded.
+
 ## [0.1.134] - 2026-10-28
 
 ### Changed

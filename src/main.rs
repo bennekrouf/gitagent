@@ -8,11 +8,9 @@ mod cli;
 mod components;
 mod kit;
 mod mcp;
-mod notice;
 mod screens;
 mod services;
 mod telemetry;
-mod update_check;
 
 use dioxus::desktop::LogicalSize;
 use dioxus::prelude::*;
@@ -173,33 +171,6 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
     let mut is_light = use_signal(|| system_light);
     let theme_overridden = use_signal(|| false);
 
-    // ── Auto-update check ──────────────────────────────────────────────────
-    // Deliberately after a delay and entirely best-effort: a release check is
-    // never worth slowing a cold start, and a failed one is not worth saying
-    // anything about.
-    // ── Notice from mayorana.ch ────────────────────────────────────────────
-    // A message to the people running this build (see notice.rs). Same
-    // posture as the update check: delayed, best-effort, silent on failure.
-    let mut mayorana_notice = use_signal(|| Option::<notice::Notice>::None);
-    use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
-        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-        if let Some(n) = notice::fetch().await {
-            mayorana_notice.set(Some(n));
-        }
-    });
-
-    let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
-    let mut update_dismissed = use_signal(|| false);
-    use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if let Some(info) = update_check::check().await {
-            telemetry::record(telemetry::Event::UpdateOffered {
-                to: info.latest_version.clone(),
-            });
-            update_info.set(Some(info));
-        }
-    });
-
     // Sends whatever has been recorded, when statistics are on — a no-op
     // otherwise. Delayed like the other startup network calls.
     use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
@@ -258,59 +229,11 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
     let open = workspace.read().clone();
 
     rsx! {
-        // Update banner — fixed top, dismissable per session.
-        if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
-            div { class: "update-banner",
-                span { class: "update-banner-text",
-                    "GitAgent "
-                    strong { "{info.latest_version}" }
-                    " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
-                }
-                a {
-                    class: "update-banner-link",
-                    href: "{info.download_url}",
-                    target: "_blank",
-                    onclick: {
-                        let to = info.latest_version.clone();
-                        move |_| telemetry::record(telemetry::Event::UpdateClicked { to: to.clone() })
-                    },
-                    "Download"
-                }
-                button {
-                    class: "update-banner-dismiss",
-                    onclick: move |_| update_dismissed.set(true),
-                    "×"
-                }
-            }
-        }
-
-        // Notice from mayorana.ch — shown until dismissed, then remembered.
-        if let Some(n) = mayorana_notice.read().clone() {
-            {
-                let id = n.id.clone();
-                let link_text = n.link_text.clone().unwrap_or_else(|| "Open".to_string());
-                rsx! {
-                    div { class: "update-banner notice-banner",
-                        span { class: "update-banner-text", "{n.text}" }
-                        if let Some(url) = n.url.clone() {
-                            a {
-                                class: "update-banner-link",
-                                href: "{url}",
-                                target: "_blank",
-                                "{link_text}"
-                            }
-                        }
-                        button {
-                            class: "update-banner-dismiss",
-                            onclick: move |_| {
-                                notice::dismiss(&id);
-                                mayorana_notice.set(None);
-                            },
-                            "×"
-                        }
-                    }
-                }
-            }
+        // A newer release and the notice from mayorana.ch, under the header.
+        // GitAgent counts the update events in its own statistics.
+        desktop_kit::ui::Banners {
+            on_update_offered: move |to| telemetry::record(telemetry::Event::UpdateOffered { to }),
+            on_update_clicked: move |to| telemetry::record(telemetry::Event::UpdateClicked { to }),
         }
 
         // Shown once, at the bottom so it never sits under the update or
@@ -319,15 +242,15 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
         // the wording below must change if that default does. Either button
         // is remembered, and turning it off is one click.
         if *ask_consent.read() && *configured.read() {
-            div { class: "consent-banner",
-                span { class: "update-banner-text",
+            div { class: "kit-banner kit-consent", role: "status",
+                span { class: "kit-banner-text",
                     strong { "GitAgent shares anonymous usage statistics. " }
                     "Which steps run and whether they succeed, never repositories, \
                      file names, code or messages. You can turn it off here or any \
                      time in Settings."
                 }
                 button {
-                    class: "update-banner-link",
+                    class: "kit-banner-link",
                     onclick: move |_| {
                         telemetry::set_consent(true);
                         ask_consent.set(false);
@@ -335,7 +258,7 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                     "OK"
                 }
                 button {
-                    class: "update-banner-link",
+                    class: "kit-banner-link",
                     onclick: move |_| {
                         telemetry::set_consent(false);
                         ask_consent.set(false);
