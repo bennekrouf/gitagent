@@ -17,6 +17,20 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The bar across the top of the window now looks and works the same in every
+  mayorana app: the name and version on the left, and on the right your own
+  buttons, the model, MCP, Feedback, the light/dark switch and the Pro badge in
+  the corner.
+- The model in the bar shows its region's flag before the name, drawn so it
+  shows on Windows too, and the welcome screen has the same bar, with Setup and
+  the model in it.
+- A lapsed licence reads RENEW PRO in the corner, as in the other apps, instead
+  of PRO INACTIVE.
+
 ## [0.1.133] - 2026-10-28
 
 ### Changed
