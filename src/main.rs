@@ -7,6 +7,7 @@
 mod cli;
 mod components;
 mod feedback;
+mod kit;
 mod mcp;
 mod notice;
 mod screens;
@@ -112,6 +113,7 @@ pub fn open_in_new_window(path: String) {
 }
 
 fn main() {
+    kit::init();
     // Before anything can shell out: a bundle launched from Finder does not
     // inherit the terminal's PATH, so gh, az and cargo would all read as
     // "not installed".
@@ -267,7 +269,7 @@ pub fn WindowRoot(initial: Option<String>) -> Element {
                 }
                 a {
                     class: "update-banner-link",
-                    href: "{info.release_url}",
+                    href: "{info.download_url}",
                     target: "_blank",
                     onclick: {
                         let to = info.latest_version.clone();

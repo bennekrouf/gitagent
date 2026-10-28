@@ -1,13 +1,17 @@
 name: CI
 
-# Fast feedback on every branch and PR.
+# Fast feedback on every pull request and on main.
 #
-# release.yml is the heavy pipeline: it only runs on `v*` tags and takes ~15
-# minutes to produce signed macOS/Windows/Linux artifacts. This workflow exists
-# so that a regression `cargo test` can already see never costs you that round
-# trip plus a download and a manual click-through.
+# Every desktop app has this same file. Only the platform list, the Linux
+# packages and the binary name in the C runtime check differ.
+#
+# release.yml is the heavy pipeline: it only runs on `v*` tags and produces
+# signed artifacts. This workflow exists so a regression `cargo test` can
+# already see never costs that round trip.
 on:
   pull_request:
+  push:
+    branches: [main]
 
 # A newer push on the same ref cancels the run it superseded.
 concurrency:
@@ -15,41 +19,71 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The desktop-kit tag the apps build against; move it to take a kit change.
+  DESKTOP_KIT_REF: v0.1.0
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
   # ── Formatting: blocking ───────────────────────────────────────────────────
-  # No toolchain deps and no compile, so this reports in ~20s. Unlike the older
-  # ais-* repos this one started rustfmt-clean, so the gate is real.
+  # No compile, reports in ~20s. .githooks/pre-commit formats what is staged,
+  # so this is a real gate rather than a check that is red forever.
   fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # desktop-kit, the code every desktop app shares, sits beside the app
+      # (Cargo.toml: path = "../desktop-kit"), at the tag DESKTOP_KIT_REF pins.
+      - uses: actions/checkout@v4
         with:
-          components: rustfmt
+          repository: bennekrouf/desktop-kit
+          ref: ${{ env.DESKTOP_KIT_REF }}
+          path: desktop-kit
+      - name: Put desktop-kit beside the app
+        shell: bash
+        run: mv desktop-kit ../desktop-kit
 
+      # Installs the version and components rust-toolchain.toml pins.
+      - run: rustup toolchain install
       - run: cargo fmt --all --check
 
-  # ── Tests: blocking ────────────────────────────────────────────────────────
+  # ── Tests + clippy: blocking, on Linux, macOS and Windows ───────────────────
+  # The release builds for each of these; testing on one would leave the
+  # others to be found out at release time.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            release-check: true
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # desktop-kit, the code every desktop app shares, sits beside the app
+      # (Cargo.toml: path = "../desktop-kit"), at the tag DESKTOP_KIT_REF pins.
+      - uses: actions/checkout@v4
         with:
-          components: clippy
+          repository: bennekrouf/desktop-kit
+          ref: ${{ env.DESKTOP_KIT_REF }}
+          path: desktop-kit
+      - name: Put desktop-kit beside the app
+        shell: bash
+        run: mv desktop-kit ../desktop-kit
 
-      # Keys off Cargo.lock *and* prunes the target dir between runs, which
-      # plain actions/cache does not — worth it for a workflow this frequent.
+      # Installs the version and components rust-toolchain.toml pins.
+      - run: rustup toolchain install
+
       - uses: Swatinem/rust-cache@v2
 
-      # The same GTK/WebKit stack build-linux installs in release.yml: Dioxus
-      # desktop links it even when all you are doing is running unit tests.
+      # Dioxus desktop links GTK/WebKit even for unit tests; libssl-dev is for
+      # native-tls, which uses OpenSSL on Linux.
       - name: Install build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
@@ -58,15 +92,30 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev \
+            libssl-dev \
             pkg-config
 
-      # --locked fails the run if Cargo.lock has drifted from Cargo.toml,
-      # which today only surfaces during the release build.
+      # --locked fails the run if Cargo.lock has drifted from Cargo.toml.
       - name: Test
         run: cargo test --workspace --locked
 
-      # Deliberately last: the target dir is warm from the test build, so this
-      # costs a fraction of a standalone clippy job. Blocking, because the repo
-      # has no warnings to grandfather in.
+      # Dioxus expands rsx! differently in release builds: a component key
+      # that reads a prop moved into the same component compiles in debug and
+      # fails in release. Catch that here, not at tag time. On Linux only,
+      # since it is a second full build.
+      - name: Release-mode check
+        if: matrix.release-check
+        run: cargo check --workspace --release --locked
+
+      # The app must start on a PC without the Visual C++ Redistributable, so
+      # the .exe may not import VCRUNTIME140*.dll (see .cargo/config.toml).
+      # Debug links the same C runtime as release.
+      - name: Check static C runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build -p gitagent --locked
+          ./scripts/check-windows-crt.ps1 target\debug\gitagent.exe
+
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
