@@ -112,7 +112,13 @@ pub fn main(args: &[String]) -> i32 {
             return USAGE;
         }
     };
-    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("gitagent run: could not start: {e}");
+            return FAILED;
+        }
+    };
     let code = runtime.block_on(run(args));
     // A finished run sends its statistics on a detached task; give it a
     // moment rather than cutting it off, and never more than that.
