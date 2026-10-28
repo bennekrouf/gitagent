@@ -1,17 +1,24 @@
 name: CI
 
-# Fast feedback on every pull request and on main.
+# Fast feedback on every pull request.
 #
 # Every desktop app has this same file. Only the platform list, the Linux
-# packages and the binary name in the C runtime check differ.
+# packages, the binary name in the C runtime check and the paths the release
+# note check ignores differ.
 #
 # release.yml is the heavy pipeline: it only runs on `v*` tags and produces
 # signed artifacts. This workflow exists so a regression `cargo test` can
 # already see never costs that round trip.
+#
+# Not on push to main: the PR run already tested that code, and the Release
+# run on the tag builds it again. A PR that only touches docs runs nothing.
 on:
   pull_request:
-  push:
-    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 # A newer push on the same ref cancels the run it superseded.
 concurrency:
@@ -25,6 +32,63 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ── Release notes: blocking ────────────────────────────────────────────────
+  # Every PR that changes the app says what changed, in CHANGELOG.md under
+  # `## [Unreleased]`. That section is what release.sh stamps with the next
+  # version and what the public releases page on mayorana.ch is built from, so
+  # a note missing here is a version on that page with nothing written under
+  # it. A PR with no user-visible change (tests, refactors, CI, docs) takes the
+  # `no-notes` label instead.
+  release-notes:
+    name: Release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check CHANGELOG.md [Unreleased]
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Read now rather than from the event, which no longer re-runs on a
+          # label change: add the label, then re-run this job.
+          if gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' \
+              | grep -qx no-notes; then
+            echo "Labelled no-notes — skipping."
+            exit 0
+          fi
+
+          # Files that never reach a user: nothing to announce when only these move.
+          APP_FILES=$(git diff --name-only "$BASE"..."$HEAD" \
+            | grep -vE '^(\.github/|\.githooks/|scripts/|docs/|tests/|testdata/|homebrew/)|\.md$|^(LICENSE|\.gitignore)$' \
+            || true)
+          if [[ -z "$APP_FILES" ]]; then
+            echo "No app files changed — no note needed."
+            exit 0
+          fi
+
+          ADDED=$(git diff "$BASE"..."$HEAD" -- CHANGELOG.md | grep -cE '^\+\s*- ' || true)
+          UNRELEASED=$(awk '/^## \[[Uu]nreleased\]/{f=1;next} /^## /{f=0} f && /^- /{n++} END{print n+0}' CHANGELOG.md)
+          if [[ "$ADDED" -gt 0 && "$UNRELEASED" -gt 0 ]]; then
+            echo "CHANGELOG.md has $UNRELEASED note(s) under [Unreleased]."
+            exit 0
+          fi
+
+          echo "::error file=CHANGELOG.md::This PR changes the app but adds no release note."
+          echo "Changed app files:"
+          echo "$APP_FILES" | sed 's/^/  /'
+          echo
+          echo "Add a bullet under '## [Unreleased]' in CHANGELOG.md (create the heading"
+          echo "above the latest version if it is not there), under ### Added, Changed,"
+          echo "Fixed or Removed. Write it for someone using the app, not for a reviewer."
+          echo
+          echo "No user-visible change? Add the 'no-notes' label, then re-run this job."
+          exit 1
+
   # ── Formatting: blocking ───────────────────────────────────────────────────
   # No compile, reports in ~20s. .githooks/pre-commit formats what is staged,
   # so this is a real gate rather than a check that is red forever.
