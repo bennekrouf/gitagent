@@ -572,3 +572,13 @@ fn an_unparsable_finding_count_is_not_read_as_zero_findings() {
     let s = state("looks_safe", "not a number", "failing");
     assert!(decide(&node(Step::Merge), &s).reason().is_some());
 }
+
+#[test]
+fn a_pull_request_with_no_checks_at_all_is_not_merged_as_passing() {
+    let none = state("looks_safe", "0", "none");
+    let reason = decide(&node(Step::Merge), &none)
+        .reason()
+        .unwrap()
+        .to_string();
+    assert!(reason.contains("0 of 0 is not a pass"), "{reason}");
+}

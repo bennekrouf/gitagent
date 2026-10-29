@@ -117,6 +117,21 @@ pub(super) fn begin(
                 break;
             }
 
+            // The window's own runs are guarded above; this is for the ones
+            // Claude or a terminal is driving in another process. Held until
+            // this leg is over, cancelled or not.
+            let _claim = match crate::services::busy::claim(
+                &repo,
+                &def.label,
+                crate::services::busy::By::Window,
+            ) {
+                Ok(claim) => claim,
+                Err(why) => {
+                    chain_note.set(why);
+                    break;
+                }
+            };
+
             let graph = def.to_graph();
             let mut fresh = RunState::fresh(&graph);
             fresh.started = true;

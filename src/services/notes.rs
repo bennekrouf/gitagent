@@ -84,9 +84,19 @@ pub async fn draft(
     .await?;
     let commits = parse_log(&log);
     if commits.is_empty() {
-        return Ok(nothing_to_write(format!(
-            "Nothing committed since {since}."
-        )));
+        // Not merely no notes to write: no release to cut. Going on would
+        // reach the release script with nothing to ship, and its way out of
+        // "no notes" is a build-only release — an empty version, published.
+        return Ok(match &tag {
+            Some(tag) => StepOutcome {
+                artifacts: vec![("release_notes".into(), String::new())],
+                ..StepOutcome::nothing(format!(
+                    "Already released — {tag} is the latest, and nothing has been \
+                     committed since."
+                ))
+            },
+            None => nothing_to_write(format!("Nothing committed since {since}.")),
+        });
     }
 
     // Which files a commit touched is a fact, not a judgement, so it is not

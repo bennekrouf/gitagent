@@ -317,8 +317,14 @@ pub(super) async fn start_flow(
             busy.state.run, busy.flow
         ));
     }
-    let mut run =
-        Run::prepare(&repo, flow_id, pr, trusted).map_err(|e| format!("{e}; see list_flows"))?;
+    let mut run = Run::prepare(&repo, flow_id, pr, trusted, busy::By::Claude).map_err(|e| {
+        if e.starts_with("no flow ") {
+            format!("{e}; see list_flows")
+        } else {
+            e
+        }
+    })?;
+    run.progress = super::report_progress;
     run.advance().await;
     let id = run.state.run;
     runs.insert(id, run);

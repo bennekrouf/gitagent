@@ -139,6 +139,14 @@ pub(super) async fn run_script(
     if let Some(note) = &caught_up {
         on_line(note);
     }
+    if release {
+        if let Some(tag) = released_already(repo).await {
+            return Ok(StepOutcome::nothing(format!(
+                "Already released — {tag} is the latest, and nothing has been committed \
+                 since. `{command}` was not run: it would cut an empty version."
+            )));
+        }
+    }
 
     let (ok, output) =
         git::run_shell_streaming(repo, &command, node.setting("stdin"), on_line).await;
@@ -176,6 +184,31 @@ pub(super) async fn run_script(
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// The tag HEAD already is, when nothing has been committed since the last
+/// release. A second run of a release flow — a trusted run going round again,
+/// or two runs at once — lands here, and must stop rather than cut a version
+/// with nothing in it. Tags are fetched first, so a release made from another
+/// copy counts too.
+pub(super) async fn released_already(repo: &str) -> Option<String> {
+    let _ = git::run(repo, "git", &["fetch", "origin", "--tags", "--quiet"]).await;
+    let tag = git::run(repo, "git", &["describe", "--tags", "--abbrev=0", "HEAD"])
+        .await
+        .ok()?
+        .trim()
+        .to_string();
+    let since: usize = git::run(
+        repo,
+        "git",
+        &["rev-list", "--count", &format!("{tag}..HEAD")],
+    )
+    .await
+    .ok()?
+    .trim()
+    .parse()
+    .ok()?;
+    (!tag.is_empty() && since == 0).then_some(tag)
 }
 
 /// When the only commits this copy has that `upstream` lacks are GitAgent's

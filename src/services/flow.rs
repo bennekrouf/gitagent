@@ -235,7 +235,9 @@ pub fn must_branch(state: &RunState) -> bool {
         return false;
     }
     let branch = state.artifact("branch");
-    branch == state.artifact("base") || git::is_protected(branch)
+    branch == state.artifact("base")
+        || git::is_protected(branch)
+        || !state.artifact("merged_pr").is_empty()
 }
 
 /// Set by `scan` in a repository with no commits yet.
@@ -291,7 +293,18 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
             }
         ),
         Step::Commit => {
-            let branching = if must_branch(state) {
+            let branching = if must_branch(state) && !state.artifact("merged_pr").is_empty() {
+                format!(
+                    "git checkout -b {} origin/{}\n\n\
+                     {} was already merged in #{}, so this goes on a fresh branch from \
+                     {}, not on top of it. Your changes come along.\n\n",
+                    state.artifact("branch_name"),
+                    state.artifact("base"),
+                    state.artifact("branch"),
+                    state.artifact("merged_pr"),
+                    state.artifact("base"),
+                )
+            } else if must_branch(state) {
                 format!("git checkout -b {}\n", state.artifact("branch_name"))
             } else if is_first_commit(state) {
                 format!(
@@ -551,7 +564,7 @@ fn push_rejected(output: &str) -> bool {
 }
 
 /// `branch-2`, `branch-3`… — the first not taken locally or on origin.
-async fn free_branch_name(repo: &str, branch: &str) -> String {
+pub(crate) async fn free_branch_name(repo: &str, branch: &str) -> String {
     for n in 2.. {
         let name = format!("{branch}-{n}");
         if !git::branch_exists(repo, &name).await

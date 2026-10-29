@@ -385,3 +385,140 @@ fn a_merge_failure_for_any_other_reason_offers_nothing() {
     let failure = merge_failure("8", "master", "gh: authentication required".to_string());
     assert!(failure.remedies.is_empty());
 }
+
+const TWO_FILES: &str = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n\
+@@ -1,3 +1,3 @@\n fn keep_me_as_context() {}\n-    let limit = 10;\n+    let limit = 0;\n\
+diff --git a/src/b.rs b/src/b.rs\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,2 +1,2 @@\n\
+ fn other_context() {}\n+    retry_forever();\n";
+
+#[test]
+fn a_finding_stands_only_on_a_changed_line_of_the_file_it_names() {
+    assert!(
+        backed(TWO_FILES, "src/a.rs", "let limit = 0;"),
+        "added line"
+    );
+    assert!(
+        backed(TWO_FILES, "a.rs", "-    let limit = 10;"),
+        "removed line, short name"
+    );
+    assert!(
+        !backed(TWO_FILES, "src/a.rs", "fn keep_me_as_context() {}"),
+        "true quote of context, but nothing the change did"
+    );
+    assert!(
+        !backed(TWO_FILES, "src/b.rs", "let limit = 0;"),
+        "real line, wrong file"
+    );
+    assert!(
+        !backed(TWO_FILES, "src/c.rs", "let limit = 0;"),
+        "no such file"
+    );
+    assert!(
+        backed(TWO_FILES, "", "retry_forever();"),
+        "no file named: whole diff"
+    );
+}
+
+#[test]
+fn risky_needs_a_high_severity_finding_that_held_up() {
+    let (verdict, note) = supported_verdict("risky", 0);
+    assert_eq!(verdict, "worth_a_look");
+    assert!(note.is_some(), "says why it is not risky");
+    assert_eq!(supported_verdict("risky", 1), ("risky".to_string(), None));
+    assert_eq!(
+        supported_verdict("looks_safe", 0),
+        ("looks_safe".to_string(), None)
+    );
+}
+
+#[test]
+fn a_branch_reused_after_a_squash_merge_is_moved_rather_than_merged_into() {
+    let failure = replay_after(
+        "38",
+        "main",
+        "feat/recording",
+        &("37".into(), "c9fef29aaaaaaaaaaaa".into()),
+        "feat/recording-2",
+        "0 passing",
+    );
+    assert!(failure.message.contains("already merged once, in #37"));
+    assert!(failure.message.contains("not offered for merging"));
+    let replay = &failure.remedies[0];
+    assert!(!replay.args[1].contains("--force"), "never force-pushes");
+    assert!(replay.args[1].contains("cherry-pick \"$5..origin/$3\""));
+    assert_eq!(
+        &replay.args[3..],
+        [
+            "38",
+            "main",
+            "feat/recording",
+            "feat/recording-2",
+            "c9fef29aaaaaaaaaaaa",
+            "37"
+        ]
+    );
+    assert!(
+        failure.remedies.len() > 1,
+        "bringing main in stays on offer"
+    );
+}
+
+/// Runs the Finish script's guard in a merge of `main` into a pull request's
+/// branch that conflicted in `f`, settled with `side` (`--ours` keeps the
+/// branch, `--theirs` main). Returns whether it let the commit through.
+#[cfg(unix)]
+fn finish_guard_after(side: &str) -> (bool, String) {
+    let root = std::env::temp_dir().join(format!(
+        "gitagent-finish-{side}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let sh = |cmd: &str| {
+        std::process::Command::new("sh")
+            .args(["-c", cmd])
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    let setup = format!(
+        "git init -q --bare -b main origin.git && git clone -q origin.git here && cd here && \
+         git config user.name t && git config user.email t@t && \
+         echo base > f && echo base > g && git add . && git commit -q -m init && git push -q origin main && \
+         git checkout -q -b feat && echo pr > f && git commit -qam pr && \
+         git checkout -q main && echo main > f && echo main > g && git commit -qam main && git push -q origin main && \
+         git checkout -q feat && (git merge -q origin/main >/dev/null 2>&1; true) && \
+         git checkout {side} -- f && git add f"
+    );
+    let out = sh(&setup);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = std::process::Command::new("sh")
+        .args(["-c", KEEPS_THE_CHANGE, "sh", "38", "main"])
+        .current_dir(root.join("here"))
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn finishing_a_merge_refuses_when_the_pull_requests_change_was_dropped() {
+    let (ok, said) = finish_guard_after("--theirs");
+    assert!(!ok, "main's side everywhere loses #38's change to f");
+    assert!(said.contains("  f\n"), "{said}");
+    assert!(!said.contains("  g\n"), "g only changed on main: {said}");
+
+    let (ok, said) = finish_guard_after("--ours");
+    assert!(ok, "keeping the branch's side is fine: {said}");
+}
