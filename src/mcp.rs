@@ -24,8 +24,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::services::flowdef::{self, FlowBook, FlowDef};
 use crate::services::graph::{NodeKind, NodeStatus};
-use crate::services::runner::{repo_path, Next, Run};
-use crate::services::{catalogue, live, llm, probe, store, trusted};
+use crate::services::runner::{self, repo_path, Next, Run};
+use crate::services::{busy, catalogue, live, llm, probe, store, trusted};
 mod flows;
 use flows::*;
 mod run;
@@ -111,7 +111,13 @@ async fn serve_stdio() {
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
                 let args = &params["arguments"];
-                let (text, is_error) = match call(name, args, &mut runs).await {
+                let token = params["_meta"]["progressToken"].clone();
+                let outcome = if token.is_null() {
+                    call(name, args, &mut runs).await
+                } else {
+                    with_progress(token, call(name, args, &mut runs), &mut stdout).await
+                };
+                let (text, is_error) = match outcome {
                     Ok(value) => (pretty(&value), false),
                     Err(why) => (why, true),
                 };
@@ -133,6 +139,119 @@ async fn write(stdout: &mut tokio::io::Stdout, reply: &Value) {
     bytes.push(b'\n');
     let _ = stdout.write_all(&bytes).await;
     let _ = stdout.flush().await;
+}
+
+// ── Progress ──────────────────────────────────────────────────────────────
+//
+// A tool call that runs a step can take minutes — a model on a slow machine,
+// a test suite — and the client sees nothing until it returns. When the client
+// sent a progress token with the call, the run's progress goes back to it as
+// `notifications/progress` while the call is still going: each step as it
+// starts and settles, the model's "still waiting" lines, and a line of its own
+// whenever nothing else has been said for a while.
+
+/// How often to say something when nothing else has: often enough that a
+/// client never looks hung, rarely enough not to drown its log.
+const QUIET_FOR: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Output lines of a running step (a test suite prints hundreds) are passed
+/// on at most this often. Steps starting and settling always are.
+const LINES_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// One line of progress, and whether it may be dropped when lines come
+/// thick and fast.
+type ProgressTx = tokio::sync::mpsc::UnboundedSender<(bool, String)>;
+
+/// Where `Run::progress` sends to while a call with a progress token runs.
+/// `Run::progress` is a plain `fn`, so it cannot capture the call's channel;
+/// requests are handled one at a time, so one slot is enough.
+fn progress_slot() -> &'static std::sync::Mutex<Option<ProgressTx>> {
+    static SLOT: std::sync::OnceLock<std::sync::Mutex<Option<ProgressTx>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// `Run::progress` for runs started here.
+pub(crate) fn report_progress(progress: runner::Progress<'_>) {
+    let message = match progress {
+        runner::Progress::Step(node) => (false, format!("{}…", node.title)),
+        runner::Progress::Trusted(node) => (
+            false,
+            format!("{}: approved by the trusted run", node.title),
+        ),
+        runner::Progress::Settled(node, state) => (
+            false,
+            match state.runs.get(&node.id).map(|r| r.summary.as_str()) {
+                Some(summary) if !summary.is_empty() => format!("{}: {summary}", node.title),
+                _ => format!("{}: {}", node.title, state.status(&node.id).label()),
+            },
+        ),
+        runner::Progress::Line(line) => (true, head(line.trim(), 200)),
+    };
+    if message.1.is_empty() {
+        return;
+    }
+    if let Some(tx) = progress_slot().lock().ok().and_then(|slot| slot.clone()) {
+        let _ = tx.send(message);
+    }
+}
+
+/// Runs `call`, passing what its run reports on to the client as progress
+/// notifications for `token`.
+async fn with_progress<F>(token: Value, call: F, stdout: &mut tokio::io::Stdout) -> F::Output
+where
+    F: std::future::Future,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    if let Ok(mut slot) = progress_slot().lock() {
+        *slot = Some(tx);
+    }
+    let started = std::time::Instant::now();
+    let mut sent = 0u64;
+    let mut last_said = std::time::Instant::now();
+    let mut last_line = std::time::Instant::now() - LINES_EVERY;
+    let mut doing = String::new();
+    tokio::pin!(call);
+    let out = loop {
+        tokio::select! {
+            biased;
+            out = &mut call => break out,
+            Some((droppable, text)) = rx.recv() => {
+                if droppable && last_line.elapsed() < LINES_EVERY {
+                    continue;
+                }
+                if droppable {
+                    last_line = std::time::Instant::now();
+                } else if let Some(step) = text.strip_suffix('…') {
+                    doing = step.to_string();
+                }
+                sent += 1;
+                last_said = std::time::Instant::now();
+                write(stdout, &progress_note(&token, sent, &text)).await;
+            }
+            _ = tokio::time::sleep(QUIET_FOR.saturating_sub(last_said.elapsed())) => {
+                let text = match doing.as_str() {
+                    "" => format!("Still working: {}s so far", started.elapsed().as_secs()),
+                    step => format!("Still on {step}: {}s so far", started.elapsed().as_secs()),
+                };
+                sent += 1;
+                last_said = std::time::Instant::now();
+                write(stdout, &progress_note(&token, sent, &text)).await;
+            }
+        }
+    };
+    if let Ok(mut slot) = progress_slot().lock() {
+        *slot = None;
+    }
+    out
+}
+
+fn progress_note(token: &Value, progress: u64, message: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": { "progressToken": token, "progress": progress, "message": message },
+    })
 }
 
 fn result(id: Value, result: Value) -> Value {

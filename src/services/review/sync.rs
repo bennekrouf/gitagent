@@ -21,9 +21,14 @@ pub fn conflict_followup(number: &str, base: &str, output: &str) -> Option<StepF
          changed the same lines. Nothing has been pushed.\n\n\
          Resolve {} above — pick a side for each conflict — or in your editor, \
          where each sits between <<<<<<< and >>>>>>>:\n{}\n\n\
+         In each conflict, Current is #{number}'s branch — the pull request's own \
+         changes — and Incoming is {base}. When {base} already has an earlier \
+         version of the same change, from a pull request merged before, Current is \
+         usually the side to keep, and Both keeps two versions of the same lines.\n\n\
          Then Finish below. It commits the merge, pushes, waits for GitHub to \
          recheck #{number}, and tries the merge again. It refuses while any of \
-         these files still has a marker.\n\n\
+         these files still has a marker, and when a file the pull request changed \
+         would end up exactly as {base} has it — its change lost.\n\n\
          Or abandon the merge to put the branch back as it was.",
         if files.len() == 1 {
             "this file"
@@ -40,13 +45,14 @@ pub fn conflict_followup(number: &str, base: &str, output: &str) -> Option<StepF
         r#"left=$(git diff --name-only --diff-filter=U | while IFS= read -r f; do grep -l '^<<<<<<< ' "$f"; done)
 if [ -n "$left" ]; then printf 'Still has conflict markers, fix it first:\n%s\n' "$left"; exit 1; fi
 git diff --name-only --diff-filter=U | while IFS= read -r f; do git add -- "$f"; done
+{KEEPS_THE_CHANGE}
 git commit --no-edit && git push || exit 1
 {WAIT_FOR_GITHUB}"#
     );
     let finish = Remedy::new(
         &format!("Finish the merge, push, and merge #{number} again"),
         "sh",
-        &["-c", &script, "sh", number],
+        &["-c", &script, "sh", number, base],
     );
     let finish = Remedy {
         display: format!(
@@ -79,6 +85,11 @@ pub(super) fn merge_failure(number: &str, base: &str, message: String) -> StepFa
             remedies: vec![],
         };
     }
+    conflict_guide(number, base, &message)
+}
+
+/// A pull request that conflicts with its base, and the ways out of it.
+pub(super) fn conflict_guide(number: &str, base: &str, message: &str) -> StepFailure {
     let guide = format!(
         "#{number} conflicts with {base}: GitHub cannot merge it as it stands. Nothing \
          has been merged or changed.\n\n\
@@ -139,13 +150,19 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
     let number = state.artifact("pr_number").to_string();
 
     let out = match forge {
-        Forge::GitHub => git::run(
+        Forge::GitHub => match git::run(
             repo,
             "gh",
             &["pr", "merge", &number, "--squash", "--delete-branch"],
         )
         .await
-        .map_err(|e| merge_failure(&number, state.artifact("pr_base"), e))?,
+        {
+            Ok(out) => out,
+            Err(e) => match merged_anyway(repo, &number, state.artifact("pr_head"), &e).await {
+                Some(out) => out,
+                None => return Err(merge_failure(&number, state.artifact("pr_base"), e)),
+            },
+        },
         Forge::AzureDevOps => {
             let scope = forge::azure_scope(repo, Scope::Organization).await;
             let mut args = vec![
@@ -183,6 +200,45 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// `gh pr merge --delete-branch` merges on GitHub first, then tidies up here:
+/// switches off the branch, deletes it locally, then on origin. When that
+/// tidying up fails — uncommitted edits in the way of the switch, usually —
+/// gh exits with an error although the pull request is merged. The step asks
+/// GitHub which it was, so a merge that happened is reported as one, and
+/// finishes the one bit of tidying that matters off this machine: the
+/// branch on origin, which the person approved deleting. The local side is
+/// the Sync step's.
+async fn merged_anyway(repo: &str, number: &str, head: &str, err: &str) -> Option<String> {
+    let state = git::run(
+        repo,
+        "gh",
+        &["pr", "view", number, "--json", "state", "-q", ".state"],
+    )
+    .await
+    .ok()?;
+    if state.trim() != "MERGED" {
+        return None;
+    }
+    let deleted = if head.is_empty() {
+        false
+    } else {
+        git::run(repo, "git", &["push", "origin", "--delete", head])
+            .await
+            .is_ok()
+    };
+    Some(format!(
+        "Merged #{number} on GitHub. Only the tidying up on this machine failed \
+         afterwards — gh could not switch off the branch here:\n\n{}\n\n{}\
+         The Sync step brings the base branch up to date without touching your edits.",
+        err.trim(),
+        if deleted {
+            format!("{head} was deleted on origin. ")
+        } else {
+            String::new()
+        },
+    ))
 }
 
 pub(super) async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {

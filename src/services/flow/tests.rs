@@ -671,3 +671,35 @@ fn commit_run(node_id: &str, items: &[(&str, bool)]) -> RunState {
         .collect();
     s
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_release_with_nothing_since_its_tag_is_already_released() {
+    let root = std::env::temp_dir().join(format!(
+        "gitagent-released-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let sh = |cmd: &str| {
+        let out = std::process::Command::new("sh")
+            .args(["-c", cmd])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{cmd}");
+    };
+    let repo = root.to_str().unwrap();
+    sh(
+        "git init -q -b main && git config user.name t && git config user.email t@t && \
+        echo a > f && git add . && git commit -q -m 'chore: release v0.1.35' && git tag v0.1.35",
+    );
+    assert_eq!(released_already(repo).await.as_deref(), Some("v0.1.35"));
+
+    sh("echo b > f && git commit -qam 'fix: something'");
+    assert_eq!(released_already(repo).await, None, "one commit to ship");
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -42,6 +42,46 @@ were never released.
   Europe, China and the United States — for one folder, as Settings in that
   folder's window does, or for every folder without a choice of its own. An
   open window shows the new region in its top bar straight away.
+- One run at a time per repository, wherever it was started: the window,
+  a terminal, or any Claude session. A second run is refused with a note
+  saying which run holds the repository and where to answer it, instead of
+  both committing the same changes.
+- A commit on a branch whose pull request was already merged now goes on a
+  fresh branch from the base, with your changes carried over. Stacking it on
+  the merged branch made the next pull request show the merged files again
+  and conflict with the base.
+- Claude now sees how a long run is going while it waits: each step as it
+  starts and ends, the model's "still waiting" lines, and a short update at
+  least every 15 seconds.
+- The review only keeps findings that quote a line the pull request changed,
+  in the file they name. A review can only call a change risky when a
+  high-severity finding backs it up. This cuts the false alarms a small
+  second-opinion model raised, which held up runs under Trust all.
+
+### Fixed
+
+- A commit run that finds its changes were already committed while it
+  waited at an approval now ends with "Already committed in PR #…" instead
+  of failing on a branch it had just opened.
+- When the commit step fails, the checkout is put back on the branch you
+  started from and the empty branch it opened is removed.
+- A merge that went through on GitHub is shown as merged even when the
+  tidying up on this machine fails afterwards, for example because
+  uncommitted edits stopped the branch switch.
+- A pull request with no CI checks is no longer counted as passing, and a
+  Trusted run will not merge one on its own.
+- A pull request that conflicts with its base is no longer offered for
+  merging. The run stops and explains the conflict. When the branch still
+  carries the commits of an earlier, squash-merged pull request, one button
+  moves only the new commits to a fresh pull request from the base, so no
+  conflict has to be settled by hand.
+- Finishing a merge of the base into a pull request's branch now refuses
+  when a file the pull request changed would end up exactly as the base has
+  it, which would quietly drop the pull request's change. The conflict view
+  also says which side is the pull request's.
+- A release with nothing committed since the last tag now ends with
+  "Already released" instead of running again, and is never offered as an
+  empty build-only release.
 
 ## [0.1.135] - 2026-10-28
 

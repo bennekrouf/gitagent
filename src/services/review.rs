@@ -266,6 +266,89 @@ fn quoted_from(diff: &str, evidence: &str) -> bool {
     !wanted.is_empty() && flatten(diff, true).contains(&wanted)
 }
 
+/// The part of `diff` about `file`, or `None` when the diff does not touch
+/// it. A model names files loosely — `src/a.rs`, `a.rs`, `b/src/a.rs` — so
+/// any section whose path ends with the name, or that the name ends with,
+/// counts. An empty name is the whole diff.
+fn section_for(diff: &str, file: &str) -> Option<String> {
+    let file = file
+        .trim()
+        .trim_matches('`')
+        .trim_start_matches("a/")
+        .trim_start_matches("b/");
+    if file.is_empty() {
+        return Some(diff.to_string());
+    }
+    let mut found = String::new();
+    let mut inside = false;
+    for line in diff.split_inclusive('\n') {
+        if let Some(header) = line.strip_prefix("diff --git ") {
+            let path = header
+                .split_whitespace()
+                .last()
+                .unwrap_or_default()
+                .trim_start_matches("b/");
+            inside = !path.is_empty() && (path.ends_with(file) || file.ends_with(path));
+        }
+        if inside {
+            found.push_str(line);
+        }
+    }
+    (!found.is_empty()).then_some(found)
+}
+
+/// Whether a finding's quote is about what the change did: at least one of
+/// its lines is a line the diff adds or removes. A quote from the unchanged
+/// context around a hunk proves the code exists, not that this pull request
+/// touched it — and a small model's "risky" was most often a true quote of
+/// context under a false claim about the change.
+fn touches_change(section: &str, evidence: &str) -> bool {
+    let squash = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let changed: Vec<String> = section
+        .lines()
+        .filter(|l| !l.starts_with("+++") && !l.starts_with("---"))
+        .filter_map(|l| l.strip_prefix('+').or_else(|| l.strip_prefix('-')))
+        .map(squash)
+        .filter(|l| !l.is_empty())
+        .collect();
+    evidence
+        .lines()
+        .map(|l| {
+            let l = l.trim().trim_matches(|c| c == '`' || c == '"').trim();
+            squash(l.strip_prefix(['+', '-']).unwrap_or(l))
+        })
+        // A brace or a keyword alone matches half the diff and proves nothing.
+        .filter(|l| l.chars().filter(|c| c.is_alphanumeric()).count() >= 4)
+        .any(|l| {
+            changed
+                .iter()
+                .any(|c| c.contains(&l) || (c.len() >= 8 && l.contains(c.as_str())))
+        })
+}
+
+/// Whether a finding stands on the diff: its quote is really there, in the
+/// file it names, and on a line the change touched.
+fn backed(diff: &str, file: &str, evidence: &str) -> bool {
+    let Some(section) = section_for(diff, file) else {
+        return false;
+    };
+    quoted_from(&section, evidence) && touches_change(&section, evidence)
+}
+
+/// The verdict the kept findings support. `risky` is "a specific likely
+/// break", so it stands only on a high-severity finding that survived the
+/// evidence check; a model that says risky and shows nothing gets
+/// `worth_a_look`, and the note says so. The other verdicts are left alone.
+fn supported_verdict(said: &str, kept_high: usize) -> (String, Option<&'static str>) {
+    if said == "risky" && kept_high == 0 {
+        return (
+            "worth_a_look".into(),
+            Some("The model called this risky, but none of its findings held up against the diff, so it is not treated as risky."),
+        );
+    }
+    (said.to_string(), None)
+}
+
 async fn analyse(
     cfg: &LlmConfig,
     state: &RunState,
@@ -341,13 +424,18 @@ async fn analyse(
 
     let mut kept = vec![];
     let mut dropped = 0;
+    let mut kept_high = 0;
     for finding in value["findings"].as_array().cloned().unwrap_or_default() {
         let evidence = finding["evidence"].as_str().unwrap_or_default();
         // The cheapest hallucination filter there is: if the quote is not in
-        // what we sent, the finding is about code that does not exist.
-        if !quoted_from(diff, evidence) {
+        // what we sent — in the file the finding names, on a line the change
+        // touched — the finding is about code this pull request did not write.
+        if !backed(diff, finding["file"].as_str().unwrap_or_default(), evidence) {
             dropped += 1;
             continue;
+        }
+        if finding["severity"] == "high" {
+            kept_high += 1;
         }
         kept.push(format!(
             "[{}] {}\n     file:    {}\n     trigger: {}\n     evidence: {}",
@@ -365,8 +453,13 @@ async fn analyse(
     }
     if dropped > 0 {
         analysis.push_str(&format!(
-            "\n\n({dropped} finding(s) dropped — their quoted evidence was not in the diff.)"
+            "\n\n({dropped} finding(s) dropped — their quoted evidence was not a line this \
+             change touched in the file they named.)"
         ));
+    }
+    let (verdict, downgraded) = supported_verdict(&verdict, kept_high);
+    if let Some(why) = downgraded {
+        analysis.push_str(&format!("\n\n({why})"));
     }
 
     let model = cfg.active_model().to_string();
@@ -403,6 +496,20 @@ const WAIT_FOR_GITHUB: &str = r#"for i in 1 2 3 4 5 6 7 8 9 10; do
   fi
 done
 echo "Pushed. GitHub has not finished rechecking #$1; merging anyway.""#;
+
+/// The part of the Finish script that refuses a resolution which dropped the
+/// pull request's change to a file. `$2` is the base branch, `$1` the pull
+/// request. A file counts when the branch changed it since the merge base,
+/// still differed from the base before this merge, and is now staged exactly
+/// as the base has it — every one of its conflicts settled on the base's side.
+const KEEPS_THE_CHANGE: &str = r#"mb=$(git merge-base HEAD "origin/$2")
+lost=$(git diff --name-only "$mb" HEAD | while IFS= read -r f; do
+  if ! git diff --quiet HEAD "origin/$2" -- "$f" && git diff --cached --quiet "origin/$2" -- "$f"; then printf '  %s\n' "$f"; fi
+done)
+if [ -n "$lost" ]; then
+  printf 'Not committed. These files now match %s exactly, so #%s would lose its changes to them:\n%s\nPick Current for its side of those conflicts and Finish again, or commit by hand if dropping them is what you mean.\n' "$2" "$1" "$lost"
+  exit 1
+fi"#;
 
 /// What to do about edits that clashed when they were put back. The step is
 /// done either way; this is the person's to finish in their editor.
