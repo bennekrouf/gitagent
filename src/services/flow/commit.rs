@@ -68,12 +68,164 @@ pub(super) async fn already_committed(
         }))
 }
 
+/// The pull request `branch` was already merged through, when it was and
+/// nothing open has taken the branch up again since.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergedBranch {
+    pub number: String,
+    /// The branch's tip when it was merged.
+    pub head: String,
+    /// Commits on the branch since then — in no pull request at all.
+    pub beyond: usize,
+}
+
+impl MergedBranch {
+    fn artifacts(merged: Option<&MergedBranch>) -> Vec<(String, String)> {
+        vec![
+            (
+                "merged_pr".into(),
+                merged.map(|m| m.number.clone()).unwrap_or_default(),
+            ),
+            (
+                "merged_head".into(),
+                merged.map(|m| m.head.clone()).unwrap_or_default(),
+            ),
+        ]
+    }
+}
+
+/// From `gh pr list --head <branch> --state all --json number,state,headRefOid`,
+/// newest first: the merged pull request, unless one is open on the branch —
+/// then the branch is in use again and new work rightly goes on it.
+pub fn merged_from_list(json: &str) -> Option<(String, String)> {
+    let list: serde_json::Value = serde_json::from_str(json).ok()?;
+    let list = list.as_array()?;
+    if list.iter().any(|pr| pr["state"] == "OPEN") {
+        return None;
+    }
+    let merged = list.iter().find(|pr| pr["state"] == "MERGED")?;
+    Some((
+        merged["number"].as_i64()?.to_string(),
+        merged["headRefOid"].as_str()?.to_string(),
+    ))
+}
+
+/// Whether the checked-out branch's pull request was already merged.
+///
+/// A squash merge leaves the branch looking unmerged to git — main has a new
+/// commit, not the branch's — so committing on it again stacks new work on
+/// top of what main already has. The next pull request then shows both, and
+/// conflicts with main over the part that is already there. Only the forge
+/// knows, so this asks it; GitHub only, and any failure reads as "not merged".
+pub(super) async fn merged_branch(
+    repo: &str,
+    branch: &str,
+    state: &RunState,
+) -> Option<MergedBranch> {
+    if Forge::from_key(state.artifact("forge")) != Forge::GitHub
+        || branch.is_empty()
+        || branch == state.artifact("base")
+        || git::is_protected(branch)
+    {
+        return None;
+    }
+    let out = git::run(
+        repo,
+        "gh",
+        &[
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--json",
+            "number,state,headRefOid",
+            "--limit",
+            "5",
+        ],
+    )
+    .await
+    .ok()?;
+    let (number, head) = merged_from_list(&out)?;
+    // A tip this copy does not have, or one the branch has moved off since
+    // (amended, reset), says nothing reliable about what is on it now.
+    git::run(repo, "git", &["merge-base", "--is-ancestor", &head, "HEAD"])
+        .await
+        .ok()?;
+    let beyond = git::run(
+        repo,
+        "git",
+        &["rev-list", "--count", &format!("{head}..HEAD")],
+    )
+    .await
+    .ok()?
+    .trim()
+    .parse()
+    .ok()?;
+    Some(MergedBranch {
+        number,
+        head,
+        beyond,
+    })
+}
+
+/// Commits made on a branch after its pull request was merged. Pushing them
+/// there would open a pull request carrying the merged work again, so they
+/// are moved onto a fresh branch from the base first.
+fn commits_after_merge(branch: &str, base: &str, merged: &MergedBranch, new: &str) -> StepFailure {
+    let n = plural(merged.beyond, "commit");
+    let script = r#"git fetch origin "$3" && git rebase --autostash --onto "origin/$3" "$2" && git branch -m "$1" "$4""#;
+    StepFailure {
+        message: format!(
+            "{branch} was already merged in #{number}, and has {n} since that are in no \
+             pull request. Committing or pushing here would open a pull request that \
+             carries #{number}'s changes again — and conflicts with {base} over them.\n\n\
+             Move the {n} onto a fresh branch from {base} below: only {they} replayed, \
+             under the name {new}. Then run Commit → PR again.",
+            number = merged.number,
+            they = if merged.beyond == 1 { "it is" } else { "they are" },
+        ),
+        remedies: vec![Remedy {
+            display: format!(
+                "git fetch origin {base} && git rebase --autostash --onto origin/{base} {} && git branch -m {branch} {new}",
+                &merged.head[..merged.head.len().min(10)]
+            ),
+            retry_after: false,
+            ..Remedy::new(
+                &format!("Move the {n} onto a fresh branch from {base}"),
+                "sh",
+                &["-c", script, "sh", branch, &merged.head, base, new],
+            )
+        }],
+    }
+}
+
 pub(super) async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let branch = git::current_branch(repo).await?;
     let changes = git::status(repo).await?;
     let first_commit = !git::has_commits(repo).await;
+    let merged = merged_branch(repo, &branch, state).await;
+
+    if let Some(merged) = merged.as_ref().filter(|m| m.beyond > 0) {
+        let new = free_branch_name(repo, &branch).await;
+        return Err(commits_after_merge(
+            &branch,
+            state.artifact("base"),
+            merged,
+            &new,
+        ));
+    }
 
     if changes.is_empty() {
+        if let Some(merged) = &merged {
+            return Ok(StepOutcome::nothing(format!(
+                "No changes in the working tree, and {branch} was already merged in #{} \
+                 — nothing to commit. Switch to {} and pull to carry on from there.",
+                merged.number,
+                state.artifact("base"),
+            )));
+        }
         // A clean tree isn't necessarily nothing to do — a commit made
         // outside GitAgent (or by a previous run) can already sit ahead of
         // `base`, unpushed. Diff those commits against `base` so the rest
@@ -115,36 +267,48 @@ pub(super) async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, St
         })
         .collect();
 
+    let log = match &merged {
+        Some(m) => format!(
+            "{log}\n{branch} was already merged in #{} — these changes go on a fresh \
+             branch from {}.\n",
+            m.number,
+            state.artifact("base")
+        ),
+        None => log,
+    };
+    let mut artifacts = MergedBranch::artifacts(merged.as_ref());
+    artifacts.extend([
+        ("branch".into(), branch.clone()),
+        ("stat".into(), stat),
+        ("diff".into(), diff),
+        ("commit_paths".into(), paths.join("\n")),
+        (
+            "file_notes".into(),
+            changes
+                .iter()
+                .map(|c| format!("{}\t{}", c.path, c.note()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        (
+            "untracked".into(),
+            untracked
+                .iter()
+                .map(|c| c.path.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        (
+            "first_commit".into(),
+            if first_commit { "true" } else { "" }.into(),
+        ),
+    ]);
+
     Ok(StepOutcome {
         items,
         summary: format!("{} file(s) changed on {branch}", changes.len()),
         log,
-        artifacts: vec![
-            ("branch".into(), branch),
-            ("stat".into(), stat),
-            ("diff".into(), diff),
-            ("commit_paths".into(), paths.join("\n")),
-            (
-                "file_notes".into(),
-                changes
-                    .iter()
-                    .map(|c| format!("{}\t{}", c.path, c.note()))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
-            (
-                "untracked".into(),
-                untracked
-                    .iter()
-                    .map(|c| c.path.clone())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
-            (
-                "first_commit".into(),
-                if first_commit { "true" } else { "" }.into(),
-            ),
-        ],
+        artifacts,
         nothing_to_do: false,
     })
 }
@@ -273,6 +437,68 @@ pub(super) fn paths_to_stage(node_id: &str, state: &RunState) -> Vec<String> {
         .collect()
 }
 
+/// Set when the commit step finds, just before committing, that the changes
+/// it was approved to commit are no longer there: another run committed them
+/// while this one sat at its approval. Says where they went, rather than
+/// failing on a branch it would have opened for nothing.
+async fn committed_meanwhile(
+    node_id: &str,
+    repo: &str,
+    state: &RunState,
+) -> Result<Option<StepOutcome>, StepFailure> {
+    // No paths is either every file unchecked, which fails further on as it
+    // should, or a scan that found commits already made and nothing to stage.
+    let paths = paths_to_stage(node_id, state);
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let live = git::status(repo).await?;
+    if live.iter().any(|c| paths.contains(&c.path)) {
+        return Ok(None);
+    }
+    let branch = git::current_branch(repo).await.unwrap_or_default();
+    let last = git::run(repo, "git", &["log", "-1", "--format=%h %s"])
+        .await
+        .unwrap_or_default();
+    let pr = match Forge::from_key(state.artifact("forge")) {
+        Forge::GitHub if !branch.is_empty() => git::run(
+            repo,
+            "gh",
+            &[
+                "pr",
+                "view",
+                &branch,
+                "--json",
+                "number,url",
+                "-q",
+                ".number",
+            ],
+        )
+        .await
+        .ok()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty()),
+        _ => None,
+    };
+    let headline = match &pr {
+        Some(n) => format!("Already committed in PR #{n}"),
+        None => format!("Already committed on {branch}"),
+    };
+    let message = format!(
+        "{headline} — the changes this run found were committed while it waited, \
+         most likely by another run. Nothing left to commit here.\n\n\
+         Checked out: {branch}\nLast commit: {}",
+        last.trim()
+    );
+    Ok(Some(StepOutcome {
+        summary: headline,
+        log: message,
+        artifacts: vec![],
+        nothing_to_do: true,
+        items: vec![],
+    }))
+}
+
 /// `node_id` is the id of the commit node actually running, not the literal
 /// `"commit"`. A flow built in Setup may name it anything, and a flow with two
 /// commit steps names the second one `commit_2` — reading a fixed id there
@@ -284,39 +510,97 @@ pub(super) async fn commit(
     repo: &str,
     state: &RunState,
 ) -> Result<StepOutcome, StepFailure> {
+    // Read again now, not at the scan: an approval can sit for minutes, and
+    // whatever happened to the tree meanwhile decides what is safe to do.
+    if let Some(done) = committed_meanwhile(node_id, repo, state).await? {
+        return Ok(done);
+    }
+    let started_on = git::current_branch(repo).await?;
+    if !is_first_commit(state) && started_on != state.artifact("branch") {
+        return Err(format!(
+            "The checkout moved from {} to {started_on} after this run looked at the \
+             working tree — another run, or someone, switched it. Nothing was committed \
+             and no branch was made. Start the run again to commit from where things \
+             are now.",
+            state.artifact("branch")
+        )
+        .into());
+    }
+
     let mut log = String::new();
     let (work_branch, branched) = switch_to_work_branch(repo, state, &mut log).await?;
 
-    commit_on(node_id, repo, state, work_branch, log)
-        .await
-        .map_err(|mut failure| {
-            // Everything past the checkout runs with the person somewhere
-            // they did not ask to be. Leaving that out of the error is how
-            // someone ends up wondering why their branch changed. The branch
-            // itself is kept: their staged work is on it, and deleting it
-            // would be this app discarding local work.
-            if let Some(name) = branched {
+    match commit_on(node_id, repo, state, work_branch, log).await {
+        Ok(outcome) => Ok(outcome),
+        Err(mut failure) => {
+            if let Some(opened) = branched {
                 failure.message = format!(
-                    "{}\n\nThe checkout moved to {name} before this failed, and has been \
-                     left there — your changes are on that branch, not on the one you \
-                     started from.",
-                    failure.message
+                    "{}\n\n{}",
+                    failure.message,
+                    put_back(repo, &started_on, &opened).await
                 );
             }
-            failure
-        })
+            Err(failure)
+        }
+    }
+}
+
+/// A topic branch the commit step opened, and the commit it started at.
+pub(super) struct Opened {
+    pub name: String,
+    pub at: String,
+}
+
+/// Undoes the checkout a failed commit made: back to `started_on`, and the
+/// branch it opened deleted when nothing was committed on it. Uncommitted
+/// changes travel with the checkout both ways, so they are where they were.
+/// Says what it did, for the failure's message.
+async fn put_back(repo: &str, started_on: &str, opened: &Opened) -> String {
+    let name = &opened.name;
+    if let Err(e) = git::run(repo, "git", &["checkout", started_on]).await {
+        return format!(
+            "The checkout moved to {name} before this failed, and could not be put back \
+             on {started_on}:\n{e}\nYour changes are on {name}, not on the branch you \
+             started from."
+        );
+    }
+    // Deleted only while it still points where it was made, checked by git
+    // in the same breath: a branch with any commit of its own is kept.
+    let gone = git::run(
+        repo,
+        "git",
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/heads/{name}"),
+            &opened.at,
+        ],
+    )
+    .await
+    .is_ok();
+    if gone {
+        format!(
+            "The checkout is back on {started_on}, as it was before this step, and the \
+             empty branch {name} it had opened is gone."
+        )
+    } else {
+        format!(
+            "The checkout is back on {started_on}, as it was before this step. {name} \
+             was kept: it has a commit on it."
+        )
+    }
 }
 
 /// Opens the topic branch a commit needs, if it needs one.
 ///
-/// Returns the branch to commit on, and — separately — the name only when
-/// this call is what moved the checkout, which is what the caller needs in
-/// order to explain a later failure.
+/// Returns the branch to commit on, and — separately — the branch opened
+/// only when this call is what moved the checkout, which is what the caller
+/// needs in order to put it back after a later failure.
 pub(super) async fn switch_to_work_branch(
     repo: &str,
     state: &RunState,
     log: &mut String,
-) -> Result<(String, Option<String>), StepFailure> {
+) -> Result<(String, Option<Opened>), StepFailure> {
     // Only branch when sitting on the base branch; if the user is already on a
     // topic branch, commit there rather than stacking another one.
     if !must_branch(state) {
@@ -337,9 +621,65 @@ pub(super) async fn switch_to_work_branch(
     {
         name = format!("{name}-{}", chrono::Local::now().format("%H%M%S"));
     }
-    log.push_str(&git::create_branch(repo, &name).await?);
-    log.push_str(&format!("created and switched to {name}\n"));
-    Ok((name.clone(), Some(name)))
+
+    let merged = state.artifact("merged_pr");
+    if merged.is_empty() {
+        let at = git::run(repo, "git", &["rev-parse", "HEAD"])
+            .await?
+            .trim()
+            .to_string();
+        log.push_str(&git::create_branch(repo, &name).await?);
+        log.push_str(&format!("created and switched to {name}\n"));
+        return Ok((name.clone(), Some(Opened { name, at })));
+    }
+
+    // The branch checked out was merged already: start from the base as it
+    // is on origin, not from the merged branch, so the next pull request
+    // holds this change and nothing else.
+    let base = state.artifact("base");
+    let from = format!("origin/{base}");
+    git::fetch(repo, &["origin", base]).await?;
+    let at = git::run(repo, "git", &["rev-parse", &from])
+        .await?
+        .trim()
+        .to_string();
+    let here = state.artifact("branch");
+    match git::run(repo, "git", &["checkout", "-b", &name, &from]).await {
+        Ok(out) => {
+            log.push_str(&out);
+            log.push_str(&format!(
+                "{here} was already merged in #{merged}: created {name} from {from} and \
+                 switched to it, bringing the changes along\n"
+            ));
+            Ok((name.clone(), Some(Opened { name, at })))
+        }
+        Err(e) => {
+            let script = r#"git stash push --include-untracked && git checkout -b "$1" "origin/$2" && git stash pop"#;
+            Err(StepFailure {
+                message: format!(
+                    "{here} was already merged in #{merged}, so this commit belongs on a \
+                     fresh branch from {base}. Git would not move your changes there: \
+                     some of the files they touch changed on {base} since. Nothing was \
+                     moved or committed.\n\n\
+                     Carry them over below — they are set aside, {name} is made from \
+                     {from}, and they are put back. If they clash with what {base} has, \
+                     both versions are marked in the file and a copy stays in the stash.\n\n{e}"
+                ),
+                remedies: vec![Remedy {
+                    display: format!(
+                        "git stash push --include-untracked && git checkout -b {name} {from} && git stash pop"
+                    ),
+                    ..Remedy::new(
+                        &format!("Carry your changes over to {name}, from {base}"),
+                        "sh",
+                        &["-c", script, "sh", &name, base],
+                    )
+                    .setting("branch", &name)
+                    .setting("merged_pr", "")
+                }],
+            })
+        }
+    }
 }
 
 /// Stages the approved paths and commits them, on a branch already checked

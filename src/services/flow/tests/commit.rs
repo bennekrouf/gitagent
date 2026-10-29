@@ -243,3 +243,152 @@ fn an_empty_diffstat_still_produces_something_commitable() {
     assert_eq!(map["commit_subject"], "chore: update");
     assert!(!map["branch_name"].is_empty());
 }
+
+/// A repository on `main` with one commit and `keep.rs` / `drop.rs` edited,
+/// and the state a commit run has after scanning it.
+#[cfg(unix)]
+fn edited_repo(name: &str) -> (std::path::PathBuf, RunState) {
+    let root = std::env::temp_dir().join(format!(
+        "gitagent-commit-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    sh(
+        &root,
+        "git init -q -b main && git config user.name t && git config user.email t@t && \
+         echo a > keep.rs && echo a > drop.rs && git add . && git commit -q -m init && \
+         echo b > keep.rs && echo b > drop.rs",
+    );
+    let mut s = commit_run("commit", &[("keep.rs", true), ("drop.rs", true)]);
+    for (k, v) in [
+        ("branch", "main"),
+        ("base", "main"),
+        ("branch_name", "feat/edits"),
+        ("commit_subject", "feat: edits"),
+    ] {
+        s.artifacts.insert(k.into(), v.into());
+    }
+    (root, s)
+}
+
+#[cfg(unix)]
+fn sh(dir: &std::path::Path, cmd: &str) -> String {
+    let out = std::process::Command::new("sh")
+        .args(["-c", cmd])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{cmd}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn changes_another_run_committed_meanwhile_end_the_step_instead_of_failing() {
+    let (root, s) = edited_repo("meanwhile");
+    // What the other run did while this one sat at its approval.
+    sh(
+        &root,
+        "git checkout -q -b feat/other && git add . && git commit -q -m 'feat: other'",
+    );
+
+    let done = commit("commit", root.to_str().unwrap(), &s)
+        .await
+        .expect("not a failure");
+    assert!(done.nothing_to_do, "the run stops, without red");
+    assert!(
+        done.summary.starts_with("Already committed on feat/other"),
+        "{}",
+        done.summary
+    );
+    assert_eq!(
+        sh(&root, "git branch --list feat/edits"),
+        "",
+        "no stray branch"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_commit_puts_the_checkout_back_and_drops_the_empty_branch() {
+    let (root, mut s) = edited_repo("putback");
+    // git refuses an empty message, after the branch is made.
+    s.artifacts.insert("commit_subject".into(), String::new());
+
+    let failure = commit("commit", root.to_str().unwrap(), &s)
+        .await
+        .unwrap_err();
+    assert!(
+        failure.message.contains("back on main"),
+        "{}",
+        failure.message
+    );
+    assert_eq!(sh(&root, "git branch --show-current"), "main");
+    assert_eq!(sh(&root, "git branch --list feat/edits"), "");
+    assert!(
+        sh(&root, "git status --porcelain").contains("keep.rs"),
+        "the edits are where they were"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_checkout_moved_since_the_scan_commits_nothing() {
+    let (root, s) = edited_repo("moved");
+    sh(&root, "git checkout -q -b elsewhere");
+
+    let failure = commit("commit", root.to_str().unwrap(), &s)
+        .await
+        .unwrap_err();
+    assert!(failure.message.contains("moved from main to elsewhere"));
+    assert_eq!(sh(&root, "git log --oneline | wc -l"), "1");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_merged_pull_request_is_found_unless_one_is_open_on_the_branch() {
+    let merged = r#"[{"number":37,"state":"MERGED","headRefOid":"c9f"}]"#;
+    assert_eq!(
+        merged_from_list(merged),
+        Some(("37".to_string(), "c9f".to_string()))
+    );
+    let reopened = r#"[{"number":38,"state":"OPEN","headRefOid":"a21"},
+                       {"number":37,"state":"MERGED","headRefOid":"c9f"}]"#;
+    assert_eq!(
+        merged_from_list(reopened),
+        None,
+        "the branch is in use again"
+    );
+    assert_eq!(merged_from_list("[]"), None);
+    assert_eq!(merged_from_list("not json"), None);
+}
+
+#[test]
+fn a_merged_branch_sends_the_commit_to_a_fresh_branch_from_base() {
+    let mut s = RunState::default();
+    for (k, v) in [
+        ("branch", "feat/recording"),
+        ("base", "main"),
+        ("branch_name", "fix/toggle"),
+        ("merged_pr", "37"),
+    ] {
+        s.artifacts.insert(k.into(), v.into());
+    }
+    assert!(must_branch(&s));
+    let proposal = proposal(&spec(Step::Commit), &s);
+    assert!(
+        proposal.starts_with("git checkout -b fix/toggle origin/main"),
+        "{proposal}"
+    );
+    assert!(proposal.contains("already merged in #37"));
+}

@@ -209,6 +209,16 @@ pub(super) fn review_hub(graph: &Graph, state: &RunState, lenses: &Lenses) -> Op
                 "pending" => (Tone::Waiting, "checks running"),
                 _ => (Tone::Idle, "no checks"),
             },
+            // The step stops on a pull request GitHub cannot merge, so a
+            // failure here is often not a failure to read at all.
+            NodeStatus::Failed
+                if state
+                    .runs
+                    .get(&n.id)
+                    .is_some_and(|r| r.log.contains(" conflicts with ")) =>
+            {
+                (Tone::Bad, "conflicts with base")
+            }
             NodeStatus::Failed => (Tone::Bad, "could not read"),
             _ => (Tone::Idle, "not read yet"),
         };

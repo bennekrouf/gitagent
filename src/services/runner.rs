@@ -17,7 +17,7 @@ use super::flow::{self, StepFailure, StepOutcome};
 use super::flowdef::FlowBook;
 use super::graph::{Graph, NodeKind, NodeSpec, NodeStatus, ProposalItem, RunState, Step};
 use super::llm::LlmConfig;
-use super::{forge, git, live, probe, release, store, trusted};
+use super::{busy, forge, git, live, probe, release, store, trusted};
 use crate::telemetry;
 
 // ── One step ──────────────────────────────────────────────────────────────
@@ -181,8 +181,8 @@ pub async fn report_finished(repo: &str, flow: &str, graph: &Graph, state: &RunS
 // ── A flow, without a window ──────────────────────────────────────────────
 
 /// What a driver without a window hears while a run moves, for a terminal to
-/// show it as it happens. A tool call has nowhere to put it until it returns,
-/// so `gitagent mcp` listens to none of it.
+/// show it as it happens — and for `gitagent mcp` to pass on as progress
+/// notifications, when the client asked for them with its call.
 pub enum Progress<'a> {
     /// A step has started.
     Step(&'a NodeSpec),
@@ -212,6 +212,9 @@ pub struct Run {
     /// Driven from a terminal: an open window says to answer it there.
     pub terminal: bool,
     pub progress: fn(Progress<'_>),
+    /// This repository, held for as long as the run is going — see
+    /// `services::busy`. Let go the moment the run ends.
+    pub claim: Option<busy::Claim>,
 }
 
 /// Where a trusted run goes after a flow it finished.
@@ -258,12 +261,20 @@ impl Run {
             held: None,
             terminal: false,
             progress: |_| {},
+            claim: None,
         }
     }
 
     /// The flow `flow_id`, set up for `repo` (as `repo_path` gives it) and
-    /// not yet started.
-    pub fn prepare(repo: &str, flow_id: &str, pr: &str, trusted: bool) -> Result<Self, String> {
+    /// not yet started, with the repository claimed for it — refused while
+    /// another run, in any GitAgent process, has it.
+    pub fn prepare(
+        repo: &str,
+        flow_id: &str,
+        pr: &str,
+        trusted: bool,
+        by: busy::By,
+    ) -> Result<Self, String> {
         let book = FlowBook::load();
         let hidden = store::load_repo_flows().hidden_for(repo);
         let def = book
@@ -280,7 +291,10 @@ impl Run {
                 .artifacts
                 .insert("selected_pr_number".into(), pr.into());
         }
-        Ok(Run::new(repo.into(), def.id, graph, state, trusted))
+        let claim = busy::claim(repo, &def.label, by)?;
+        let mut run = Run::new(repo.into(), def.id, graph, state, trusted);
+        run.claim = Some(claim);
+        Ok(run)
     }
 
     /// Answered by trust: asked for when the run started, or "Trust all"
@@ -454,6 +468,7 @@ impl Run {
             }
             self.run_node(&node).await;
         }
+        self.claim = None;
         self.publish();
         release::record_shipped(&self.repo, &self.flow, &self.graph, &self.state).await;
         report_finished(&self.repo, &self.flow, &self.graph, &self.state).await;

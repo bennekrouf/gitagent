@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::services::flowdef::FlowBook;
 use crate::services::graph::{NodeSpec, NodeStatus};
 use crate::services::runner::{self, Next, Progress, Run};
-use crate::services::{probe, store, trusted};
+use crate::services::{busy, probe, store, trusted};
 use crate::telemetry;
 
 /// The flow finished, and nothing in it failed or was declined.
@@ -164,10 +164,14 @@ async fn run(args: Args) -> i32 {
     // A trusted run goes on into the next flow the repository needs, as the
     // window's does; anything else is one flow.
     for _ in 0..trusted::MOST_FLOWS {
-        let mut run = match Run::prepare(&repo, &flow, &pr, trusted) {
+        let mut run = match Run::prepare(&repo, &flow, &pr, trusted, busy::By::Terminal) {
             Ok(run) => run,
-            Err(why) => {
+            Err(why) if why.starts_with("no flow ") => {
                 eprintln!("gitagent run: {why}\n\n{}", flows_for(&repo));
+                return USAGE;
+            }
+            Err(why) => {
+                eprintln!("gitagent run: {why}");
                 return USAGE;
             }
         };

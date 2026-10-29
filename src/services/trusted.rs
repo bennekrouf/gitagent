@@ -284,6 +284,12 @@ fn merge(state: &RunState) -> Verdict {
              yourself once the checks are in."
                 .into(),
         ),
+        "none" => Verdict::Hold(
+            "No CI checks ran on this pull request — 0 of 0 is not a pass. A trusted run \
+             has nothing but the model's reading to go on, so it will not merge this on \
+             its own. Merge it yourself if that is enough here."
+                .into(),
+        ),
         // Either the flow never looked (no CI step wired in) or the forge does
         // not report checks — Azure, today. Both mean the same thing here:
         // nothing has vouched for this change, so a person has to.

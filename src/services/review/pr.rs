@@ -301,18 +301,26 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         .unwrap_or("UNKNOWN")
         .to_string();
     let mergeable = value["mergeable"].as_str().unwrap_or("UNKNOWN");
+    // No checks at all is not a pass: nothing ran. Saying "passing" over
+    // 0 of 0 is how a pull request nobody tested looked green.
     let state_word = if fail > 0 {
         "failing"
     } else if pending > 0 {
         "pending"
+    } else if pass == 0 {
+        "none"
     } else {
         "passing"
     };
 
-    let summary = format!(
-        "{pass} passing, {fail} failing, {pending} pending\n{}",
-        lines.join("\n")
-    );
+    let summary = if state_word == "none" {
+        "no checks reported for this pull request".to_string()
+    } else {
+        format!(
+            "{pass} passing, {fail} failing, {pending} pending\n{}",
+            lines.join("\n")
+        )
+    };
 
     // Only for checks that actually failed, and only the first few: each one is
     // a separate round-trip that downloads the whole job log.
@@ -347,6 +355,21 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         }
     }
 
+    // GitHub has already said it cannot merge this. Offering the merge anyway
+    // only moves the refusal one approval later, after the person has said yes.
+    if merge_state == "DIRTY" || mergeable == "CONFLICTING" {
+        let base = state.artifact("pr_base");
+        let head = state.artifact("pr_head");
+        let checks = format!("{summary}\n\nmergeable:   {mergeable}\nmerge state: {merge_state}");
+        return Err(match squashed_before(repo, number, head).await {
+            Some(earlier) => {
+                let new = flow::free_branch_name(repo, head).await;
+                replay_after(number, base, head, &earlier, &new, &checks)
+            }
+            None => conflict_guide(number, base, &checks),
+        });
+    }
+
     Ok(StepOutcome {
         summary: format!("{state_word} · {merge_state}"),
         log: format!("{summary}\n\nmergeable:   {mergeable}\nmerge state: {merge_state}\n{detail}"),
@@ -359,6 +382,117 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// An earlier pull request from the same branch, squash-merged already:
+/// `(number, the branch tip it was merged at)`. Only when that tip is still
+/// on the branch — the commits are there twice, once as they were and once
+/// as the base's squash of them.
+pub(super) async fn squashed_before(
+    repo: &str,
+    number: &str,
+    head: &str,
+) -> Option<(String, String)> {
+    if head.is_empty() {
+        return None;
+    }
+    let out = git::run(
+        repo,
+        "gh",
+        &[
+            "pr",
+            "list",
+            "--head",
+            head,
+            "--state",
+            "merged",
+            "--json",
+            "number,headRefOid",
+            "--limit",
+            "5",
+        ],
+    )
+    .await
+    .ok()?;
+    let list: serde_json::Value = serde_json::from_str(&out).ok()?;
+    let earlier = list
+        .as_array()?
+        .iter()
+        .find(|pr| pr["number"].as_i64().map(|n| n.to_string()).as_deref() != Some(number))?;
+    let tip = earlier["headRefOid"].as_str()?.to_string();
+    let _ = git::fetch(repo, &["origin", head]).await;
+    git::run(
+        repo,
+        "git",
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &tip,
+            &format!("origin/{head}"),
+        ],
+    )
+    .await
+    .ok()?;
+    Some((earlier["number"].as_i64()?.to_string(), tip))
+}
+
+/// The conflict a branch reused after its pull request was squash-merged
+/// runs into: the base has that work as one new commit, the branch has the
+/// original commits plus what came after, and git sees both sides changing
+/// the same lines. Replaying only what came after onto the base removes the
+/// conflict without anyone picking sides — which is where a merge of the
+/// base into the branch goes wrong.
+///
+/// The replay goes on a fresh branch, `new`, with its own pull request, and
+/// the old one is closed pointing at it. Rewriting the old branch in place
+/// would need a force push, and no built-in step pushes with force.
+pub(super) fn replay_after(
+    number: &str,
+    base: &str,
+    head: &str,
+    earlier: &(String, String),
+    new: &str,
+    checks: &str,
+) -> StepFailure {
+    let (was, tip) = earlier;
+    let short = &tip[..tip.len().min(10)];
+    // $1 the pull request, $2 base, $3 its branch, $4 the new branch, $5 the
+    // earlier pull request's tip, $6 the earlier pull request.
+    let script = r#"git fetch origin "$2" "$3" && git checkout -b "$4" "origin/$2" && git cherry-pick "$5..origin/$3" && git push -u origin "$4" || exit 1
+title=$(gh pr view "$1" --json title -q .title)
+url=$(gh pr create --base "$2" --head "$4" --title "$title" --body "Replaces #$1 with only its own commits: its branch still carried those of #$6, which $2 already has.") || exit 1
+gh pr close "$1" --comment "Replaced by $url — the same change, without the commits of #$6." || exit 1
+echo "Opened $url and closed #$1.""#;
+    let replay = Remedy {
+        display: format!(
+            "git checkout -b {new} origin/{base} && git cherry-pick {short}..origin/{head} \
+             && git push -u origin {new} && gh pr create … && gh pr close {number}"
+        ),
+        ..Remedy::terminal(
+            &format!("Move #{number}'s own commits to a fresh pull request from {base}"),
+            "sh",
+            &["-c", script, "sh", number, base, head, new, tip, was],
+        )
+    };
+    let mut fallback = conflict_guide(number, base, checks);
+    let mut remedies = vec![replay];
+    remedies.append(&mut fallback.remedies);
+    StepFailure {
+        message: format!(
+            "#{number} conflicts with {base}, so it is not offered for merging. Nothing has \
+             been merged or changed.\n\n\
+             Why: {head} was already merged once, in #{was}, and {base} has that work as \
+             one squashed commit. The branch still carries #{was}'s original commits under \
+             #{number}'s own, so #{number} shows #{was}'s files again and both sides \
+             change the same lines.\n\n\
+             The first button below takes only the commits made after #{was}, puts them \
+             on {new}, a fresh branch from {base}, and opens a pull request for them with \
+             #{number}'s title — then closes #{number}, pointing at it. No side has to be \
+             picked and nothing is force-pushed. Review the new pull request after. \
+             Merging {base} into {head} instead means settling each conflict by hand.\n\n{checks}"
+        ),
+        remedies,
+    }
 }
 
 /// What a pull request changes, as `(stat, diff)`: its base and head fetched
