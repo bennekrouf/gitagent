@@ -37,6 +37,12 @@ were never released.
   high-severity finding backs it up. This cuts the false alarms a small
   second-opinion model raised, which held up runs under Trust all.
 
+### Removed
+
+- The step list above the flow for a run Claude or a terminal is driving.
+  That run plays out on the flow's own steps now. The note above the flow
+  still says who is running it and which step waits for an answer.
+
 ### Fixed
 
 - A commit run that finds its changes were already committed while it
