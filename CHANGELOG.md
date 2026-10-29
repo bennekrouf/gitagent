@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Removed
+
+- The step list above the flow for a run Claude or a terminal is driving.
+  That run plays out on the flow's own steps now. The note above the flow
+  still says who is running it and which step waits for an answer.
+
 ## [0.1.136] - 2026-10-29
 
 ### Changed

@@ -40,8 +40,8 @@ pub(super) fn flow_context(
                 .iter()
                 .find(|r| r.repo == resolved || r.repo == repo)
                 .cloned();
-            // Drawn on the graph below already: the steps and what the
-            // waiting one would do are there, so only who runs it is said.
+            // Drawn on the graph below already: what the waiting step would
+            // do is there, so only who runs it is said.
             let on_graph = on_graph && live.as_ref().is_some_and(|l| l.flow == flow_id);
             rsx! {
             // A run Claude started through GitAgent's MCP server, or one
@@ -71,19 +71,6 @@ pub(super) fn flow_context(
                                 class: "live-run-trusted",
                                 title: "Approvals are answered by the Trusted run's rules; it stops at anything they would hold",
                                 "trusted"
-                            }
-                        }
-                    }
-                    if !on_graph {
-                        div { class: "live-run-steps",
-                            for (i, step) in live.steps.iter().cloned().enumerate() {
-                                div { key: "{i}", class: "live-step",
-                                    span { class: "dot dot-{step.status}" }
-                                    span { class: "live-step-title", "{step.title}" }
-                                    span { class: "live-step-summary",
-                                        if step.summary.is_empty() { "{step.status_label}" } else { "{step.summary}" }
-                                    }
-                                }
                             }
                         }
                     }
