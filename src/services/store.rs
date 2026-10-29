@@ -246,6 +246,80 @@ pub fn save_trust_all(all: bool) {
     write(TRUST_FILE, &TrustPref { all });
 }
 
+/// A Refresh asked for from outside the window — by GitAgent's MCP server,
+/// for a client such as Claude. Every open window reads it when the file
+/// changes and refreshes what it covers.
+#[derive(Default, Serialize, Deserialize)]
+pub struct RefreshRequest {
+    /// A folder or one repository; `None` for every open window's every
+    /// repository.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Seconds since the epoch, so asking twice for the same thing still
+    /// changes the file.
+    #[serde(default)]
+    pub at: u64,
+}
+
+pub const REFRESH_FILE: &str = "refresh.json";
+
+/// What a window open on one folder refreshes for a request.
+#[derive(Clone, PartialEq, Debug)]
+pub enum RefreshScope {
+    /// Everything in its folder, as its Refresh button does.
+    Folder,
+    /// One repository in it.
+    Repo(String),
+}
+
+/// Both paths resolved, so a symlinked or `..` path still names the same
+/// repository.
+pub fn same_path(a: &str, b: &str) -> bool {
+    resolved(a) == resolved(b)
+}
+
+fn resolved(path: &str) -> String {
+    dunce::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+impl RefreshRequest {
+    pub fn scope_for(&self, window_folder: &str) -> Option<RefreshScope> {
+        let Some(path) = &self.path else {
+            return Some(RefreshScope::Folder);
+        };
+        let (path, folder) = (resolved(path), resolved(window_folder));
+        if is_within(&folder, &path) {
+            Some(RefreshScope::Folder)
+        } else if is_within(&path, &folder) {
+            Some(RefreshScope::Repo(path))
+        } else {
+            None
+        }
+    }
+}
+
+pub fn request_refresh(path: Option<&str>) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    write(
+        REFRESH_FILE,
+        &RefreshRequest {
+            path: path.map(String::from),
+            at,
+        },
+    );
+}
+
+pub fn refresh_request() -> RefreshRequest {
+    read(REFRESH_FILE)
+}
+
 pub fn sidebar_folded() -> bool {
     read::<SidebarPref>(SIDEBAR_FILE).folded
 }

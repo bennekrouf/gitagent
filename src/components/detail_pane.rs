@@ -39,6 +39,11 @@ pub struct DetailPaneProps {
     /// already exists under a different run). Puts the flow back to never
     /// having started, the same state a fresh repository would show.
     pub on_cancel: EventHandler<()>,
+    /// Set when the step belongs to a run started elsewhere — by Claude
+    /// through the MCP server, or in a terminal — and says where it is
+    /// answered. The step is then only read here: no button decides it.
+    #[props(default)]
+    pub elsewhere: Option<String>,
 }
 
 #[component]
@@ -77,6 +82,8 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     let running_now = run.status == NodeStatus::Running;
     let nothing_selected = run.has_nothing_selected();
     let chosen = run.items.iter().filter(|i| i.included).count();
+    let elsewhere = props.elsewhere.clone();
+    let read_only = elsewhere.is_some();
     // Collapsed by default — the count already says "all N selected" at a
     // glance, and most approvals want everything committed. The list is one
     // click away for the times a subset needs picking.
@@ -185,6 +192,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                         input {
                                             r#type: "checkbox",
                                             checked: item.included,
+                                            disabled: read_only,
                                             onchange: {
                                                 let node = toggle_id.clone();
                                                 let key = item.key.clone();
@@ -228,7 +236,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                                 diff: diff.clone(),
                                 is_light: props.is_light,
                                 excluded,
-                                on_toggle: selectable.then(|| {
+                                on_toggle: (selectable && !read_only).then(|| {
                                     let on_toggle = props.on_toggle;
                                     EventHandler::new(move |path: String| {
                                         on_toggle.call((node.clone(), path))
@@ -248,7 +256,11 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
             // The buttons that decide a step, below the scrolling body rather
             // than inside it: always on screen however long the diff or log,
             // with no `position: sticky` for a webview to get wrong.
-            if awaiting {
+            if let Some(note) = elsewhere {
+                if awaiting || failed || skippable_early {
+                    div { class: "detail-actions detail-elsewhere", "{note}" }
+                }
+            } else if awaiting {
                 div { class: "detail-actions",
                     button {
                         class: "btn btn-primary",

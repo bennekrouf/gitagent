@@ -25,7 +25,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::services::flowdef::{self, FlowBook, FlowDef};
 use crate::services::graph::{NodeKind, NodeStatus};
 use crate::services::runner::{repo_path, Next, Run};
-use crate::services::{catalogue, live, probe, store, trusted};
+use crate::services::{catalogue, live, llm, probe, store, trusted};
 mod flows;
 use flows::*;
 mod run;
@@ -48,13 +48,17 @@ will do; show that to the user and call approve or reject with their answer. Nev
 the user's behalf without asking them. Pass trusted: true to run_flow only when the user asks for \
 a trusted run: GitAgent then answers approvals itself by the rules of its Trusted run — it holds \
 at anything risky, any script or deploy, and release notes — and carries on into the next flow \
-the repository needs. If the user turned on Trust all in the GitAgent window, runs are trusted \
-already. Either way, report what was approved automatically and where it stopped. The flows \
+the repository needs. When the user answers an approval with \"stop asking me\", approve it \
+with stop_asking: true: the rest of that run is trusted the same way. If the user turned on \
+Trust all in the GitAgent window, runs are trusted already; trust_all says whether it is on, \
+and turns it off if the user asks — never on, which only the user does, in the window. Either way, report what was approved automatically and where it stopped. The flows \
 themselves can be read and changed too: list_steps names the steps a flow can use, get_flow \
 shows one, save_flow creates or changes one (it is refused, with the reason, if it would not \
 run), delete_flow removes one, and show_flow sets which repositories show it. Say what you \
 are about to change before saving, as the user would see it in Setup. repo_insight tells \
-everything GitAgent knows about one repository.";
+everything GitAgent knows about one repository. refresh is the window's Refresh button, for \
+one repository, a folder, or everything open. model_region says where the model runs and \
+switches it between api0's regions (europe, china, usa) when the user asks.";
 
 pub fn serve() {
     match tokio::runtime::Runtime::new() {
@@ -152,25 +156,30 @@ async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result
             let trusted = args["trusted"].as_bool().unwrap_or(false);
             run_flow(&text("repo"), &text("flow"), &text("pr"), trusted, runs).await
         }
-        "approve" | "reject" | "run_status" => {
+        "approve" => {
+            let id = args["run_id"].as_u64().ok_or("run_id is required")?;
+            let exclude: Vec<String> = args["exclude"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let stop_asking = args["stop_asking"].as_bool().unwrap_or(false);
+            approve(id, &exclude, stop_asking, runs).await
+        }
+        "reject" | "run_status" => {
             let id = args["run_id"].as_u64().ok_or("run_id is required")?;
             let run = runs.get_mut(&id).ok_or(format!("no run {id}"))?;
             match name {
-                "approve" => {
-                    let exclude: Vec<String> = args["exclude"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    run.decide(true, &exclude).await.map(|()| report(run))
-                }
                 "reject" => run.decide(false, &[]).await.map(|()| report(run)),
                 _ => Ok(report(run)),
             }
         }
+        "trust_all" => Ok(trust_all(args["turn_off"].as_bool().unwrap_or(false))),
+        "refresh" => refresh(&text("path")),
+        "model_region" => model_region(&text("region"), &text("folder")),
         "list_steps" => Ok(list_steps()),
         "get_flow" => get_flow(&text("flow")),
         "save_flow" => save_flow(&args["flow"], &text("repo")),

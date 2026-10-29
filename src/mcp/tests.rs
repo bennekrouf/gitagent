@@ -42,3 +42,60 @@ fn a_flow_stored_under_another_id_says_which() {
         "no id given, nothing to correct"
     );
 }
+
+#[test]
+fn trust_all_is_only_read_unless_turned_off() {
+    let before = store::trust_all();
+    let out = trust_all(false);
+    assert_eq!(out["trust_all"], before);
+    assert_eq!(store::trust_all(), before, "reading it changes nothing");
+}
+
+#[test]
+fn no_tool_turns_trust_all_on() {
+    let tools = tools();
+    let tool = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "trust_all")
+        .expect("listed");
+    let props = tool["inputSchema"]["properties"].as_object().unwrap();
+    assert_eq!(props.keys().collect::<Vec<_>>(), ["turn_off"]);
+}
+
+#[tokio::test]
+async fn stop_asking_on_a_run_with_nothing_to_approve_trusts_nothing() {
+    let mut runs = BTreeMap::new();
+    let r = run(false);
+    let id = r.state.run;
+    runs.insert(id, r);
+    assert!(approve(id, &[], true, &mut runs).await.is_err());
+    assert!(
+        !runs[&id].trusted,
+        "refused, so the run is still the person's"
+    );
+    assert!(approve(id + 1000, &[], true, &mut runs).await.is_err());
+}
+
+#[test]
+fn regions_go_by_the_names_people_use() {
+    assert_eq!(region_named("EU").map(|r| r.id), Some("europe"));
+    assert_eq!(region_named("cn").map(|r| r.id), Some("china"));
+    assert_eq!(region_named(" United States ").map(|r| r.id), Some("usa"));
+    assert_eq!(region_named("usa").map(|r| r.id), Some("usa"));
+    assert!(region_named("mars").is_none());
+}
+
+#[test]
+fn an_unknown_region_changes_nothing() {
+    let before = store::load_settings();
+    let err = model_region("mars", "").unwrap_err();
+    assert!(err.contains("europe, china, usa"), "{err}");
+    assert_eq!(store::load_settings(), before);
+}
+
+#[test]
+fn refresh_refuses_a_path_that_is_not_a_folder() {
+    assert!(refresh("/no/such/folder/anywhere").is_err());
+}

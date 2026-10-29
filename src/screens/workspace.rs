@@ -63,6 +63,16 @@ use flows::*;
 /// already don't tread on each other.
 type Key = (String, String, String);
 type States = BTreeMap<Key, RunState>;
+
+/// A run started outside the window, on the flow on screen, as its graph
+/// draws it.
+#[derive(Clone, PartialEq)]
+pub(super) struct Watched {
+    pub state: RunState,
+    pub finished: bool,
+    /// Where its approvals are answered.
+    pub note: String,
+}
 /// Each pull request's diff by (repository, number): `None` while it loads.
 type PrDiffs = BTreeMap<(String, String), Option<Result<(String, String), String>>>;
 
@@ -127,7 +137,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // approval asks a person again.
     // Remembered, and shared with the MCP server, which reads it to answer a
     // run's approvals the way this window would.
-    let global_trust = use_signal(store::trust_all);
+    let mut global_trust = use_signal(store::trust_all);
     // Why the last trusted run stopped, when the reason was not "there is
     // nothing left". Cleared when the next one starts.
     let chain_note = use_signal(String::new);
@@ -460,6 +470,92 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         }
     });
 
+    // What the MCP server changes for a client such as Claude, besides runs
+    // and flows: Trust all turned off, the model's region switched, and a
+    // Refresh asked for. Each is a file in the data directory, picked up when
+    // it changes.
+    let mut model_here = props.llm_config;
+    let opened_folder = workspace.clone();
+    let mut states_here = states;
+    use_future(move || {
+        let refresh_folder = opened_folder.clone();
+        async move {
+            let changed_at = |f: &str| {
+                std::fs::metadata(store::data_dir().join(f))
+                    .and_then(|m| m.modified())
+                    .ok()
+            };
+            let model_files = || {
+                (
+                    changed_at("settings.json"),
+                    changed_at("folder_models.json"),
+                )
+            };
+            let mut trust_stamp = changed_at("trust.json");
+            let mut model_stamp = model_files();
+            let mut refresh_stamp = changed_at(store::REFRESH_FILE);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                // The top bar says Trust all is off at once, rather than
+                // "Trusting everything" over runs that now ask.
+                let now = changed_at("trust.json");
+                if now != trust_stamp {
+                    trust_stamp = now;
+                    let all = store::trust_all();
+                    if *global_trust.peek() != all {
+                        global_trust.set(all);
+                    }
+                }
+                // Not while Settings is open: its draft would be saved over the
+                // region just chosen, or shown beside a top bar that disagrees.
+                let now = model_files();
+                if now != model_stamp && !*settings_open.peek() {
+                    model_stamp = now;
+                    let cfg = store::load_settings_for(Some(&refresh_folder));
+                    if *model_here.peek() != cfg {
+                        model_here.set(cfg);
+                    }
+                }
+                let now = changed_at(store::REFRESH_FILE);
+                if now != refresh_stamp {
+                    refresh_stamp = now;
+                    match store::refresh_request().scope_for(&refresh_folder) {
+                        Some(store::RefreshScope::Folder) => {
+                            forget_finished(&mut states_here.write(), &running.peek(), None);
+                            refresh_all(
+                                &refresh_folder,
+                                repos,
+                                statuses,
+                                probing,
+                                picked,
+                                selected_repo,
+                                selected_flow,
+                                book,
+                                true,
+                            );
+                        }
+                        Some(store::RefreshScope::Repo(path)) => {
+                            let found = repos
+                                .peek()
+                                .iter()
+                                .find(|r| store::same_path(&r.path, &path))
+                                .map(|r| r.path.clone());
+                            if let Some(path) = found {
+                                forget_finished(
+                                    &mut states_here.write(),
+                                    &running.peek(),
+                                    Some(&path),
+                                );
+                                reprobe(path, statuses);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    });
+
     let llm_config = props.llm_config;
     let wiring = Wiring {
         states,
@@ -614,6 +710,36 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // for a review, else the checked-out branch's. Built once, shown in the
     // list view and the run view alike, so the pull request being validated is
     // in sight in both.
+    // A run Claude (or a terminal) is driving on the flow on screen, drawn on
+    // its graph as if it were the window's own — read-only, since its
+    // approvals are answered where it was started. Not while the window runs
+    // something in this repository itself: that run is the one on screen.
+    let watched: Option<Watched> = active.as_ref().and_then(|repo| {
+        if running.read().iter().any(|k| &k.0 == repo) {
+            return None;
+        }
+        let resolved = dunce::canonicalize(repo)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| repo.clone());
+        live_runs
+            .read()
+            .iter()
+            .find(|r| (r.repo == resolved || &r.repo == repo) && r.flow == flow_id)
+            .and_then(|r| {
+                r.as_state(&graph).map(|state| Watched {
+                    state,
+                    finished: r.finished,
+                    note: if r.terminal {
+                        "This run was started in a terminal. Answer it there.".into()
+                    } else {
+                        "Claude started this run through GitAgent\u{2019}s MCP server. \
+                         Answer it in Claude."
+                            .into()
+                    },
+                })
+            })
+    });
+
     let flow_context: Element = context::flow_context(
         statuses,
         selected_pr,
@@ -627,6 +753,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         open_diff,
         setup_open,
         live_runs,
+        watched.is_some(),
         status_map.clone(),
         flow_id.clone(),
         flow_problems.clone(),
@@ -741,7 +868,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     },
                 }
 
-                {middle::middle_pane(probing, selected_pr, selected_node, running, chain_note, run_view, drawer, panel_step, panel_folded, set_folded, diff_panel, pr_diffs, close_when_done, setup_open, branches_busy, middle_w, panel_w, dragging, drag_from, is_light, llm_config, wiring, repo_list.clone(), status_map.clone(), forge_map.clone(), states_snapshot.clone(), flows.clone(), flow_id.clone(), flow_problems.clone(), current.clone(), flow_kind, graph.clone(), flow_first_node.clone(), active.clone(), begin, start, repo_actions, flow_context.clone(), flow_strip.clone(), props.clone())}
+                {middle::middle_pane(probing, selected_pr, selected_node, running, chain_note, run_view, drawer, panel_step, panel_folded, set_folded, diff_panel, pr_diffs, close_when_done, setup_open, branches_busy, middle_w, panel_w, dragging, drag_from, is_light, llm_config, wiring, repo_list.clone(), status_map.clone(), forge_map.clone(), states_snapshot.clone(), flows.clone(), flow_id.clone(), flow_problems.clone(), current.clone(), flow_kind, graph.clone(), flow_first_node.clone(), active.clone(), begin, start, repo_actions, flow_context.clone(), flow_strip.clone(), watched.clone(), props.clone())}
             }
         }
 

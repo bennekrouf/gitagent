@@ -108,18 +108,48 @@ pub(super) async fn run_flow(
     runs: &mut BTreeMap<u64, Run>,
 ) -> Result<Value, String> {
     let trusted = trusted || store::trust_all();
+    let id = start_flow(repo, flow_id, pr, trusted, runs).await?;
+    carry_on(id, runs).await
+}
+
+/// The person's yes to the step a run is waiting on. With `stop_asking`, as
+/// the window's "Stop asking me": the rest of this run is trusted from here,
+/// held where a Trusted run would hold, and goes on into the next flow the
+/// repository needs once this one is done.
+pub(super) async fn approve(
+    id: u64,
+    exclude: &[String],
+    stop_asking: bool,
+    runs: &mut BTreeMap<u64, Run>,
+) -> Result<Value, String> {
+    let run = runs.get_mut(&id).ok_or(format!("no run {id}"))?;
+    if run.waiting().is_none() {
+        return Err("this run is not waiting on an approval".into());
+    }
+    if stop_asking {
+        // A hold is a trusted run handing a step back to the person; the
+        // person has now answered it, and said to stop asking.
+        run.trusted = true;
+        run.held = None;
+    }
+    run.decide(true, exclude).await?;
+    carry_on(id, runs).await
+}
+
+/// One run's report, and — when it was trusted through to its end — each
+/// next flow the repository needs, as the window's trusted run goes on.
+async fn carry_on(first: u64, runs: &mut BTreeMap<u64, Run>) -> Result<Value, String> {
     let mut legs: Vec<Value> = vec![];
-    let (mut flow_id, mut pr) = (flow_id.to_string(), pr.to_string());
-    // A trusted run goes on into the next flow the repository needs, as the
-    // window's does; anything else is one flow.
-    for _ in 0..trusted::MOST_FLOWS {
-        let id = start_flow(repo, &flow_id, &pr, trusted, runs).await?;
-        let run = runs
-            .get(&id)
-            .ok_or_else(|| format!("the run of {flow_id} went away"))?;
+    let mut id = first;
+    for leg in 1..=trusted::MOST_FLOWS {
+        let run = runs.get(&id).ok_or(format!("run {id} went away"))?;
         legs.push(report(run));
         match run.next().await {
-            Next::Flow(next, next_pr) => (flow_id, pr) = (next, next_pr),
+            Next::Flow(next, next_pr) if leg < trusted::MOST_FLOWS => {
+                let repo = run.repo.clone();
+                id = start_flow(&repo, &next, &next_pr, true, runs).await?;
+            }
+            Next::Flow(..) => break,
             Next::Stop(why) => {
                 if let (Some(why), Some(last)) = (why, legs.last_mut()) {
                     last["chain_stopped"] = json!(why);
@@ -135,6 +165,139 @@ pub(super) async fn run_flow(
         last["earlier_flows"] = json!(legs);
     }
     Ok(last)
+}
+
+/// The Refresh button of every GitAgent window open on `path`: a folder
+/// refreshes every repository in it, one repository just that one, and no
+/// path every open window's every repository. Answers at once; the windows
+/// pick it up within a second, and list_repos reads the same repositories
+/// fresh for the client.
+pub(super) fn refresh(path: &str) -> Result<Value, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        store::request_refresh(None);
+        return Ok(json!({
+            "refreshing": "every repository in every open GitAgent window",
+        }));
+    }
+    if !std::path::Path::new(path).is_dir() {
+        return Err(format!("{path} is not a folder"));
+    }
+    store::request_refresh(Some(path));
+    Ok(json!({
+        "refreshing": path,
+        "note": "A GitAgent window open on this folder, or on the folder this repository is \
+                 in, refreshes it now. list_repos gives the result here.",
+    }))
+}
+
+/// The api0 region the model runs in: read, or switched. `folder` scopes it
+/// as Settings in the window on that folder does; without one, it is the
+/// default every folder without a choice of its own runs on.
+pub(super) fn model_region(region: &str, folder: &str) -> Result<Value, String> {
+    let folder = folder.trim().trim_end_matches('/');
+    let folder = (!folder.is_empty()).then_some(folder);
+    if let Some(f) = folder {
+        if !std::path::Path::new(f).is_dir() {
+            return Err(format!("{f} is not a folder"));
+        }
+    }
+    let region = region.trim();
+    if !region.is_empty() {
+        let chosen = region_named(region).ok_or(format!(
+            "no region {region}; the regions are {}",
+            llm::REGIONS
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))?;
+        // The folder whose choice a run there reads — the nearest one above
+        // it that chose — so the switch lands where it takes effect.
+        let models = store::load_folder_models();
+        // Failing that, the folder a window opens it in: a repository's own
+        // choice would be one no window ever shows.
+        let within =
+            |k: &str, f: &str| f == k || f.starts_with(&format!("{}/", k.trim_end_matches('/')));
+        let scope = folder.map(|f| {
+            let nearest = |keys: Vec<&String>| {
+                keys.into_iter()
+                    .filter(|k| within(k, f))
+                    .max_by_key(|k| k.len())
+                    .cloned()
+            };
+            nearest(models.by_folder.keys().collect())
+                .or_else(|| nearest(store::load_registry().recent.iter().collect()))
+                .unwrap_or_else(|| f.to_string())
+        });
+        let mut cfg = store::load_settings_for(scope.as_deref());
+        cfg.use_region(chosen.id);
+        store::save_settings_for(scope.as_deref(), &cfg);
+    }
+    let cfg = store::load_settings_for(folder);
+    let shared = store::load_settings();
+    let own: Vec<Value> = store::load_folder_models()
+        .by_folder
+        .iter()
+        .map(|(f, choice)| {
+            let cfg = shared.with_model_choice(choice).with_region_filled();
+            json!({ "folder": f, "runs_on": runs_on(&cfg) })
+        })
+        .collect();
+    let mut out = json!({
+        "runs_on": runs_on(&cfg),
+        "for": folder.unwrap_or("folders without a model of their own"),
+        "default": runs_on(&shared),
+        "folders_with_their_own": own,
+    });
+    if cfg.active_region().is_some() && llm::key_for(llm::remote("api0")).is_none() {
+        out["licence"] =
+            json!("api0 needs a licence on this computer; the user adds it in the GitAgent window");
+    }
+    Ok(out)
+}
+
+/// A region by its id, its name, or the short name people use.
+pub(super) fn region_named(name: &str) -> Option<&'static llm::Region> {
+    let name = name.trim().to_lowercase();
+    let id = match name.as_str() {
+        "eu" | "europe" => "europe",
+        "cn" | "china" => "china",
+        "us" | "usa" | "united states" => "usa",
+        other => other,
+    };
+    llm::REGIONS.iter().find(|r| r.id == id)
+}
+
+fn runs_on(cfg: &llm::LlmConfig) -> String {
+    match cfg.active_region() {
+        Some(r) => format!("api0 in {}", r.label),
+        None => cfg.active_model().to_string(),
+    }
+}
+
+/// "Trust all", as the GitAgent window's top bar has it. A client may turn it
+/// off, never on: that is a person's choice for every repository at once,
+/// made in the window.
+pub(super) fn trust_all(turn_off: bool) -> Value {
+    if turn_off && store::trust_all() {
+        store::save_trust_all(false);
+        return json!({
+            "trust_all": false,
+            "note": "Trust all is off. Runs already going keep the trust they were started \
+                     with; every new one asks again.",
+        });
+    }
+    json!({
+        "trust_all": store::trust_all(),
+        "note": if store::trust_all() {
+            "On: every run answers its own approvals by the Trusted run's rules. Only the \
+             user can turn it on, in the GitAgent window; pass turn_off: true to turn it off."
+        } else {
+            "Off: runs ask, unless started with trusted: true or approved with \
+             stop_asking: true. Only the user can turn it on, in the GitAgent window."
+        },
+    })
 }
 
 /// One flow, started and run to its first stop. Returns the run's id.

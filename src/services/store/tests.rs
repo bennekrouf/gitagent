@@ -348,3 +348,30 @@ fn a_folders_model_does_not_carry_the_shared_review_settings() {
     assert_eq!(laid_over.second, shared.second);
     assert_eq!(laid_over.lenses, shared.lenses);
 }
+
+#[test]
+fn a_refresh_reaches_the_windows_it_covers() {
+    let all = RefreshRequest { path: None, at: 1 };
+    assert_eq!(all.scope_for("/w/code"), Some(RefreshScope::Folder));
+
+    let folder = RefreshRequest {
+        path: Some("/w/code".into()),
+        at: 1,
+    };
+    assert_eq!(folder.scope_for("/w/code"), Some(RefreshScope::Folder));
+    assert_eq!(
+        folder.scope_for("/w/code/inner"),
+        Some(RefreshScope::Folder)
+    );
+    assert_eq!(folder.scope_for("/w/other"), None);
+
+    let repo = RefreshRequest {
+        path: Some("/w/code/app".into()),
+        at: 1,
+    };
+    assert_eq!(
+        repo.scope_for("/w/code"),
+        Some(RefreshScope::Repo("/w/code/app".into()))
+    );
+    assert_eq!(repo.scope_for("/w/codex"), None, "a prefix is not a parent");
+}

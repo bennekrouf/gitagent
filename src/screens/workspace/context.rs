@@ -19,6 +19,7 @@ pub(super) fn flow_context(
     mut open_diff: impl FnMut(String, probe::PrBrief) + Copy + 'static,
     mut setup_open: Signal<bool>,
     live_runs: Signal<Vec<LiveRun>>,
+    on_graph: bool,
     status_map: BTreeMap<String, RepoStatus>,
     flow_id: String,
     flow_problems: Vec<String>,
@@ -39,6 +40,9 @@ pub(super) fn flow_context(
                 .iter()
                 .find(|r| r.repo == resolved || r.repo == repo)
                 .cloned();
+            // Drawn on the graph below already: the steps and what the
+            // waiting one would do are there, so only who runs it is said.
+            let on_graph = on_graph && live.as_ref().is_some_and(|l| l.flow == flow_id);
             rsx! {
             // A run Claude started through GitAgent's MCP server, or one
             // started with `gitagent run`, as it goes. Read-only: its
@@ -70,13 +74,15 @@ pub(super) fn flow_context(
                             }
                         }
                     }
-                    div { class: "live-run-steps",
-                        for (i, step) in live.steps.iter().cloned().enumerate() {
-                            div { key: "{i}", class: "live-step",
-                                span { class: "dot dot-{step.status}" }
-                                span { class: "live-step-title", "{step.title}" }
-                                span { class: "live-step-summary",
-                                    if step.summary.is_empty() { "{step.status_label}" } else { "{step.summary}" }
+                    if !on_graph {
+                        div { class: "live-run-steps",
+                            for (i, step) in live.steps.iter().cloned().enumerate() {
+                                div { key: "{i}", class: "live-step",
+                                    span { class: "dot dot-{step.status}" }
+                                    span { class: "live-step-title", "{step.title}" }
+                                    span { class: "live-step-summary",
+                                        if step.summary.is_empty() { "{step.status_label}" } else { "{step.summary}" }
+                                    }
                                 }
                             }
                         }
@@ -89,7 +95,7 @@ pub(super) fn flow_context(
                                 "{title} is waiting for approval \u{2014} answer it in Claude, where the run was started."
                             }
                         }
-                        if !proposal.trim().is_empty() {
+                        if !on_graph && !proposal.trim().is_empty() {
                             pre { class: "live-run-proposal", "{proposal}" }
                         }
                     }

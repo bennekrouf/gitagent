@@ -385,7 +385,8 @@ mod tests {
     fn a_tilde_in_a_key_path_is_expanded_because_there_is_no_shell() {
         let expanded = expand_home("~/.ssh/id_ed25519");
         assert!(!expanded.starts_with('~'));
-        assert!(expanded.ends_with("/.ssh/id_ed25519"));
+        // Compared as a path: on Windows the home part is joined with `\`.
+        assert!(std::path::Path::new(&expanded).ends_with(".ssh/id_ed25519"));
     }
 
     #[test]
