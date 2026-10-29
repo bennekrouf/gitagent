@@ -48,6 +48,7 @@ pub(super) fn middle_pane(
     repo_actions: impl Fn(&str, &Key, &probe::Affordance, &Option<String>) -> Element,
     flow_context: Result<VNode, RenderError>,
     flow_strip: Result<VNode, RenderError>,
+    watched: Option<Watched>,
     props: WorkspaceProps,
 ) -> Element {
     rsx! {
@@ -70,7 +71,13 @@ pub(super) fn middle_pane(
                 let flow_label = current.as_ref().map(|f| f.label.clone()).unwrap_or_default();
                 // Whether Play may start the flow, by the same rules
                 // as the list view's Start button.
-                let run_state = states_snapshot.get(&key).cloned().unwrap_or_default();
+                // A run Claude is driving here is the one drawn, and its
+                // note is why this window cannot start or answer anything.
+                let elsewhere = watched.as_ref().map(|w| w.note.clone());
+                let run_state = match &watched {
+                    Some(w) => w.state.clone(),
+                    None => states_snapshot.get(&key).cloned().unwrap_or_default(),
+                };
                 let other_run = other_run_in(&running.read(), &repo, &key)
                     .map(|other| busy_note(&flows, other))
                     .or_else(|| {
@@ -79,7 +86,8 @@ pub(super) fn middle_pane(
                             .as_ref()
                             .filter(|(r, _)| r == &repo)
                             .map(|(_, branch)| branch_busy_note(branch))
-                    });
+                    })
+                    .or_else(|| watched.as_ref().filter(|w| !w.finished).map(|w| w.note.clone()));
                 let can_run = probe::affordance(
                     flow_kind,
                     status_map.get(&repo),
@@ -243,7 +251,7 @@ pub(super) fn middle_pane(
                                     }
                                     }
                                 } else if let Some(node_id) = shown_step {
-                                    {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(Panel { drawer, close_when_done }))}
+                                    {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(Panel { drawer, close_when_done }), elsewhere.clone())}
                                 }
                             }
                         }
@@ -253,7 +261,11 @@ pub(super) fn middle_pane(
             Some(repo) => {
                 let pr_id = selected_pr.read().clone();
                 let key: Key = (repo.clone(), flow_id.clone(), pr_id.clone());
-                let state = states_snapshot.get(&key).cloned().unwrap_or_default();
+                let elsewhere = watched.as_ref().map(|w| w.note.clone());
+                let state = match &watched {
+                    Some(w) => w.state.clone(),
+                    None => states_snapshot.get(&key).cloned().unwrap_or_default(),
+                };
                 let node_id = {
                     let chosen = selected_node.read().clone();
                     if graph.get(&chosen).is_some() { chosen } else { flow_first_node.clone() }
@@ -262,7 +274,8 @@ pub(super) fn middle_pane(
                     .find(|r| r.path == repo)
                     .map(|r| r.label.clone())
                     .unwrap_or_else(|| repo.clone());
-                let is_running = running.read().contains(&key);
+                let is_running = running.read().contains(&key)
+                    || watched.as_ref().is_some_and(|w| !w.finished);
                 // One run per repository: committing on one tab while
                 // merging a pull request on another, or reviewing #7
                 // while #5 is under way, would have two runs racing
@@ -275,7 +288,8 @@ pub(super) fn middle_pane(
                             .as_ref()
                             .filter(|(r, _)| r == &repo)
                             .map(|(_, branch)| branch_busy_note(branch))
-                    });
+                    })
+                    .or_else(|| watched.as_ref().filter(|w| !w.finished).map(|w| w.note.clone()));
                 let other_running = other_run.is_some();
                 let can_run = probe::affordance(
                     flow_kind,
@@ -390,7 +404,7 @@ pub(super) fn middle_pane(
                     }
 
                     div { class: "detail-col",
-                        {step_detail(wiring, key.clone(), graph.clone(), state.clone(), node_id.clone(), *is_light.read(), None)}
+                        {step_detail(wiring, key.clone(), graph.clone(), state.clone(), node_id.clone(), *is_light.read(), None, elsewhere.clone())}
                     }
                 }
             }

@@ -37,6 +37,7 @@ pub(super) struct Panel {
     pub(super) close_when_done: Signal<Option<(Key, String)>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn step_detail(
     wiring: Wiring,
     key: Key,
@@ -45,6 +46,7 @@ pub(super) fn step_detail(
     node_id: String,
     is_light: bool,
     panel: Option<Panel>,
+    elsewhere: Option<String>,
 ) -> Element {
     let Wiring {
         mut states,
@@ -79,6 +81,7 @@ pub(super) fn step_detail(
             }),
             is_light,
             run_started: state.started,
+            elsewhere,
             on_approve: {
                 let key = key.clone();
                 move |id: String| {

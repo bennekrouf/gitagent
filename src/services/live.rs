@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::graph::{Graph, RunState};
+use super::graph::{Graph, NodeRun, NodeStatus, RunState};
 use super::store;
 
 const FILE: &str = "mcp_runs.json";
@@ -19,6 +19,10 @@ const KEEP_FINISHED_SECS: u64 = 10 * 60;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct LiveStep {
+    /// The step's id in the flow, so the window can draw the run on its own
+    /// graph. Empty from a server older than that.
+    #[serde(default)]
+    pub id: String,
     pub title: String,
     /// `NodeStatus::css`, so the window draws it like its own.
     pub status: String,
@@ -119,6 +123,7 @@ pub fn snapshot(
         .map(|n| {
             let status = state.status(&n.id);
             LiveStep {
+                id: n.id.clone(),
                 title: n.title.clone(),
                 status: status.css().to_string(),
                 status_label: status.label().to_string(),
@@ -154,6 +159,58 @@ pub fn snapshot(
         trusted,
         terminal: false,
         updated: now(),
+    }
+}
+
+impl LiveRun {
+    /// This run as the window's own graph would hold it, to be drawn there
+    /// read-only — or `None` when its steps are not exactly that graph's, as
+    /// when the flow was changed in Setup after the run began.
+    pub fn as_state(&self, graph: &Graph) -> Option<RunState> {
+        if self.steps.len() != graph.nodes.len()
+            || self
+                .steps
+                .iter()
+                .zip(&graph.nodes)
+                .any(|(s, n)| s.id != n.id)
+        {
+            return None;
+        }
+        let mut state = RunState {
+            started: true,
+            ..RunState::default()
+        };
+        for step in &self.steps {
+            let status = status_from_css(&step.status);
+            state.runs.insert(
+                step.id.clone(),
+                NodeRun {
+                    summary: step.summary.clone(),
+                    proposal: match (&self.waiting, status) {
+                        (Some((_, proposal)), NodeStatus::AwaitingApproval) => proposal.clone(),
+                        _ => String::new(),
+                    },
+                    ..NodeRun::default()
+                },
+            );
+            state.set_status(&step.id, status);
+        }
+        Some(state)
+    }
+}
+
+/// The status a step was written with. `Skipped` and `Bypassed` are written
+/// alike, and read back as skipped, which is all the window shows of either.
+fn status_from_css(css: &str) -> NodeStatus {
+    match css {
+        "running" => NodeStatus::Running,
+        "awaiting" => NodeStatus::AwaitingApproval,
+        "done" => NodeStatus::Done,
+        "skipped" => NodeStatus::Skipped,
+        "failed" => NodeStatus::Failed,
+        "rejected" => NodeStatus::Rejected,
+        "blocked" => NodeStatus::Blocked,
+        _ => NodeStatus::Pending,
     }
 }
 
@@ -255,6 +312,46 @@ mod tests {
             ))
         );
         assert!(!live.finished);
+
+        let drawn = live.as_state(&graph).expect("same flow, same steps");
+        assert!(drawn.started);
+        assert_eq!(drawn.status("preflight"), NodeStatus::Done);
+        assert_eq!(drawn.status("scan"), NodeStatus::AwaitingApproval);
+        assert_eq!(drawn.runs["scan"].proposal, "git status --porcelain");
+    }
+
+    #[test]
+    fn a_run_of_a_flow_since_changed_is_not_drawn_on_it() {
+        let graph = crate::services::flowdef::FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph();
+        let state = RunState::fresh(&graph);
+        let mut live = snapshot(
+            7,
+            "/r",
+            "commit_and_pr",
+            "Commit → PR",
+            &graph,
+            &state,
+            false,
+        );
+        assert!(live.as_state(&graph).is_some());
+        live.steps.pop();
+        assert!(live.as_state(&graph).is_none());
+        let mut old = snapshot(
+            7,
+            "/r",
+            "commit_and_pr",
+            "Commit → PR",
+            &graph,
+            &state,
+            false,
+        );
+        for step in &mut old.steps {
+            step.id.clear();
+        }
+        assert!(old.as_state(&graph).is_none(), "a server too old to say");
     }
 
     #[test]

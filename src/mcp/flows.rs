@@ -61,8 +61,56 @@ pub(super) fn tools() -> Value {
                                         left out of the commit. Only a step that lists \
                                         files (the commit) takes this.",
                     },
+                    "stop_asking": { "type": "boolean", "description": "Only when the user \
+                        said to stop asking: as the window's Stop asking me, the rest of this \
+                        run is trusted — approved by the Trusted run's rules, held at the rest \
+                        — and it goes on into the next flow the repository needs." },
                 },
                 "required": ["run_id"],
+            },
+        },
+        {
+            "name": "refresh",
+            "description": "The GitAgent window's Refresh: re-reads repositories and what each \
+                            needs. A folder refreshes every repository in it in the window \
+                            open on it; one repository, just that one; no path, every \
+                            repository in every open window. Call list_repos for the result.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path of a folder or \
+                        a repository. Leave out for everything open." },
+                },
+            },
+        },
+        {
+            "name": "model_region",
+            "description": "Where the model behind GitAgent's model steps runs. Without \
+                            region, says so. With region (europe, china or usa), switches it \
+                            to api0 in that region — only when the user asks, as each region \
+                            has its own data residency and price.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "region": { "type": "string", "enum": ["europe", "china", "usa"] },
+                    "folder": { "type": "string", "description": "The folder a GitAgent \
+                        window has open, or a repository in it: switches that folder's model, \
+                        as Settings in its window would. Leave out for the default every \
+                        folder without its own choice runs on." },
+                },
+            },
+        },
+        {
+            "name": "trust_all",
+            "description": "Whether Trust all is on in the GitAgent window, where every run \
+                            answers its own approvals. turn_off: true turns it off, when the \
+                            user asks. It cannot be turned on here: only the user does that, \
+                            in the window.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "turn_off": { "type": "boolean", "description": "Turn Trust all off." },
+                },
             },
         },
         {

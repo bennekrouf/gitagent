@@ -17,6 +17,32 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- A flow Claude runs through GitAgent's MCP server, or one started from a
+  terminal, now plays out on the flow's own steps in the window, as if you had
+  started it there: each step lights up as it runs, and clicking one shows what
+  it did or what it is waiting to do. Its approvals are still answered where
+  the run was started, so the window shows them without Approve or Reject
+  buttons. If the flow was changed in Setup after the run began, the window
+  falls back to the step list above the flow.
+- Telling Claude to stop asking at an approval now works like the window's Stop
+  asking me: that step is approved, the rest of the run answers its own
+  approvals by the Trusted run's rules, and it carries on into the next flow
+  the repository needs.
+- Claude can tell whether Trust all is on, and turn it off when you ask. It
+  cannot turn it on: that stays a button in the window. The top bar updates
+  right away when Trust all is turned off this way.
+- Claude can press Refresh for you: for one repository, for a folder, or for
+  every repository in every open GitAgent window. The window refreshes within a
+  second.
+- Claude can say where your model runs and switch it between api0's regions —
+  Europe, China and the United States — for one folder, as Settings in that
+  folder's window does, or for every folder without a choice of its own. An
+  open window shows the new region in its top bar straight away.
+
 ## [0.1.135] - 2026-10-28
 
 ### Changed

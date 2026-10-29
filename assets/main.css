@@ -1948,6 +1948,7 @@ a.pr-failed-check:hover {
 .live-step .dot { flex-shrink: 0; align-self: center; }
 .live-step-title { color: var(--text1); white-space: nowrap; }
 .live-step-summary { color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.detail-elsewhere { align-items: center; font-size: 11.5px; font-weight: 700; color: var(--yellow); }
 .live-run-wait { margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--yellow); }
 .live-run-proposal {
     margin: 6px 0 0; padding: 6px 8px; max-height: 140px; overflow: auto;
