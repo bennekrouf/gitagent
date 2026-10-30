@@ -1,0 +1,82 @@
+[
+ {
+  "query": "gitagent keeps stopping at the push step with 'rejected, non-fast-forward' and offers a 'pull first' button, is that safe on a client repo where i already rebased locally?",
+  "should_trigger": true
+ },
+ {
+  "query": "I have about 12 repos in ~/work with uncommitted stuff, can you take them all through commit and PR with the approvals so I just say yes to each?",
+  "should_trigger": true
+ },
+ {
+  "query": "my Review \u2192 Merge flow says CI is red but github shows all checks green on PR 418, why would it hold the merge",
+  "should_trigger": true
+ },
+ {
+  "query": "how do I add a Deploy flow that ssh's into my staging box and runs ./deploy.sh after the release step, in flows.toml",
+  "should_trigger": true
+ },
+ {
+  "query": "the commit message drafter in GitAgent is using ollama llama3 and the messages are awful, can I switch it to api0 europe?",
+  "should_trigger": true
+ },
+ {
+  "query": "Trusted run merged a PR I didn't expect it to. what exactly does trusted run auto-approve and where does it stop",
+  "should_trigger": true
+ },
+ {
+  "query": "GitAgent shows 'unfinished rebase' on the payments repo and both buttons scare me (finish / abandon). what do they each do",
+  "should_trigger": true
+ },
+ {
+  "query": "write me a bug report for the gitagent author, the Release step crashes when CHANGELOG.md has CRLF line endings, here's the step log: ...",
+  "should_trigger": true
+ },
+ {
+  "query": "branches panel lists 9 branches as 'nothing new', is clean up going to delete anything that's not merged?",
+  "should_trigger": true
+ },
+ {
+  "query": "my azure devops repos don't show PR status in gitagent but github ones do",
+  "should_trigger": true
+ },
+ {
+  "query": "how do I squash my last 4 commits into one before pushing",
+  "should_trigger": false
+ },
+ {
+  "query": "write a conventional commit message for this diff: added retry with exponential backoff to the http client in src/net/client.rs",
+  "should_trigger": false
+ },
+ {
+  "query": "set up a github actions workflow that runs cargo test and clippy on push for my rust workspace",
+  "should_trigger": false
+ },
+ {
+  "query": "git says 'detached HEAD' after I checked out a tag, how do I get back to main without losing the commit I made",
+  "should_trigger": false
+ },
+ {
+  "query": "compare git flow vs trunk based development for a 4 person team shipping a desktop app",
+  "should_trigger": false
+ },
+ {
+  "query": "review this PR diff for bugs before I merge it: <diff of auth middleware>",
+  "should_trigger": false
+ },
+ {
+  "query": "write a bash script that loops over every repo in ~/work and prints which ones have uncommitted changes",
+  "should_trigger": false
+ },
+ {
+  "query": "what's the difference between git merge --squash and a squash merge on github",
+  "should_trigger": false
+ },
+ {
+  "query": "my pre-commit hook takes 40s because it runs the whole test suite, how do I make it only test changed crates",
+  "should_trigger": false
+ },
+ {
+  "query": "help me write a CHANGELOG entry for version 2.3 from these bullet points",
+  "should_trigger": false
+ }
+]
