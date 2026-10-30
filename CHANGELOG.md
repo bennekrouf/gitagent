@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The GitAgent skill for Claude now explains how to drive GitAgent from an
+  agent through its MCP tools: what to run first, which steps wait for your
+  approval, and what to do when the app isn't connected yet. It also comes
+  with a guide to connecting GitAgent to Claude Desktop, Claude Code, Codex
+  and Cursor.
+
 ## [0.1.138] - 2026-10-30
 
 ### Changed

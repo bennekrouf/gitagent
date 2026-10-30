@@ -1,6 +1,6 @@
 ---
 name: gitagent
-description: Help someone use GitAgent, the desktop app that takes git repositories from uncommitted changes to an open pull request, a merge and a release, with an approval at every step that touches history or the remote. Use this whenever the user mentions GitAgent, or is using it and asks about flows (Commit → PR, Review → Merge, Release), approvals, trusted runs, the Branches panel, Setup or flows.toml, the model that drafts commit messages (Ollama, api0 in Europe, China or the United States, OpenAI and other APIs), GitHub or Azure DevOps connections, GitAgent Pro, or a step that failed with a fix offered on a button. Also use it when they want to report a GitAgent bug or ask the author for help.
+description: How to use GitAgent, the desktop app that takes git repositories from uncommitted changes to an open pull request, a merge and a release, with an approval at every step that touches history or the remote. Read this skill before calling any gitagent tool (list_repos, run_flow, approve, reject, trust_all, save_flow) and before answering any GitAgent question, because it has the approval rules, what each fix button does, and the known failures that the tools don't explain. Use it whenever the user mentions GitAgent or its flows (Commit → PR, Review → Merge, Release), approvals, trusted runs, the Branches panel, Setup or flows.toml, the commit-message model (Ollama, api0, OpenAI and others), GitHub or Azure DevOps connections, GitAgent Pro, a failed step, or wants to report a GitAgent bug.
 ---
 
 # GitAgent
@@ -16,6 +16,34 @@ often client work. When you can, look at the repository itself (`git status`,
 `git branch -vv`, `git log --oneline -5`, `git remote -v`): what state it is
 really in usually explains what GitAgent shows, and is faster than guessing
 from a description.
+
+## Driving it from an agent
+
+GitAgent has its own MCP server (`gitagent mcp`, over stdio). When its tools
+are available:
+
+- **`list_repos`** first: what each repository needs next. Then
+  **`run_flow`** with the flow the repository needs.
+- A step that touches history or the remote stops and returns what it will
+  do. Show that to the user and call **`approve`** or **`reject`** with their
+  answer. Never approve on their behalf. Pass `trusted: true` to `run_flow`
+  only when the user asks for a trusted run; when they answer an approval
+  with "stop asking me", approve it with `stop_asking: true`. Either way,
+  report what was approved automatically and where the run stopped.
+- **`trust_all`** says whether *Trust all* is on, and turns it off if the
+  user asks. Never turn it on: only the user does, in the window.
+- **`list_steps`**, **`get_flow`**, **`save_flow`**, **`delete_flow`** and
+  **`show_flow`** read and change the flows, as Setup does. Say what you will
+  change, as the user would see it in Setup, before saving.
+- **`repo_insight`** tells everything GitAgent knows about one repository;
+  **`refresh`** re-reads one, a folder or everything open;
+  **`model_region`** shows or switches api0's region.
+
+If no tool named `list_repos` from a `gitagent` server is available, the app
+is not connected. Tell the user GitAgent is a separate desktop app, from
+<https://mayorana.ch/en/apps/gitagent>, and do not download or install it for
+them. Once it is installed, `references/connect.md` has the steps per agent.
+You can still help from the repository itself and this skill.
 
 ## How it is organised
 
