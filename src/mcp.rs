@@ -58,7 +58,9 @@ run), delete_flow removes one, and show_flow sets which repositories show it. Sa
 are about to change before saving, as the user would see it in Setup. repo_insight tells \
 everything GitAgent knows about one repository. refresh is the window's Refresh button, for \
 one repository, a folder, or everything open. model_region says where the model runs and \
-switches it between api0's regions (europe, china, usa) when the user asks.";
+switches it between api0's regions (europe, china, usa) when the user asks. \
+Before calling these tools, read the gitagent skill if one is available: it has the confirmation \
+rules, defaults and report layouts that these instructions leave out.";
 
 pub fn serve() {
     match tokio::runtime::Runtime::new() {
