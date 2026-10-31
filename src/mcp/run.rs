@@ -162,7 +162,7 @@ async fn carry_on(first: u64, runs: &mut BTreeMap<u64, Run>) -> Result<Value, St
         return Err("no flow ran".into());
     };
     if !legs.is_empty() {
-        last["earlier_flows"] = json!(legs);
+        last["earlier_flows"] = json!(legs.iter().map(brief).collect::<Vec<_>>());
     }
     Ok(last)
 }
@@ -405,6 +405,34 @@ pub(super) fn report(run: &Run) -> Value {
         out["approved_automatically"] = json!(run.approved_by_trust);
         if let Some(why) = &run.held {
             out["held"] = json!(why);
+        }
+    }
+    out
+}
+
+/// A flow a trusted run already finished, as the report of the flow it went
+/// on to carries it: what it made and one line per step that did something.
+/// Its diffs and approvals are behind it; the client only needs to say so.
+pub(super) fn brief(report: &Value) -> Value {
+    let steps: Vec<String> = report["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let summary = s["summary"].as_str().filter(|t| !t.is_empty())?;
+            Some(format!("{}: {summary}", s["title"].as_str().unwrap_or("")))
+        })
+        .collect();
+    let mut out = json!({
+        "run_id": report["run_id"],
+        "flow": report["flow"],
+        "phase": report["phase"],
+        "steps": steps,
+        "produced": report["produced"],
+    });
+    for key in ["approved_automatically", "chain_stopped"] {
+        if !report[key].is_null() {
+            out[key] = report[key].clone();
         }
     }
     out

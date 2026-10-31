@@ -99,3 +99,25 @@ fn an_unknown_region_changes_nothing() {
 fn refresh_refuses_a_path_that_is_not_a_folder() {
     assert!(refresh("/no/such/folder/anywhere").is_err());
 }
+
+#[test]
+fn a_tool_result_is_compact_and_has_no_nulls() {
+    let text = pretty(&json!({ "a": null, "b": [{ "c": null, "d": 1 }], "e": "x" }));
+    assert_eq!(text, r#"{"b":[{"d":1}],"e":"x"}"#);
+}
+
+#[test]
+fn an_earlier_flow_is_told_in_one_line_per_step_that_did_something() {
+    let out = brief(&json!({
+        "run_id": 7, "flow": "commit_and_pr", "phase": "finished",
+        "steps": [
+            { "id": "a", "title": "Commit", "summary": "3 files" },
+            { "id": "b", "title": "Push", "summary": null },
+        ],
+        "awaiting": { "diff": "long" },
+        "produced": { "branch": "x" },
+    }));
+    assert_eq!(out["steps"], json!(["Commit: 3 files"]));
+    assert!(out.get("awaiting").is_none());
+    assert_eq!(out["produced"]["branch"], "x");
+}

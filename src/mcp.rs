@@ -38,7 +38,7 @@ const PROTOCOL: &str = "2025-06-18";
 /// How much of a diff or a log one tool result carries. A client's context is
 /// the budget here, not the screen: the end of a log is where a failure is,
 /// and the start of a diff is enough to see what kind of change it is.
-const DIFF_CAP: usize = 20_000;
+const DIFF_CAP: usize = 8_000;
 const LOG_CAP: usize = 4_000;
 
 const INSTRUCTIONS: &str = "GitAgent runs git work as flows of steps: commit and open a pull \
@@ -262,8 +262,24 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+/// A tool result as the client reads it: compact, with no null fields. It
+/// stays in the client's context for the rest of the conversation, so every
+/// byte here is paid for again on each later turn.
 fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
+    serde_json::to_string(&without_nulls(value.clone())).unwrap_or_default()
+}
+
+fn without_nulls(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, without_nulls(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(without_nulls).collect()),
+        other => other,
+    }
 }
 
 async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result<Value, String> {
