@@ -13,10 +13,10 @@ pub(super) async fn already_committed(
     state: &RunState,
 ) -> Result<Option<StepOutcome>, StepFailure> {
     let base = state.artifact("base");
-    if base.is_empty() || base == branch {
+    if base.is_empty() {
         return Ok(None);
     }
-    let base_ref = if git::run(
+    let tracked = git::run(
         repo,
         "git",
         &[
@@ -27,11 +27,15 @@ pub(super) async fn already_committed(
         ],
     )
     .await
-    .is_ok()
-    {
-        format!("origin/{base}")
-    } else {
-        base.to_string()
+    .is_ok();
+    // Sitting on `base` itself, only origin's copy says what is unpushed:
+    // the local one is HEAD. Commits made straight on `base` are exactly
+    // what the sidebar offers to push, and the commit step moves them onto
+    // a branch of their own.
+    let base_ref = match (tracked, base == branch) {
+        (true, _) => format!("origin/{base}"),
+        (false, true) => return Ok(None),
+        (false, false) => base.to_string(),
     };
 
     let range = format!("{base_ref}..HEAD");
@@ -630,6 +634,9 @@ pub(super) async fn switch_to_work_branch(
             .to_string();
         log.push_str(&git::create_branch(repo, &name).await?);
         log.push_str(&format!("created and switched to {name}\n"));
+        if moves_commits_off_base(state) {
+            log.push_str(&reset_base_to_origin(repo, state.artifact("base"), &name).await);
+        }
         return Ok((name.clone(), Some(Opened { name, at })));
     }
 
@@ -679,6 +686,32 @@ pub(super) async fn switch_to_work_branch(
                 }],
             })
         }
+    }
+}
+
+/// Whether the commit step is carrying commits already made on `base` itself
+/// onto a branch of their own: `scan` found nothing to stage, only commits
+/// origin's `base` does not have.
+pub(super) fn moves_commits_off_base(state: &RunState) -> bool {
+    !is_first_commit(state)
+        && state.artifact("merged_pr").is_empty()
+        && !state.artifact("base").is_empty()
+        && state.artifact("branch") == state.artifact("base")
+        && state.artifact("commit_paths").trim().is_empty()
+}
+
+/// Puts `base` back where origin has it, once its unpushed commits are on
+/// `name`. Left as it was, it would still hold them after the pull request
+/// is squash-merged, and could no longer be brought up to date. Nothing is
+/// lost — `name` holds every commit — so a refusal is only noted.
+async fn reset_base_to_origin(repo: &str, base: &str, name: &str) -> String {
+    let origin = format!("origin/{base}");
+    match git::run(repo, "git", &["branch", "-f", base, &origin]).await {
+        Ok(_) => format!("{base} put back to {origin}: its unpushed commits are on {name} now\n"),
+        Err(e) => format!(
+            "{base} still has the commits that are on {name} — git would not move it \
+             back to {origin}:\n{e}\n"
+        ),
     }
 }
 

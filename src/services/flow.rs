@@ -304,6 +304,15 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
                     state.artifact("merged_pr"),
                     state.artifact("base"),
                 )
+            } else if commit::moves_commits_off_base(state) {
+                let base = state.artifact("base");
+                return format!(
+                    "git checkout -b {name}\ngit branch -f {base} origin/{base}\n\n\
+                     The commits already on {base} that origin does not have move to \
+                     {name}, and {base} goes back to where origin has it. Nothing new \
+                     is committed.",
+                    name = state.artifact("branch_name"),
+                );
             } else if must_branch(state) {
                 format!("git checkout -b {}\n", state.artifact("branch_name"))
             } else if is_first_commit(state) {
