@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- GitAgent's answers to Claude and other agents are much shorter, so a long
+  session spends fewer tokens. Empty fields are left out, the diff shown for
+  an approval is cut sooner (the full one is still in the GitAgent window),
+  and flows a trusted run already finished come back as one line per step.
+
 ## [0.1.139] - 2026-10-30
 
 ### Changed
