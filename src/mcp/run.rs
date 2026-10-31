@@ -350,19 +350,25 @@ pub(super) fn report(run: &Run) -> Value {
         .iter()
         .map(|n| {
             let entry = state.runs.get(&n.id).cloned().unwrap_or_default();
+            let status = state.status(&n.id);
             let mut step = json!({
                 "id": n.id,
                 "title": n.title,
-                "status": state.status(&n.id).label(),
-                "summary": entry.summary,
+                "status": status.label(),
             });
-            if state.status(&n.id) == NodeStatus::Failed {
+            // "failed" on a failed step says nothing its status doesn't.
+            if !entry.summary.is_empty() && entry.summary != status.label() {
+                step["summary"] = json!(entry.summary);
+            }
+            if status == NodeStatus::Failed {
                 step["log"] = json!(tail(&entry.log, LOG_CAP));
-                step["fixes"] = json!(entry
-                    .remedies
-                    .iter()
-                    .map(|r| json!({ "label": r.label, "command": r.display }))
-                    .collect::<Vec<_>>());
+                if !entry.remedies.is_empty() {
+                    step["fixes"] = json!(entry
+                        .remedies
+                        .iter()
+                        .map(|r| json!({ "label": r.label, "command": r.display }))
+                        .collect::<Vec<_>>());
+                }
             }
             step
         })
@@ -385,11 +391,26 @@ pub(super) fn report(run: &Run) -> Value {
 
     // Only the short, unqualified artifacts — a branch name, a PR URL — are
     // worth a client's context; diffs and drafts are already in the steps.
-    let produced: BTreeMap<&String, &String> = state
+    let mut produced: BTreeMap<&String, &String> = state
         .artifacts
         .iter()
         .filter(|(k, v)| !k.contains('.') && v.len() <= 300 && !v.trim().is_empty())
         .collect();
+    // Nor is anything said twice: a draft already reads as its step's
+    // summary, file_notes names every path with what happened to it, and the
+    // branch committed on is the branch drafted unless it had to change.
+    let summaries: Vec<&str> = steps.iter().filter_map(|s| s["summary"].as_str()).collect();
+    produced.retain(|_, v| !summaries.contains(&v.as_str()));
+    if produced.keys().any(|k| *k == "file_notes") {
+        produced.retain(|k, _| *k != "commit_paths" && *k != "untracked");
+    }
+    let work_branch = produced
+        .iter()
+        .find(|(k, _)| **k == "work_branch")
+        .map(|(_, v)| *v);
+    if let Some(work) = work_branch {
+        produced.retain(|k, v| *k != "branch_name" || *v != work);
+    }
 
     let mut out = json!({
         "run_id": state.run,

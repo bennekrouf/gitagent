@@ -22,7 +22,8 @@ were never released.
 ### Changed
 
 - GitAgent's answers to Claude and other agents are much shorter, so a long
-  session spends fewer tokens. Empty fields are left out, the diff shown for
+  session spends fewer tokens. Empty fields and anything a run already said
+  elsewhere in the same answer are left out, the diff shown for
   an approval is cut sooner (the full one is still in the GitAgent window),
   and flows a trusted run already finished come back as one line per step.
 
