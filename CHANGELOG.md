@@ -17,6 +17,13 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Reports now omit redundant information, such as duplicate summaries and
+  irrelevant artifacts, making them cleaner and more focused.
+
 ## [0.1.140] - 2026-10-31
 
 ### Changed
