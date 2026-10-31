@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- **Push & open PR** works for commits made straight on the base branch. The
+  run used to stop at Scan changes with "nothing to commit" and every step
+  after it skipped, so the button looked as if it had started over. Those
+  commits now go out on a branch of their own, with a pull request, and the
+  base branch goes back to where origin has it. The Commit approval says so
+  before anything moves.
+
 ## [0.1.141] - 2026-10-31
 
 ### Fixed

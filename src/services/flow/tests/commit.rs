@@ -392,3 +392,51 @@ fn a_merged_branch_sends_the_commit_to_a_fresh_branch_from_base() {
     );
     assert!(proposal.contains("already merged in #37"));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn commits_made_on_base_itself_go_out_on_a_branch_of_their_own() {
+    let (root, _) = edited_repo("onbase");
+    let origin = root.with_extension("origin");
+    sh(
+        &root,
+        &format!(
+            "git checkout -q . && git init -q --bare {o} && git remote add origin {o} && \
+             git push -q -u origin main && echo c > keep.rs && git commit -q -am 'feat: local'",
+            o = origin.display()
+        ),
+    );
+    let repo = root.to_str().unwrap();
+    let mut s = commit_run("commit", &[]);
+    s.artifacts.insert("base".into(), "main".into());
+
+    // What the sidebar offers to push, the scan now finds too.
+    let scanned = scan(repo, &s).await.unwrap();
+    assert!(!scanned.nothing_to_do, "{}", scanned.summary);
+    for (k, v) in scanned.artifacts {
+        s.artifacts.insert(k, v);
+    }
+    for (k, v) in [
+        ("branch_name", "feat/local"),
+        ("commit_subject", "feat: local"),
+    ] {
+        s.artifacts.insert(k.into(), v.into());
+    }
+    assert!(moves_commits_off_base(&s));
+
+    let done = commit("commit", repo, &s).await.unwrap();
+    assert!(!done.nothing_to_do);
+    assert_eq!(sh(&root, "git branch --show-current"), "feat/local");
+    assert_eq!(
+        sh(&root, "git rev-list --count main..feat/local"),
+        "1",
+        "the commit goes out on the new branch"
+    );
+    assert_eq!(
+        sh(&root, "git rev-parse main"),
+        sh(&root, "git rev-parse origin/main"),
+        "main is back where origin has it"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&origin);
+}
