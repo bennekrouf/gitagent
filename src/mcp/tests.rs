@@ -121,3 +121,31 @@ fn an_earlier_flow_is_told_in_one_line_per_step_that_did_something() {
     assert!(out.get("awaiting").is_none());
     assert_eq!(out["produced"]["branch"], "x");
 }
+
+#[test]
+fn a_report_says_nothing_twice() {
+    let mut r = run(false);
+    let art = |k: &str, v: &str| (k.to_string(), v.to_string());
+    r.state.artifacts.extend([
+        art("file_notes", "a.rs\tmodified"),
+        art("commit_paths", "a.rs"),
+        art("untracked", "c.txt"),
+        art("branch_name", "fix/x"),
+        art("work_branch", "fix/x"),
+        art("commit_sha", "abc1234"),
+    ]);
+    let first = r.graph.nodes[0].id.clone();
+    r.state.runs.entry(first).or_default().summary = "abc1234".into();
+    let out = report(&r);
+    let produced = out["produced"].as_object().unwrap();
+    assert_eq!(
+        produced.keys().collect::<Vec<_>>(),
+        ["file_notes", "work_branch"],
+        "the sha is a step's summary, the paths are in file_notes, the branch didn't change"
+    );
+    let steps = out["steps"].as_array().unwrap();
+    assert!(
+        steps[1..].iter().all(|s| s.get("summary").is_none()),
+        "no empty summaries"
+    );
+}
