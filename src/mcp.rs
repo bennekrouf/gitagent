@@ -45,7 +45,9 @@ const INSTRUCTIONS: &str = "GitAgent runs git work as flows of steps: commit and
 request, review and merge one, cut a release. Start with list_repos to see what each repository \
 needs, then run_flow. Any step that touches git history or the remote stops and returns what it \
 will do; show that to the user and call approve or reject with their answer. Never approve on \
-the user's behalf without asking them, and run trusted only when the user asks for it. After a \
+the user's behalf without asking them, and run trusted only when the user asks for it. The \
+user may also answer a waiting step in the GitAgent window: if approve or reject says the run \
+is not waiting, call run_status to see where it went. After a \
 trusted run, report what was approved automatically and where it stopped. \
 Before calling these tools, read the gitagent skill if one is available: it has the confirmation \
 rules, defaults and report layouts that these instructions leave out.";
@@ -68,7 +70,20 @@ async fn serve_stdio() {
     let mut stdout = tokio::io::stdout();
     let mut runs: BTreeMap<u64, Run> = BTreeMap::new();
 
-    while let Ok(Some(line)) = lines.next_line().await {
+    // Between calls, an approval answered in the window instead of in Claude.
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let line = tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => line,
+                _ => break,
+            },
+            _ = tick.tick() => {
+                apply_window_answers(&mut runs).await;
+                continue;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -122,6 +137,24 @@ async fn serve_stdio() {
             _ => error(id, -32601, &format!("no method {method}")),
         };
         write(&mut stdout, &reply).await;
+    }
+}
+
+/// Applies what the window answered for this server's runs, as `approve` and
+/// `reject` would. Claude sees where the run went on with `run_status`.
+async fn apply_window_answers(runs: &mut BTreeMap<u64, Run>) {
+    for answer in live::take_answers() {
+        let Some(run) = runs.get_mut(&answer.run) else {
+            continue;
+        };
+        if run.waiting().map(|n| n.id) != Some(answer.step) {
+            continue;
+        }
+        let _ = if answer.approved {
+            approve(answer.run, &[], false, runs).await.map(|_| ())
+        } else {
+            run.decide(false, &[]).await
+        };
     }
 }
 

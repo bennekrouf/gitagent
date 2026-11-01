@@ -1,6 +1,7 @@
 //! The detail pane for the selected step, and what it needs from the workspace.
 
 use super::*;
+use crate::services::live;
 
 /// The signals a step's panel acts on. Copy, like the signals themselves, so
 /// one value can be handed to every place that shows a step.
@@ -47,6 +48,7 @@ pub(super) fn step_detail(
     is_light: bool,
     panel: Option<Panel>,
     elsewhere: Option<String>,
+    remote: Option<(u32, u64)>,
 ) -> Element {
     let Wiring {
         mut states,
@@ -82,9 +84,15 @@ pub(super) fn step_detail(
             is_light,
             run_started: state.started,
             elsewhere,
+            answerable: remote.is_some(),
             on_approve: {
                 let key = key.clone();
                 move |id: String| {
+                    // Claude's run: its own server decides the step.
+                    if let Some((pid, run)) = remote {
+                        live::answer(live::Answer { pid, run, step: id, approved: true });
+                        return;
+                    }
                     if let Some(mut panel) = panel {
                         panel.close_when_done.set(Some((key.clone(), id.clone())));
                     }
@@ -96,6 +104,10 @@ pub(super) fn step_detail(
             on_reject: {
                 let key = key.clone();
                 move |id: String| {
+                    if let Some((pid, run)) = remote {
+                        live::answer(live::Answer { pid, run, step: id, approved: false });
+                        return;
+                    }
                     states.write().entry(key.clone()).or_default()
                         .decisions.insert(id, false);
                     approvals().notify_waiters();

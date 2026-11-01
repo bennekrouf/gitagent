@@ -4,8 +4,10 @@
 //! it shares nothing with an open window but the files in the data directory.
 //! `gitagent run` is the same, started from a terminal instead.
 //! So after every step it writes what its runs look like here, and the window
-//! reads that and shows it — step by step, read-only. Approvals stay with the
-//! client that started the run: one place answers, never two.
+//! reads that and shows it step by step. An MCP run's approval can also be
+//! answered in the window: it writes the answer to `ANSWERS`, and the server
+//! that owns the run picks it up (`take_answers`) and carries the run on.
+//! A terminal run is still answered only in its terminal.
 
 use serde::{Deserialize, Serialize};
 
@@ -238,6 +240,56 @@ pub fn load() -> Vec<LiveRun> {
         .collect();
     runs.sort_by_key(|r| std::cmp::Reverse(r.updated));
     runs
+}
+
+const ANSWERS: &str = "mcp_answers.json";
+
+/// The window's answer to the step an MCP run is waiting on.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Answer {
+    pub pid: u32,
+    pub run: u64,
+    /// The step answered, so an answer to a step already decided in Claude
+    /// is dropped rather than applied to the next one.
+    pub step: String,
+    pub approved: bool,
+}
+
+fn read_answers() -> Vec<Answer> {
+    std::fs::read_to_string(store::data_dir().join(ANSWERS))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_answers(answers: &[Answer]) {
+    if let Ok(text) = serde_json::to_string_pretty(answers) {
+        let _ = std::fs::create_dir_all(store::data_dir());
+        let _ = store::write_atomic(&store::data_dir().join(ANSWERS), text.as_bytes());
+    }
+}
+
+/// Called by the window: answers a step of a run an MCP server is driving.
+pub fn answer(answer: Answer) {
+    let mut answers = read_answers();
+    answers.retain(|a| !(a.pid == answer.pid && a.run == answer.run) && alive(a.pid));
+    answers.push(answer);
+    write_answers(&answers);
+}
+
+/// Called by the MCP server: the window's answers to its own runs, removed
+/// from the file so each is applied once.
+pub fn take_answers() -> Vec<Answer> {
+    let answers = read_answers();
+    if answers.is_empty() {
+        return answers;
+    }
+    let me = std::process::id();
+    let (mine, rest): (Vec<_>, Vec<_>) = answers.into_iter().partition(|a| a.pid == me);
+    if !mine.is_empty() {
+        write_answers(&rest);
+    }
+    mine
 }
 
 /// When the file last changed, so the window reads it only then.

@@ -258,7 +258,7 @@ pub(super) fn middle_pane(
                                     }
                                     }
                                 } else if let Some(node_id) = shown_step {
-                                    {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(Panel { drawer, close_when_done }), elsewhere.clone())}
+                                    {step_detail(wiring, key.clone(), graph.clone(), run_state.clone(), node_id.clone(), *is_light.read(), Some(Panel { drawer, close_when_done }), elsewhere.clone(), watched.as_ref().and_then(|w| w.remote))}
                                 }
                             }
                         }
@@ -394,7 +394,7 @@ pub(super) fn middle_pane(
                     }
 
                     div { class: "detail-col",
-                        {step_detail(wiring, key.clone(), graph.clone(), state.clone(), node_id.clone(), *is_light.read(), None, elsewhere.clone())}
+                        {step_detail(wiring, key.clone(), graph.clone(), state.clone(), node_id.clone(), *is_light.read(), None, elsewhere.clone(), watched.as_ref().and_then(|w| w.remote))}
                     }
                 }
             }
