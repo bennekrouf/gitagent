@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Added visual cues for grabbable areas in dividers and run drawer grips, making
+  it easier to identify where to drag.
+- Added support for answering MCP run approvals directly within the GitAgent
+  window, allowing users to approve or reject runs without leaving the
+  application.
+
 ## [0.1.148] - 2026-11-01
 
 ### Added
