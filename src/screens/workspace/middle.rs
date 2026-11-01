@@ -13,7 +13,7 @@ pub(super) fn middle_pane(
     selected_pr: Signal<String>,
     mut selected_node: Signal<String>,
     running: Signal<BTreeSet<Key>>,
-    mut chain_note: Signal<String>,
+    chain_note: Signal<String>,
     run_view: Signal<bool>,
     mut drawer: Signal<Option<String>>,
     panel_step: Signal<Option<String>>,
@@ -22,7 +22,7 @@ pub(super) fn middle_pane(
     mut diff_panel: Signal<Option<String>>,
     pr_diffs: Signal<PrDiffs>,
     close_when_done: Signal<Option<(Key, String)>>,
-    mut setup_open: Signal<bool>,
+    setup_open: Signal<bool>,
     branches_busy: Signal<Option<(String, String)>>,
     middle_w: Signal<f64>,
     mut panel_w: Signal<Option<f64>>,
@@ -51,6 +51,12 @@ pub(super) fn middle_pane(
     watched: Option<Watched>,
     props: WorkspaceProps,
 ) -> Element {
+    // Where a run was refused or a chain stopped, in words you can act on.
+    // Built once for both views: while the run view was open this note had
+    // nowhere to go, so a Play that was refused said nothing at all — which
+    // is indistinguishable from a button that does not work.
+    let note = chain_banner(chain_note, setup_open);
+
     rsx! {
         match active.clone() {
             None => rsx! {
@@ -179,6 +185,7 @@ pub(super) fn middle_pane(
                                 ..store::load_layout()
                             });
                         },
+                        note: note.clone(),
                         flows: flow_strip,
                         context: flow_context,
                         actions: repo_actions(&repo, &key, &can_run_actions, &other_run_actions),
@@ -347,24 +354,7 @@ pub(super) fn middle_pane(
                             }
                         }
 
-                        // Where the chain stopped, when it stopped for
-                        // a reason you can act on.
-                        if !chain_note.read().is_empty() {
-                            div { class: "chain-note",
-                                span { class: "chain-note-icon", "\u{26a0}" }
-                                span { class: "chain-note-text", "{chain_note}" }
-                                button {
-                                    class: "chain-note-open",
-                                    onclick: move |_| setup_open.set(true),
-                                    "Open Setup"
-                                }
-                                button {
-                                    class: "chain-note-close",
-                                    onclick: move |_| chain_note.set(String::new()),
-                                    "\u{2715}"
-                                }
-                            }
-                        }
+                        {note.clone()}
 
                         {flow_strip}
 
@@ -406,6 +396,30 @@ pub(super) fn middle_pane(
                     div { class: "detail-col",
                         {step_detail(wiring, key.clone(), graph.clone(), state.clone(), node_id.clone(), *is_light.read(), None, elsewhere.clone())}
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The note a refused start or a stopped chain leaves behind, with the way
+/// out of it: Setup for a flow that cannot answer what the repository needs,
+/// and a cross for everything else.
+fn chain_banner(mut chain_note: Signal<String>, mut setup_open: Signal<bool>) -> Element {
+    rsx! {
+        if !chain_note.read().is_empty() {
+            div { class: "chain-note",
+                span { class: "chain-note-icon", "\u{26a0}" }
+                span { class: "chain-note-text", "{chain_note}" }
+                button {
+                    class: "chain-note-open",
+                    onclick: move |_| setup_open.set(true),
+                    "Open Setup"
+                }
+                button {
+                    class: "chain-note-close",
+                    onclick: move |_| chain_note.set(String::new()),
+                    "\u{2715}"
                 }
             }
         }

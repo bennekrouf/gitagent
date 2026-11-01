@@ -34,6 +34,16 @@ pub(super) fn run_head(
                     if waiting {
                         span { class: "run-needs", "\u{23f8} needs you" }
                     }
+                    // A Play that cannot start says so here, not only in a
+                    // tooltip on a dimmed button: hovering to find out why
+                    // nothing happened is not something anyone thinks to do.
+                    if startable && !props.can_start && !props.start_note.is_empty() {
+                        span {
+                            class: "run-why",
+                            title: "{props.start_note}",
+                            "\u{26a0} {props.start_note}"
+                        }
+                    }
                 }
             }
             div { class: "run-actions", {props.actions} }
