@@ -1217,6 +1217,13 @@ a.btn { text-decoration: none; }
     top: 0; bottom: 0; left: -3px; right: -3px;
 }
 .divider:hover, .body-dragging .divider { background: var(--green); }
+/* Three dots mid-height mark where to grab. */
+.divider::before {
+    content: ""; position: absolute; z-index: 1; pointer-events: none;
+    top: 50%; left: 50%; width: 4px; height: 22px; transform: translate(-50%, -50%);
+    border-radius: 2px;
+    background: radial-gradient(circle, var(--text3) 1.3px, transparent 1.6px) center / 4px 7.33px repeat-y;
+}
 /* Text selection during a drag turns the whole window blue. */
 .body-dragging { user-select: none; cursor: col-resize; }
 
@@ -1812,8 +1819,14 @@ a.pr-failed-check:hover {
 }
 .run-drawer-grip::after {
     content: ""; position: absolute;
-    top: 0; bottom: 0; left: 3px; width: 2px;
-    background: transparent; transition: background 0.12s;
+    top: 0; bottom: 0; left: 2px; width: 4px;
+    background: var(--border); transition: background 0.12s;
+}
+.run-drawer-grip::before {
+    content: ""; position: absolute; z-index: 1; pointer-events: none;
+    top: 50%; left: 50%; width: 4px; height: 22px; transform: translate(-50%, -50%);
+    border-radius: 2px;
+    background: radial-gradient(circle, var(--text3) 1.3px, transparent 1.6px) center / 4px 7.33px repeat-y;
 }
 .run-drawer-grip:hover::after,
 .run-body-resizing .run-drawer-grip::after { background: var(--green); }
