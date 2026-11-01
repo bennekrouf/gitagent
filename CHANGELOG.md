@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Install & restart, on the banner that says a new version is out: one click
+  downloads it, checks it, puts it in place of the version you have and opens it
+  again, on macOS, Windows and Linux. No disk image to open, drag and throw
+  away, no setup to click through. If an update can't finish, GitAgent says why
+  the next time it opens. Where it can't replace itself (an app in a folder you
+  can't change), the banner offers the download instead.
+
 ## [0.1.147] - 2026-11-01
 
 ### Fixed
@@ -30,15 +41,6 @@ were never released.
   left behind when it opens.
 
 ## [0.1.146] - 2026-11-01
-
-### Added
-
-- Install & restart, on the banner that says a new version is out: one click
-  downloads it, checks it, puts it in place of the version you have and opens
-  it again, on macOS, Windows and Linux. No disk image to open, drag and throw
-  away, no setup to click through. If an update can't finish, GitAgent says why
-  the next time it opens. Where it can't replace itself (an app in a folder you
-  can't change), the banner offers the download instead.
 
 ### Fixed
 
