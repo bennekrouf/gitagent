@@ -51,6 +51,9 @@ Before calling these tools, read the gitagent skill if one is available: it has 
 rules, defaults and report layouts that these instructions leave out.";
 
 pub fn serve() {
+    // As the window does at startup: a claim whose server was killed with the
+    // Claude session that started it holds nothing any more.
+    busy::sweep();
     match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime.block_on(serve_stdio()),
         Err(e) => {
