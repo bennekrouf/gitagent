@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 
-use crate::services::licence::{self, Account, FreeReply, Status, BUY_URL};
+use crate::services::licence::{self, Account, AccountExt, FreeReply, Status, BUY_URL};
 use crate::telemetry;
 
 #[derive(Props, Clone, PartialEq)]
@@ -110,13 +110,7 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
     let current = status.read().clone();
 
     if let Status::Pro(a) = &current {
-        let renewal = a.period_end_day().map(|day| {
-            if a.cancel_at_period_end {
-                format!("Ends on {day}")
-            } else {
-                format!("Renews on {day}")
-            }
-        });
+        let renewal = (!a.period_end_day().is_empty()).then(|| a.renewal());
         return rsx! {
             div { class: "modal-backdrop", onclick: close,
                 div {
@@ -345,7 +339,8 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
 /// it renews.
 #[component]
 fn PlanDetails(account: Account) -> Element {
-    let renewal = account.period_end_day().map(|day| {
+    let day = account.period_end_day();
+    let renewal = (!day.is_empty()).then(|| {
         if account.cancel_at_period_end {
             format!("Ends on {day}; it won't renew.")
         } else {

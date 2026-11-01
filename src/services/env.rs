@@ -35,7 +35,7 @@ const INHERITED: &[&str] = &[
     // Not credentials, but the same problem: an opt-out exported from a
     // profile is invisible to a bundle launched from Finder unless it is
     // carried across, so "I set DISABLE_UPDATE_CHECK" quietly did nothing
-    // outside a terminal. See telemetry.rs for what they switch off.
+    // outside a terminal. See desktop_kit::telemetry for what they switch off.
     "DISABLE_UPDATE_CHECK",
     "DO_NOT_TRACK",
     "GITAGENT_NO_TELEMETRY",

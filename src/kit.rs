@@ -1,7 +1,6 @@
 //! Names GitAgent to desktop-kit, the code every mayorana desktop app shares
-//! (the update check and the notice), and lends it GitAgent's HTTP client.
-//! GitAgent's usage statistics and licence are its own (see `telemetry` and
-//! `services::licence`).
+//! (usage statistics, the licence, the update check and the notice), and
+//! lends it GitAgent's HTTP client.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -14,11 +13,9 @@ pub fn init() {
         id: "gitagent",
         name: "GitAgent",
         version: env!("CARGO_PKG_VERSION"),
-        // Unused: GitAgent keeps its own usage statistics (see `telemetry`).
         telemetry_folder: "gitagent",
         product: "gitagent",
-        // GitAgent's licence is its own (see `services::licence`).
-        licence_file: || None,
+        licence_file: crate::services::licence::licence_file,
         http,
     });
 }
