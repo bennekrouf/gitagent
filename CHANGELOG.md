@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Using GitAgent from Claude, Codex or another agent takes less of the agent's
+  context on every message, including ones that have nothing to do with
+  GitAgent: its instructions are a few lines, with the details moved to the
+  tools that need them.
+
 ## [0.1.143] - 2026-10-31
 
 ### Changed

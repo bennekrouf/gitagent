@@ -45,20 +45,8 @@ const INSTRUCTIONS: &str = "GitAgent runs git work as flows of steps: commit and
 request, review and merge one, cut a release. Start with list_repos to see what each repository \
 needs, then run_flow. Any step that touches git history or the remote stops and returns what it \
 will do; show that to the user and call approve or reject with their answer. Never approve on \
-the user's behalf without asking them. Pass trusted: true to run_flow only when the user asks for \
-a trusted run: GitAgent then answers approvals itself by the rules of its Trusted run — it holds \
-at anything risky, any script or deploy, and release notes — and carries on into the next flow \
-the repository needs. When the user answers an approval with \"stop asking me\", approve it \
-with stop_asking: true: the rest of that run is trusted the same way. If the user turned on \
-Trust all in the GitAgent window, runs are trusted already; trust_all says whether it is on, \
-and turns it off if the user asks — never on, which only the user does, in the window. Either way, report what was approved automatically and where it stopped. The flows \
-themselves can be read and changed too: list_steps names the steps a flow can use, get_flow \
-shows one, save_flow creates or changes one (it is refused, with the reason, if it would not \
-run), delete_flow removes one, and show_flow sets which repositories show it. Say what you \
-are about to change before saving, as the user would see it in Setup. repo_insight tells \
-everything GitAgent knows about one repository. refresh is the window's Refresh button, for \
-one repository, a folder, or everything open. model_region says where the model runs and \
-switches it between api0's regions (europe, china, usa) when the user asks. \
+the user's behalf without asking them, and run trusted only when the user asks for it. After a \
+trusted run, report what was approved automatically and where it stopped. \
 Before calling these tools, read the gitagent skill if one is available: it has the confirmation \
 rules, defaults and report layouts that these instructions leave out.";
 

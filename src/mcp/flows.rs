@@ -40,7 +40,7 @@ pub(super) fn tools() -> Value {
                                                               review flow." },
                     "trusted": { "type": "boolean", "description": "Only when the user asked \
                         for a trusted run: GitAgent approves what its Trusted run would, holds \
-                        at the rest, and continues into the next flow the repository needs. \
+                        at the rest (anything risky, any script or deploy, release notes), and continues into the next flow the repository needs. \
                         Already on if the user turned on Trust all in the GitAgent window." },
                 },
                 "required": ["repo", "flow"],
@@ -161,7 +161,8 @@ pub(super) fn tools() -> Value {
                             gated. Refused, with the reasons, if the flow would not run. A \
                             script or server step always stops for approval: `gated: false` \
                             on one is refused unless it was already so. flows.toml is backed \
-                            up first, and the open window picks the change up by itself.",
+                            up first, and the open window picks the change up by itself. Say \
+                            what you are about to change first, as the user would see it in Setup.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
