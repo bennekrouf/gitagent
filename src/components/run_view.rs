@@ -309,6 +309,10 @@ pub struct RunViewProps {
     /// play controls stay in reach while it is open.
     #[props(default)]
     pub children: Element,
+    /// Why a start was refused, or where a chain stopped — the same note the
+    /// list view shows, under the header. Without it a refused Play is a
+    /// button that visibly does nothing.
+    pub note: Element,
     /// The flow tabs, the same strip the list view shows, so the flow is
     /// chosen here too. Drawn under the header.
     pub flows: Element,
@@ -668,6 +672,9 @@ pub fn RunView(props: RunViewProps) -> Element {
             // as quick on screen as well as through the history.
             style: "--run-speed: {speed};",
             {head::run_head(cursor, playing, epoch, len, this_run, at, live, fresh, startable, started, total, done, waiting, finished, props.clone())}
+
+            // Under the player, where the button that was just pressed is.
+            {props.note}
 
             // Above the body, so a step's panel never covers the flow tabs or
             // the pull request being validated.

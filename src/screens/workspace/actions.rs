@@ -103,6 +103,13 @@ pub(super) fn begin(
         // trusted run goes round twice.
         for _ in 0..trusted::MOST_FLOWS {
             let Some(def) = book.read().get(&id).cloned() else {
+                // The flow is not in the book: removed or renamed in Setup
+                // while its tab was still on screen. Breaking quietly here
+                // is a Start that does nothing whatsoever.
+                chain_note.set(format!(
+                    "The flow \u{201c}{id}\u{201d} is not in Setup any more \u{2014} it was \
+                     removed or renamed. Pick another tab, or put it back in Setup."
+                ));
                 break;
             };
             let key: Key = (repo.clone(), id.clone(), pr.clone());

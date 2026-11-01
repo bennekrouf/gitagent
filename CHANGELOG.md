@@ -17,6 +17,21 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- The run view now says why Play will not start a flow. The reason — another
+  run holding the repository, the Branches panel still working, a run Claude
+  or a terminal is driving — was only ever a tooltip on a dimmed button, so
+  pressing Play looked like pressing a button that does nothing.
+- A start refused in the run view now shows the same note the list view
+  shows. A run refused because another GitAgent window, a Claude session or a
+  terminal already holds that repository used to say nothing at all while the
+  run view was open.
+- Starting a flow whose tab is still on screen after it was removed or renamed
+  in Setup now says so instead of quietly doing nothing.
+
 ## [0.1.144] - 2026-11-01
 
 ### Changed

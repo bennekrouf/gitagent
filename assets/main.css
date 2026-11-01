@@ -1385,6 +1385,12 @@ a.pr-failed-check:hover {
 .run-sub { display: flex; gap: 12px; font-size: 11px; color: var(--text2); margin-top: 2px; }
 .run-count { color: var(--text3); }
 .run-needs { color: var(--yellow); }
+/* Why Play would refuse, beside the run's own state. Elided rather than
+   wrapped: the full sentence is on hover, and the head is one line. */
+.run-why {
+    color: var(--yellow); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .run-legend { display: flex; gap: 14px; font-size: 11px; color: var(--text3); flex-shrink: 0; }
 .run-key::before {
     content: ''; display: inline-block;
