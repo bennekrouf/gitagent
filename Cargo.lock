@@ -967,9 +967,10 @@ dependencies = [
 
 [[package]]
 name = "desktop-kit"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "dioxus",
  "dirs 6.0.0",
  "getrandom 0.3.4",
