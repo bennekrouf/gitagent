@@ -726,6 +726,7 @@ mod tests {
         assert!(!Wants::Wait.is_worth_saying());
         for wants in [
             Wants::Resolve,
+            Wants::Push,
             Wants::Merge,
             Wants::Attention,
             Wants::Commit,

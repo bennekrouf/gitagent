@@ -479,6 +479,49 @@ mod default_pr_tests {
     }
 
     #[test]
+    fn a_merge_finished_locally_but_not_pushed_asks_for_the_push() {
+        // polishcast: Review -> Merge stopped on a conflict with main, the
+        // merge was finished in Preflight — a commit, no push — and #50 kept
+        // saying it conflicts. The repository read as ready to merge, about a
+        // pull request that did not have the fix.
+        let mut finished = status(Some("50"), &["50"]);
+        finished.ahead = 2;
+        assert_eq!(finished.wants(), Wants::Push);
+        assert_eq!(finished.wants().need(), Some(Need::UnpushedBranch));
+        assert_eq!(
+            finished
+                .count_for(&["unpushed_branch".into()])
+                .map(|(tab, _)| tab),
+            Some("2 commits".into())
+        );
+
+        finished.prs[0].checks = Checks::Failing;
+        finished.pr.as_mut().unwrap().checks = Checks::Failing;
+        assert_eq!(
+            finished.wants(),
+            Wants::Push,
+            "red checks are the old branch's"
+        );
+
+        let pushed = status(Some("50"), &["50"]);
+        assert_eq!(pushed.wants(), Wants::Merge);
+    }
+
+    #[test]
+    fn unpushed_commits_on_a_branch_with_a_pull_request_are_offered_as_a_push() {
+        let mut finished = status(Some("50"), &["50"]);
+        finished.ahead = 2;
+        finished.unmerged = 3;
+        let start = affordance(FlowKind::Commit, Some(&finished), false, false, "", &[]);
+        assert_eq!(start, Affordance::go("Push 2 commits to #50"));
+
+        // Files to commit come first: the flow commits them, then pushes all.
+        finished.changes = 1;
+        let start = affordance(FlowKind::Commit, Some(&finished), false, false, "", &[]);
+        assert_eq!(start.label, "Commit 1 file");
+    }
+
+    #[test]
     fn a_repository_with_no_open_pull_requests_is_unaffected() {
         let clean = status(None, &[]);
         assert_eq!(clean.wants(), Wants::Nothing);

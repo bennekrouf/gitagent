@@ -127,6 +127,9 @@ pub(super) fn row_start(
         // In place of "needs a PR": the commits are made, so what is left is
         // the push and the pull request. Short, since the row is narrow.
         Wants::OpenPr => "Push & open PR".to_string(),
+        // Uncommitted files go with it: the commit flow commits them first.
+        Wants::Push if status.changes > 0 => "Commit & push".to_string(),
+        Wants::Push => format!("Push to #{}", status.pr.as_ref()?.number),
         // The flow's own name rather than a generic "Run release": several
         // flows can answer a release — "Release", "Deploy VPS", "Deploy
         // API0" — and a button that does not say which one it starts is
