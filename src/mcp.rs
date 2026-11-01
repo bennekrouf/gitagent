@@ -19,8 +19,9 @@
 
 use std::collections::BTreeMap;
 
+use desktop_kit::mcp::{self, Incoming, Server};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::services::flowdef::{self, FlowBook, FlowDef};
 use crate::services::graph::{NodeKind, NodeStatus};
@@ -31,9 +32,14 @@ use flows::*;
 mod run;
 use run::*;
 
-/// The newest protocol revision this server speaks. A client asking for an
-/// older one gets its own back; everything used here exists in all of them.
-const PROTOCOL: &str = "2025-06-18";
+/// What the client is told: the plumbing is desktop-kit's, the tools are below.
+const SERVER: Server = Server {
+    name: "gitagent",
+    version: env!("CARGO_PKG_VERSION"),
+    instructions: INSTRUCTIONS,
+    tools,
+    library: false,
+};
 
 /// How much of a diff or a log one tool result carries. A client's context is
 /// the budget here, not the screen: the end of a log is where a failure is,
@@ -67,7 +73,6 @@ pub fn serve() {
 
 async fn serve_stdio() {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut stdout = tokio::io::stdout();
     let mut runs: BTreeMap<u64, Run> = BTreeMap::new();
 
     // Between calls, an approval answered in the window instead of in Claude.
@@ -84,59 +89,24 @@ async fn serve_stdio() {
                 continue;
             }
         };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(message) = serde_json::from_str::<Value>(&line) else {
-            let reply = error(Value::Null, -32700, "not JSON");
-            write(&mut stdout, &reply).await;
-            continue;
-        };
-        // A notification (no id) asks for nothing back: `initialized`,
-        // cancellations, and whatever later revisions add.
-        let Some(id) = message.get("id").cloned() else {
-            continue;
-        };
-        let method = message["method"].as_str().unwrap_or("");
-        let params = &message["params"];
-
-        let reply = match method {
-            "initialize" => {
-                let asked = params["protocolVersion"].as_str().unwrap_or(PROTOCOL);
-                let version = if asked <= PROTOCOL { asked } else { PROTOCOL };
-                result(
-                    id,
-                    json!({
-                        "protocolVersion": version,
-                        "capabilities": { "tools": {} },
-                        "serverInfo": { "name": "gitagent", "version": env!("CARGO_PKG_VERSION") },
-                        "instructions": INSTRUCTIONS,
-                    }),
-                )
+        let call = match SERVER.read(&line) {
+            Some(Incoming::Call(call)) => call,
+            Some(Incoming::Reply(reply)) => {
+                mcp::write(&reply);
+                continue;
             }
-            "ping" => result(id, json!({})),
-            "tools/list" => result(id, json!({ "tools": tools() })),
-            "tools/call" => {
-                let name = params["name"].as_str().unwrap_or("");
-                let args = &params["arguments"];
-                let token = params["_meta"]["progressToken"].clone();
-                let outcome = if token.is_null() {
-                    call(name, args, &mut runs).await
-                } else {
-                    with_progress(token, call(name, args, &mut runs), &mut stdout).await
-                };
-                let (text, is_error) = match outcome {
-                    Ok(value) => (pretty(&value), false),
-                    Err(why) => (why, true),
-                };
-                result(
-                    id,
-                    json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }),
-                )
-            }
-            _ => error(id, -32601, &format!("no method {method}")),
+            None => continue,
         };
-        write(&mut stdout, &reply).await;
+        let outcome = if call.progress.is_null() {
+            self::call(&call.name, &call.args, &mut runs).await
+        } else {
+            with_progress(
+                call.progress.clone(),
+                self::call(&call.name, &call.args, &mut runs),
+            )
+            .await
+        };
+        mcp::write(&SERVER.answer(&call, outcome));
     }
 }
 
@@ -156,15 +126,6 @@ async fn apply_window_answers(runs: &mut BTreeMap<u64, Run>) {
             run.decide(false, &[]).await
         };
     }
-}
-
-async fn write(stdout: &mut tokio::io::Stdout, reply: &Value) {
-    // One message per line, and nothing else ever on stdout: the client reads
-    // it as the protocol, so a stray print is a corrupt message.
-    let mut bytes = serde_json::to_vec(reply).unwrap_or_default();
-    bytes.push(b'\n');
-    let _ = stdout.write_all(&bytes).await;
-    let _ = stdout.flush().await;
 }
 
 // ── Progress ──────────────────────────────────────────────────────────────
@@ -224,7 +185,7 @@ pub(crate) fn report_progress(progress: runner::Progress<'_>) {
 
 /// Runs `call`, passing what its run reports on to the client as progress
 /// notifications for `token`.
-async fn with_progress<F>(token: Value, call: F, stdout: &mut tokio::io::Stdout) -> F::Output
+async fn with_progress<F>(token: Value, call: F) -> F::Output
 where
     F: std::future::Future,
 {
@@ -253,7 +214,7 @@ where
                 }
                 sent += 1;
                 last_said = std::time::Instant::now();
-                write(stdout, &progress_note(&token, sent, &text)).await;
+                mcp::write(&progress_note(&token, sent, &text));
             }
             _ = tokio::time::sleep(QUIET_FOR.saturating_sub(last_said.elapsed())) => {
                 let text = match doing.as_str() {
@@ -262,7 +223,7 @@ where
                 };
                 sent += 1;
                 last_said = std::time::Instant::now();
-                write(stdout, &progress_note(&token, sent, &text)).await;
+                mcp::write(&progress_note(&token, sent, &text));
             }
         }
     };
@@ -273,39 +234,10 @@ where
 }
 
 fn progress_note(token: &Value, progress: u64, message: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/progress",
-        "params": { "progressToken": token, "progress": progress, "message": message },
-    })
-}
-
-fn result(id: Value, result: Value) -> Value {
-    json!({ "jsonrpc": "2.0", "id": id, "result": result })
-}
-
-fn error(id: Value, code: i64, message: &str) -> Value {
-    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-}
-
-/// A tool result as the client reads it: compact, with no null fields. It
-/// stays in the client's context for the rest of the conversation, so every
-/// byte here is paid for again on each later turn.
-fn pretty(value: &Value) -> String {
-    serde_json::to_string(&without_nulls(value.clone())).unwrap_or_default()
-}
-
-fn without_nulls(value: Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .filter(|(_, v)| !v.is_null())
-                .map(|(k, v)| (k, without_nulls(v)))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.into_iter().map(without_nulls).collect()),
-        other => other,
-    }
+    mcp::notification(
+        "notifications/progress",
+        json!({ "progressToken": token, "progress": progress, "message": message }),
+    )
 }
 
 async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result<Value, String> {
