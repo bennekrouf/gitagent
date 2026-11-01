@@ -72,6 +72,9 @@ pub(super) struct Watched {
     pub finished: bool,
     /// Where its approvals are answered.
     pub note: String,
+    /// The MCP server's process and its run id, when the window may answer
+    /// the run's approvals too. `None` for a terminal run.
+    pub remote: Option<(u32, u64)>,
 }
 /// Each pull request's diff by (repository, number): `None` while it loads.
 type PrDiffs = BTreeMap<(String, String), Option<Result<(String, String), String>>>;
@@ -711,8 +714,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // list view and the run view alike, so the pull request being validated is
     // in sight in both.
     // A run Claude (or a terminal) is driving on the flow on screen, drawn on
-    // its graph as if it were the window's own — read-only, since its
-    // approvals are answered where it was started. Not while the window runs
+    // its graph as if it were the window's own. A terminal run is read-only;
+    // an MCP run's approvals can be answered here as well as in Claude. Not while the window runs
     // something in this repository itself: that run is the one on screen.
     let watched: Option<Watched> = active.as_ref().and_then(|repo| {
         if running.read().iter().any(|k| &k.0 == repo) {
@@ -733,9 +736,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                         "This run was started in a terminal. Answer it there.".into()
                     } else {
                         "Claude started this run through GitAgent\u{2019}s MCP server. \
-                         Answer it in Claude."
+                         Answer it here or in Claude."
                             .into()
                     },
+                    remote: (!r.terminal).then_some((r.pid, r.run)),
                 })
             })
     });

@@ -44,6 +44,10 @@ pub struct DetailPaneProps {
     /// answered. The step is then only read here: no button decides it.
     #[props(default)]
     pub elsewhere: Option<String>,
+    /// With `elsewhere`: the run is Claude's, and its approval may still be
+    /// answered here — Approve and Reject show beside the note.
+    #[props(default)]
+    pub answerable: bool,
 }
 
 #[component]
@@ -256,7 +260,21 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
             // The buttons that decide a step, below the scrolling body rather
             // than inside it: always on screen however long the diff or log,
             // with no `position: sticky` for a webview to get wrong.
-            if let Some(note) = elsewhere {
+            if let (Some(note), true, true) = (elsewhere.clone(), awaiting, props.answerable) {
+                div { class: "detail-actions",
+                    span { class: "detail-elsewhere", "{note}" }
+                    button {
+                        class: "btn btn-primary",
+                        onclick: move |_| props.on_approve.call(approve_id.clone()),
+                        "Approve"
+                    }
+                    button {
+                        class: "btn btn-danger",
+                        onclick: move |_| props.on_reject.call(reject_id.clone()),
+                        "Reject"
+                    }
+                }
+            } else if let Some(note) = elsewhere {
                 if awaiting || failed || skippable_early {
                     div { class: "detail-actions detail-elsewhere", "{note}" }
                 }
