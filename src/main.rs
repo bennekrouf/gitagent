@@ -111,6 +111,9 @@ pub fn open_in_new_window(path: String) {
 
 fn main() {
     kit::init();
+    // Before the licence is first read, so a number saved by an older
+    // GitAgent is still there.
+    services::licence::adopt_legacy();
     // Before anything can shell out: a bundle launched from Finder does not
     // inherit the terminal's PATH, so gh, az and cargo would all read as
     // "not installed".
@@ -120,11 +123,13 @@ fn main() {
     // Before the notification bundle is claimed, which needs one.
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         services::env::adopt_login_env();
+        telemetry::init();
         return mcp::serve();
     }
     // `gitagent run`: one flow from a terminal, its approvals asked there.
     if std::env::args().nth(1).as_deref() == Some("run") {
         services::env::adopt_login_env();
+        telemetry::init();
         let args: Vec<String> = std::env::args().skip(2).collect();
         std::process::exit(cli::main(&args));
     }
@@ -134,6 +139,7 @@ fn main() {
     services::env::adopt_login_env();
     // After the environment is adopted: an opt-out exported from a shell
     // profile only reaches a Finder-launched app through that step.
+    telemetry::init();
     telemetry::record(telemetry::Event::AppStarted);
 
     if std::env::var("RUST_LOG").is_err() {

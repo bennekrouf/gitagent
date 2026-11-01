@@ -1,7 +1,7 @@
 //! The bar across the top of the workspace.
 
 use super::*;
-use crate::services::licence::Status;
+use crate::services::licence::{AccountExt, Status};
 use desktop_kit::ui::{Header, ModelBadge, ProBadge, ProLook, Theme};
 
 #[allow(clippy::too_many_arguments)]

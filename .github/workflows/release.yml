@@ -178,7 +178,7 @@ jobs:
           # Where anonymous usage statistics are sent (repository variable, not
           # a secret). Unset or empty, the build has no way to send anything and
           # never asks about it — which is also what a local build is.
-          GITAGENT_TELEMETRY_URL: ${{ vars.GITAGENT_TELEMETRY_URL }}
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release --target aarch64-apple-darwin
 
       # ── Sign the CLI binary with hardened runtime ──────────────────────────
@@ -348,7 +348,7 @@ jobs:
           # Where anonymous usage statistics are sent (repository variable, not
           # a secret). Unset or empty, the build has no way to send anything and
           # never asks about it — which is also what a local build is.
-          GITAGENT_TELEMETRY_URL: ${{ vars.GITAGENT_TELEMETRY_URL }}
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release
 
       # The app must start on a PC without the Visual C++ Redistributable, so the
@@ -518,7 +518,7 @@ jobs:
           # Where anonymous usage statistics are sent (repository variable, not
           # a secret). Unset or empty, the build has no way to send anything and
           # never asks about it — which is also what a local build is.
-          GITAGENT_TELEMETRY_URL: ${{ vars.GITAGENT_TELEMETRY_URL }}
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Package tar.gz
