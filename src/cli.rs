@@ -101,6 +101,9 @@ fn parse(args: &[String]) -> Result<Option<Args>, String> {
 }
 
 pub fn main(args: &[String]) -> i32 {
+    // A run whose terminal was closed under it leaves its claim behind, and
+    // the next one in that repository should not have to wait it out.
+    busy::sweep();
     let args = match parse(args) {
         Ok(Some(args)) => args,
         Ok(None) => {

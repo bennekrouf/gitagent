@@ -140,6 +140,11 @@ fn main() {
         std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
     }
 
+    // Claims left behind by a GitAgent that was quit or killed part-way
+    // through a run: dropped now, so a repository is never refused by a run
+    // that ended before this window opened.
+    services::busy::sweep();
+
     let cfg = window_config(&window_title(None));
     LaunchBuilder::desktop().with_cfg(cfg).launch(App);
 }

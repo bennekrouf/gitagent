@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A repository is no longer held by a run that has already ended. A run cut
+  short — the app quit or force quit part-way through, a crash, a Claude
+  session closed while its run waited for your yes — could keep that
+  repository to itself for up to a day, refusing anything you started next.
+  A run now keeps saying it is still there while it works, one that goes
+  quiet is let go within two minutes, and GitAgent clears what earlier runs
+  left behind when it opens.
+
 ## [0.1.146] - 2026-11-01
 
 ### Added
