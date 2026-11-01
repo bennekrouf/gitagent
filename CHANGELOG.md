@@ -17,6 +17,26 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Install & restart, on the banner that says a new version is out: one click
+  downloads it, checks it, puts it in place of the version you have and opens
+  it again, on macOS, Windows and Linux. No disk image to open, drag and throw
+  away, no setup to click through. If an update can't finish, GitAgent says why
+  the next time it opens. Where it can't replace itself (an app in a folder you
+  can't change), the banner offers the download instead.
+
+### Fixed
+
+- A branch whose pull request is behind your local commits now says so. After
+  you finish a merge with the base branch in Preflight, the merge is committed
+  but not pushed, and the pull request still showed its old conflict while the
+  repository read as ready to merge. It now reads "not pushed", ahead of any
+  decision on the pull request, and Commit → PR offers to push the commits —
+  "Push 2 commits to #50" — to the pull request already open.
+
 ## [0.1.145] - 2026-11-01
 
 ### Fixed

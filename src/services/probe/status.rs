@@ -12,6 +12,12 @@ pub enum Wants {
     /// repository can move until it is finished or abandoned, so it outranks
     /// everything — including a decision on a pull request.
     Resolve,
+    /// The checked-out branch has a pull request, and commits the pull request
+    /// does not have yet — typically a merge of the base branch, finished
+    /// locally after a conflict. Whatever the forge says about that pull
+    /// request (conflicting, checks red or green) is about the old branch, so
+    /// a decision on it now would be a decision on the wrong thing.
+    Push,
     /// A pull request whose checks are green — a decision is waiting.
     Merge,
     /// A pull request whose checks are red.
@@ -34,6 +40,7 @@ impl Wants {
         matches!(
             self,
             Wants::Resolve
+                | Wants::Push
                 | Wants::Merge
                 | Wants::Attention
                 | Wants::Commit
@@ -45,6 +52,7 @@ impl Wants {
     pub fn note(self) -> &'static str {
         match self {
             Wants::Resolve => "unfinished rebase",
+            Wants::Push => "not pushed",
             Wants::Merge => "ready to merge",
             Wants::Attention => "checks failing",
             Wants::Commit => "uncommitted",
@@ -70,6 +78,7 @@ impl Wants {
     pub fn icon(self) -> &'static str {
         match self {
             Wants::Resolve => "\u{26a0}",
+            Wants::Push => "\u{21e7}",
             Wants::Merge => "\u{2713}",
             Wants::Attention => "\u{2715}",
             Wants::Commit => "\u{270e}",
@@ -82,6 +91,7 @@ impl Wants {
     pub fn css(self) -> &'static str {
         match self {
             Wants::Resolve => "failed",
+            Wants::Push => "awaiting",
             Wants::Merge => "done",
             Wants::Attention => "failed",
             Wants::Commit => "awaiting",
@@ -101,7 +111,9 @@ impl Wants {
     pub fn need(self) -> Option<Need> {
         match self {
             Wants::Commit => Some(Need::Uncommitted),
-            Wants::OpenPr => Some(Need::UnpushedBranch),
+            // The commit flow pushes a clean branch that is ahead, and finds
+            // its pull request rather than opening another.
+            Wants::OpenPr | Wants::Push => Some(Need::UnpushedBranch),
             // No flow answers this: it is finished in preflight, which offers
             // continue and abort where the person is already looking.
             Wants::Resolve => None,
@@ -164,6 +176,19 @@ impl RepoStatus {
                     plural(self.changes, "changed file", "changed files")
                 ),
             ));
+        }
+        if let Some(pr) = self.pr.as_ref().filter(|_| self.ahead > 0) {
+            if has(Need::UnpushedBranch) {
+                return Some((
+                    plural(self.ahead, "commit", "commits"),
+                    format!(
+                        "{} on {} not pushed to #{} yet",
+                        plural(self.ahead, "commit", "commits"),
+                        self.branch,
+                        pr.number
+                    ),
+                ));
+            }
         }
         if has(Need::UnpushedBranch) && self.unmerged > 0 && self.pr.is_none() {
             return Some((
@@ -241,6 +266,9 @@ impl RepoStatus {
             // Only without a pull request: with one, the commits are already
             // proposed and the decision is the pull request's.
             (self.pr.is_none() && self.unmerged > 0).then_some(Wants::OpenPr),
+            // With one, commits it does not have yet are not proposed at all:
+            // the pull request on the forge is the branch as it was.
+            (self.pr.is_some() && self.ahead > 0).then_some(Wants::Push),
             self.release.due().then_some(Wants::Release),
             acting.is_some().then_some(Wants::Wait),
         ]
@@ -379,6 +407,19 @@ pub fn affordance(
     };
 
     match flow {
+        // Commits the branch's pull request does not have yet: pushing them
+        // is what this flow does next, to the pull request already open.
+        FlowKind::Commit if status.changes == 0 && status.ahead > 0 && status.pr.is_some() => {
+            let number = status
+                .pr
+                .as_ref()
+                .map(|pr| pr.number.as_str())
+                .unwrap_or_default();
+            Affordance::go(again(match status.ahead {
+                1 => format!("Push 1 commit to #{number}"),
+                n => format!("Push {n} commits to #{number}"),
+            }))
+        }
         FlowKind::Commit => match (status.changes, status.unmerged) {
             // Clean tree, but commits sitting on a branch with no pull
             // request: the flow can still push them and propose them.
