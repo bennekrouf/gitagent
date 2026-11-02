@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The settings panel now includes a setup button and theme handling. This allows
+  users to easily access setup flows and customize the app's theme directly from
+  the settings menu.
+
 ## [0.1.154] - 2026-11-02
 
 ### Changed
