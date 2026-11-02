@@ -338,6 +338,7 @@ fn a_row_offers_the_commit_or_release_its_repository_is_ready_for() {
     let status = |changes: usize, release: bool| RepoStatus {
         branch: "main".into(),
         changes,
+        tracked_changes: changes,
         forge: crate::services::forge::Forge::GitHub,
         pr: None,
         prs: vec![],
@@ -420,6 +421,7 @@ fn a_row_ready_to_merge_offers_that_pull_request_by_number() {
     let ready = |pr: Option<PrBrief>, others: Vec<PrBrief>| RepoStatus {
         branch: "feat/x".into(),
         changes: 0,
+        tracked_changes: 0,
         forge: crate::services::forge::Forge::GitHub,
         pr,
         prs: others,
@@ -527,6 +529,7 @@ fn probed(changes: usize) -> RepoStatus {
     RepoStatus {
         branch: "main".into(),
         changes,
+        tracked_changes: changes,
         forge: crate::services::forge::Forge::GitHub,
         pr: None,
         prs: vec![brief("7"), brief("9")],

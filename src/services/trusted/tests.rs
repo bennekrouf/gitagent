@@ -62,6 +62,7 @@ fn repo(changes: usize, unmerged: usize, pr: Option<Checks>, release: bool) -> R
     RepoStatus {
         branch: "feat/x".into(),
         changes,
+        tracked_changes: changes,
         forge: Forge::GitHub,
         pr: pr.map(brief),
         prs: pr.map(|c| vec![brief(c)]).unwrap_or_default(),

@@ -45,6 +45,7 @@ fn status(changes: usize, pr: Option<Checks>) -> RepoStatus {
     RepoStatus {
         branch: "master".into(),
         changes,
+        tracked_changes: changes,
         forge: Forge::GitHub,
         unmerged: 0,
         in_progress: None,
@@ -124,9 +125,20 @@ fn a_green_pull_request_is_the_most_urgent_thing() {
 }
 
 #[test]
-fn finishing_beats_starting() {
-    // Dirty tree *and* a green PR: the decision comes first.
-    assert_eq!(status(5, Some(Checks::Passing)).wants(), Wants::Merge);
+fn uncommitted_work_is_committed_before_its_pull_request_is_merged() {
+    // Dirty tree *and* a green PR: merging first would merge it without
+    // those edits, and `gh pr merge` would trip over them switching back.
+    assert_eq!(status(5, Some(Checks::Passing)).wants(), Wants::Commit);
+    // Red, the same: the edits are as likely as not the fix.
+    assert_eq!(status(5, Some(Checks::Failing)).wants(), Wants::Commit);
+}
+
+#[test]
+fn untracked_files_do_not_hold_a_merge_back() {
+    // No commit here takes them, so waiting for one would wait forever.
+    let mut s = status(2, Some(Checks::Passing));
+    s.tracked_changes = 0;
+    assert_eq!(s.wants(), Wants::Merge);
 }
 
 #[test]
@@ -204,7 +216,7 @@ fn a_decision_on_a_pull_request_still_outranks_a_release() {
 
 #[test]
 fn a_red_check_outranks_everything_behind_it() {
-    let mut s = status(4, Some(Checks::Failing));
+    let mut s = status(0, Some(Checks::Failing));
     s.release = ReleaseState {
         last_tag: Some("v1".into()),
         commits: 2,
