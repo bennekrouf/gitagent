@@ -207,16 +207,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // way a run does: no flow starts there until it is done, and the other
     // way round.
     let branches_busy = use_signal(|| Option::<(String, String)>::None);
-    // While anything in this window is running, hold off App Nap, so a hidden
-    // window keeps driving it instead of pausing until it is shown again. See
-    // `services::awake`. Per window: closing one never releases another's.
-    let mut awake = use_signal(|| Option::<awake::Activity>::None);
-    use_effect(move || {
-        let busy = !running.read().is_empty() || branches_busy.read().is_some();
-        if busy != awake.peek().is_some() {
-            awake.set(if busy { awake::Activity::begin() } else { None });
-        }
-    });
+    // For as long as this window has a folder open, hold off App Nap, so a
+    // hidden window keeps working instead of pausing until it is shown again:
+    // a run, and also what starts or answers one without a click here — Claude
+    // over MCP, a trusted chain, the repositories and pull requests being read
+    // again. See `services::awake`. Per window: closing one never releases
+    // another's.
+    let _awake = use_hook(|| std::rc::Rc::new(awake::Activity::begin()));
     let base_editor_open = use_signal(|| Option::<String>::None);
     let base_editor_value = use_signal(String::new);
     // Which repository's flow picker is open, rather than a single flag for

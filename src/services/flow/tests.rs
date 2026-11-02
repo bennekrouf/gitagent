@@ -703,3 +703,36 @@ async fn a_release_with_nothing_since_its_tag_is_already_released() {
     assert_eq!(released_already(repo).await, None, "one commit to ship");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_release_is_refused_while_the_newest_pull_request_is_red() {
+    let red = serde_json::json!([
+        {"name": "fmt", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"name": "test (windows-latest)", "status": "COMPLETED", "conclusion": "FAILURE",
+         "detailsUrl": "https://github.com/o/r/actions/runs/1"},
+    ]);
+    let why = checks::red_reason("#63", Some("v0.1.53"), &red).expect("refused");
+    assert!(
+        why.contains("#63") && why.contains("since v0.1.53"),
+        "{why}"
+    );
+    assert!(
+        why.contains("test (windows-latest)") && !why.contains("fmt"),
+        "{why}"
+    );
+}
+
+#[test]
+fn green_pending_or_no_checks_let_a_release_through() {
+    let green =
+        serde_json::json!([{"name": "fmt", "status": "COMPLETED", "conclusion": "SUCCESS"}]);
+    let pending = serde_json::json!([{"name": "test", "status": "IN_PROGRESS"}]);
+    for rollup in [
+        green,
+        pending,
+        serde_json::json!([]),
+        serde_json::Value::Null,
+    ] {
+        assert_eq!(checks::red_reason("#64", None, &rollup), None, "{rollup}");
+    }
+}

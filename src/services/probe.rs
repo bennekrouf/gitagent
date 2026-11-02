@@ -18,6 +18,7 @@ use super::release::{self, ReleaseState};
 use super::store;
 mod prs;
 use prs::*;
+pub(crate) use prs::{failed_checks, rollup};
 mod status;
 pub use status::*;
 
