@@ -33,6 +33,13 @@ pub struct SettingsPanelProps {
     /// instead of offering a button that would go nowhere.
     #[props(default)]
     pub on_licence: Option<EventHandler<()>>,
+    /// Opens Setup, the flows and what each repository needs. The header has
+    /// no button for it: it is reached from here.
+    #[props(default)]
+    pub on_setup: Option<EventHandler<()>>,
+    /// The theme, chosen here since the header has only the gear and the flag.
+    #[props(default)]
+    pub theme: Option<desktop_kit::ui::Theme>,
     pub on_close: EventHandler<()>,
 }
 
@@ -329,6 +336,19 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                  second opinion stays off whatever is chosen here."
                             }
                         }
+                    }
+                    if let Some(open) = props.on_setup {
+                        div { class: "field-row",
+                            button {
+                                class: "btn",
+                                title: "The flows, and what each repository needs",
+                                onclick: move |_| open.call(()),
+                                "Setup\u{2026}"
+                            }
+                        }
+                    }
+                    if let Some(theme) = props.theme {
+                        desktop_kit::ui::SettingsGeneral { theme }
                     }
                 }
             }

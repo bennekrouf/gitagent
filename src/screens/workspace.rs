@@ -513,7 +513,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 
     rsx! {
         div { class: "screen",
-            {topbar::topbar(workspace.clone(), running, trusted, global_trust, run_view, settings_open, setup_open, mcp_open, licence_status, licence_open, is_light, theme_overridden, cfg.clone(), props.clone())}
+            {topbar::topbar(running, trusted, global_trust, run_view, settings_open, mcp_open, licence_status, licence_open, cfg.clone(), props.clone())}
 
             div {
                 class: if *dragging.read() > 0 { "body body-dragging" } else { "body" },
@@ -589,6 +589,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     settings_open.set(false);
                     licence_open.set(true);
                 },
+                on_setup: move |_| {
+                    settings_open.set(false);
+                    setup_open.set(true);
+                },
+                theme: desktop_kit::ui::Theme { light: is_light, picked: theme_overridden },
                 on_close: move |_| settings_open.set(false),
             }
         }

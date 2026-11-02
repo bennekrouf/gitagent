@@ -141,15 +141,12 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     };
     rsx! {
         Header {
-            theme,
-            actions: rsx! {
-                button { class: "kit-btn", onclick: move |_| setup_open.set(true), "Setup" }
-            },
+            on_settings: move |_| settings_open.set(true),
             model: rsx! {
                 ModelBadge {
                     label: cfg.active_region().map_or(cfg.active_model(), |r| r.label).to_string(),
                     region: cfg.active_region().map(|r| r.id),
-                    title: "The model GitAgent runs on \u{2014} click to change it",
+                    title: "the model GitAgent runs on \u{2014} click to change it",
                     onclick: move |_| settings_open.set(true),
                 }
             },
@@ -329,6 +326,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
         if *settings_open.read() {
             SettingsPanel {
                 llm_config: props.llm_config,
+                on_setup: move |_| {
+                    settings_open.set(false);
+                    setup_open.set(true);
+                },
+                theme,
                 on_close: move |_| settings_open.set(false),
             }
         }
