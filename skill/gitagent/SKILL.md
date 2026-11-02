@@ -68,9 +68,13 @@ You can still help from the repository itself and this skill.
 - **Trusted runs.** **Trusted run** answers approvals automatically and works
   through the repository (commit, then review, then release), stopping only
   where a person is needed, and saying why. **Stop asking me** on an approval
-  turns a run already started into a trusted run. **Trust all** in the top bar
-  does it for every repository until turned off. A trusted run still stops at
-  a merge that the analysis or CI is unhappy about.
+  turns a run already started into a trusted run. A trusted run still stops
+  at release notes, at a gated script, and at a merge that the analysis or CI
+  is unhappy about. **Trust all** in the top bar goes further, for every
+  repository until turned off: it approves release notes, release scripts and
+  merges too, waits for CI that is still running, and stops only at a merge
+  whose CI failed. With it on, **All** in the sidebar takes every repository
+  as far as it can go without asking.
 - **Branches panel**: every branch with its state. Open a pull request for it,
   **Review & merge** one that has a pull request, delete merged branches, and
   **Clean up** branches marked "nothing new" (no change the base lacks).

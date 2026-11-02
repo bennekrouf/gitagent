@@ -83,3 +83,29 @@ pub(super) fn watched_run(
         remote: (!run.terminal).then_some((run.pid, run.run)),
     })
 }
+
+/// The run Claude is driving in `repo` that is stopped on an approval, and
+/// the id of the step it waits on — what keeps a start here refused for as
+/// long as nobody answers it in Claude. The window can answer it instead,
+/// which is the way out the refusal offers. Not a terminal run, whose
+/// approvals are answered only in its terminal, and not from a server too
+/// old to name its steps, whose answer could not be matched to one.
+pub(super) fn waiting_blocker(
+    repo: &str,
+    running: &BTreeSet<Key>,
+    live_runs: &[LiveRun],
+) -> Option<(LiveRun, String)> {
+    if running.iter().any(|k| k.0 == repo) {
+        return None;
+    }
+    let resolved = dunce::canonicalize(repo)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| repo.to_string());
+    live_runs
+        .iter()
+        .filter(|r| (r.repo == resolved || r.repo == repo) && !r.finished && !r.terminal)
+        .find_map(|r| {
+            let step = r.steps.iter().find(|s| s.status == "awaiting")?;
+            (!step.id.is_empty()).then(|| (r.clone(), step.id.clone()))
+        })
+}

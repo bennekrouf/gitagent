@@ -680,3 +680,41 @@ fn a_run_of_the_windows_own_hides_one_from_outside() {
     )]);
     assert!(rows::watched_run("/no/such/repo", "commit_and_pr", &graph, &running, &runs).is_none());
 }
+
+/// `live`, stopped on an approval at its second step.
+fn waiting_at_second_step(terminal: bool) -> (crate::services::live::LiveRun, String) {
+    let mut run = live("/no/such/repo", "commit_and_pr", terminal);
+    run.steps[1].status = NodeStatus::AwaitingApproval.css().into();
+    let step = run.steps[1].id.clone();
+    (run, step)
+}
+
+#[test]
+fn a_refused_start_offers_the_approval_claudes_run_is_waiting_on() {
+    let (run, step) = waiting_at_second_step(false);
+    let runs = [run];
+    let none = BTreeSet::new();
+    let (found, at) = rows::waiting_blocker("/no/such/repo", &none, &runs).unwrap();
+    assert_eq!((found.pid, found.run), (42, 3));
+    assert_eq!(at, step);
+    assert!(rows::waiting_blocker("/other", &none, &runs).is_none());
+}
+
+#[test]
+fn nothing_is_offered_for_a_run_that_is_not_waiting_or_not_answerable_here() {
+    let none = BTreeSet::new();
+    // Working, not waiting: there is nothing to answer.
+    let busy = [live("/no/such/repo", "commit_and_pr", false)];
+    assert!(rows::waiting_blocker("/no/such/repo", &none, &busy).is_none());
+    // A terminal run is answered in its terminal.
+    let terminal = [waiting_at_second_step(true).0];
+    assert!(rows::waiting_blocker("/no/such/repo", &none, &terminal).is_none());
+    // Finished: it holds nothing.
+    let mut done = waiting_at_second_step(false).0;
+    done.finished = true;
+    assert!(rows::waiting_blocker("/no/such/repo", &none, &[done]).is_none());
+    // From a server too old to name its steps: no answer could be matched.
+    let mut old = waiting_at_second_step(false).0;
+    old.steps.iter_mut().for_each(|s| s.id.clear());
+    assert!(rows::waiting_blocker("/no/such/repo", &none, &[old]).is_none());
+}
