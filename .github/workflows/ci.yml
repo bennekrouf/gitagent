@@ -105,9 +105,12 @@ jobs:
           git clone --quiet --depth 1 --branch "$ref" "$url" ../desktop-kit
           echo "desktop-kit $ref at $(git -C ../desktop-kit rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
           # The kit as it is now in Cargo.lock: its version and the crates it
-          # needs. Nothing else moves, and --locked holds for the rest.
-          rustup toolchain install >/dev/null
-          cargo update --quiet -p desktop-kit
+          # needs. Nothing else moves, and --locked holds for the rest. Only
+          # where the app is checked out: a job may fetch the kit without it.
+          if [ -f Cargo.toml ]; then
+            rustup toolchain install >/dev/null
+            cargo update --quiet -p desktop-kit
+          fi
 
       # Installs the version and components rust-toolchain.toml pins.
       - run: rustup toolchain install
@@ -146,9 +149,12 @@ jobs:
           git clone --quiet --depth 1 --branch "$ref" "$url" ../desktop-kit
           echo "desktop-kit $ref at $(git -C ../desktop-kit rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
           # The kit as it is now in Cargo.lock: its version and the crates it
-          # needs. Nothing else moves, and --locked holds for the rest.
-          rustup toolchain install >/dev/null
-          cargo update --quiet -p desktop-kit
+          # needs. Nothing else moves, and --locked holds for the rest. Only
+          # where the app is checked out: a job may fetch the kit without it.
+          if [ -f Cargo.toml ]; then
+            rustup toolchain install >/dev/null
+            cargo update --quiet -p desktop-kit
+          fi
 
       # Installs the version and components rust-toolchain.toml pins.
       - run: rustup toolchain install
