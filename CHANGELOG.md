@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The "Use GitAgent from Claude or Codex" window now looks and reads the same as
+  in the other Mayorana apps, with a copy button on every step, and Escape
+  closes it.
+
 ## [0.1.152] - 2026-11-02
 
 ### Changed
