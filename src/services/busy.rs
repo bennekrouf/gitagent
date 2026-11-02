@@ -376,6 +376,14 @@ mod tests {
         dir
     }
 
+    /// Taken by every test that calls `beat`: a beat touches every claim this
+    /// process holds, so one in another test can read a claim file just
+    /// before this test rewrites it as another process's, and write it back.
+    fn beating_alone() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: Mutex<()> = Mutex::new(());
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn a_second_claim_on_the_same_repository_is_refused() {
         let dir = repo();
@@ -483,6 +491,7 @@ mod tests {
 
     #[test]
     fn a_held_claim_is_touched_while_the_run_goes_on() {
+        let _alone = beating_alone();
         let dir = repo();
         let path = dir.to_string_lossy().into_owned();
         let held = claim(&path, "Commit \u{2192} PR", By::Window).expect("claim");
@@ -505,6 +514,7 @@ mod tests {
 
     #[test]
     fn a_claim_another_process_took_over_is_not_touched_again() {
+        let _alone = beating_alone();
         let dir = repo();
         let path = dir.to_string_lossy().into_owned();
         let held = claim(&path, "Commit \u{2192} PR", By::Window).expect("claim");
@@ -528,6 +538,7 @@ mod tests {
 
     #[test]
     fn a_claim_that_was_released_is_not_written_back_by_the_next_beat() {
+        let _alone = beating_alone();
         let dir = repo();
         let path = dir.to_string_lossy().into_owned();
         let file = file_for(&key(&path));

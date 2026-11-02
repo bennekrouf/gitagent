@@ -37,8 +37,8 @@ jobs:
   # `## [Unreleased]`. That section is what release.sh stamps with the next
   # version and what the public releases page on mayorana.ch is built from, so
   # a note missing here is a version on that page with nothing written under
-  # it. A PR with no user-visible change (tests, refactors, CI, docs) takes the
-  # `no-notes` label instead.
+  # it. A warning, not a failure: GitAgent's release flow drafts the notes
+  # before it releases, so a PR without them is reminded rather than blocked.
   release-notes:
     name: Release notes
     runs-on: ubuntu-latest
@@ -78,16 +78,13 @@ jobs:
             exit 0
           fi
 
-          echo "::error file=CHANGELOG.md::This PR changes the app but adds no release note."
+          echo "::warning file=CHANGELOG.md::This PR changes the app but adds no release note."
           echo "Changed app files:"
           echo "$APP_FILES" | sed 's/^/  /'
           echo
-          echo "Add a bullet under '## [Unreleased]' in CHANGELOG.md (create the heading"
-          echo "above the latest version if it is not there), under ### Added, Changed,"
-          echo "Fixed or Removed. Write it for someone using the app, not for a reviewer."
-          echo
-          echo "No user-visible change? Add the 'no-notes' label, then re-run this job."
-          exit 1
+          echo "The release flow will draft the notes under '## [Unreleased]' before it"
+          echo "releases. To write them now instead, add a bullet there under ### Added,"
+          echo "Changed, Fixed or Removed, for someone using the app."
 
   # ── Formatting: blocking ───────────────────────────────────────────────────
   # No compile, reports in ~20s. .githooks/pre-commit formats what is staged,

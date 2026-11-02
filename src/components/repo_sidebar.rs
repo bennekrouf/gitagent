@@ -395,7 +395,38 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                     }
                 }
             }
-            div { class: "sidebar-path", "{props.workspace}" }
+            {
+                // Every row's button at once: each Approve, and each ▶ that
+                // starts what a repository is due (a commit, a release).
+                let pending: Vec<RepoEntry> = props
+                    .entries
+                    .iter()
+                    .filter(|e| e.approval.is_some() || (e.start.is_some() && !e.phase.is_live()))
+                    .cloned()
+                    .collect();
+                let n = pending.len();
+                rsx! {
+                    div { class: "sidebar-path-row",
+                        div { class: "sidebar-path", "{props.workspace}" }
+                        if n > 0 {
+                            button {
+                                class: "row-approve sidebar-approve-all",
+                                title: "Click every waiting button in this list: approve each step waiting on you, and start each flow a repository is due ({n})",
+                                onclick: move |_| {
+                                    for e in &pending {
+                                        match e.approval.clone() {
+                                            Some(approval) => props.on_approve.call(approval),
+                                            None => props.on_start.call(e.path.clone()),
+                                        }
+                                    }
+                                },
+                                span { class: "row-approve-icon", "\u{2713}" }
+                                "All ({n})"
+                            }
+                        }
+                    }
+                }
+            }
 
             div { class: "sidebar-list",
                 if props.entries.is_empty() {
