@@ -34,6 +34,7 @@ mod hub;
 use hub::*;
 mod foot;
 mod head;
+mod hooks;
 mod layout;
 mod map_view;
 use layout::*;
@@ -354,48 +355,13 @@ pub fn RunView(props: RunViewProps) -> Element {
     // A drag of the panel's edge: where the pointer and the panel started,
     // and the width it has now.
     let mut resizing = use_signal(|| Option::<(f64, f64, f64)>::None);
-    // The map's zoom, remembered between runs and restarts. The map is laid
-    // out for the room it would have at this zoom, then drawn scaled to it —
-    // so a big flow fits zoomed out, and zoomed in everything grows, scrolls,
-    // and stays sharp, being drawn rather than magnified.
-    let mut zoom = use_signal(|| store::run_zoom().clamp(ZOOM_MIN, ZOOM_MAX));
-    // ⌘+ / ⌘− / ⌘0, around the middle of the view as the buttons do.
-    use_future(move || async move {
-        let mut keys = document::eval(ZOOM_KEYS_JS);
-        while let Ok(key) = keys.recv::<String>().await {
-            let now = *zoom.peek();
-            let next = zoom_key(now, &key);
-            if next != now {
-                document::eval(&zoom_anchor_js(None));
-                zoom.set(next);
-            }
-        }
-    });
-    // Each change of zoom flashes its percentage over the map for a moment:
-    // the count re-keys the label, which restarts its fade. Not on opening —
-    // only when the zoom actually moves.
-    let mut zoom_flash = use_signal(|| 0u32);
-    let last_zoom = use_hook(|| Rc::new(Cell::new(f64::NAN)));
-    // Saved once it settles, not on every tick of a scroll or pinch.
-    use_effect(move || {
-        let level = *zoom.read();
-        let before = last_zoom.replace(level);
-        if !before.is_nan() && before != level {
-            *zoom_flash.write() += 1;
-        }
-        spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-            if *zoom.peek() == level {
-                store::save_run_zoom(level);
-            }
-        });
-    });
+    let (mut zoom, zoom_flash) = hooks::use_zoom();
 
     // The player. The run itself is never paused — it is real work — but the
     // view of it can be: frozen where it is, or wound back and replayed from
     // the run's history at a chosen pace. `cursor` is how many changes of
     // which run are shown; `None` is live, following the run as it goes.
-    let mut cursor = use_signal(|| Option::<(u64, usize)>::None);
+    let cursor = use_signal(|| Option::<(u64, usize)>::None);
     let playing = use_signal(|| true);
     let speed = use_signal(|| 1.0f64);
     // Bumped by Restart so every track and dot is drawn afresh, not left
@@ -421,28 +387,7 @@ pub fn RunView(props: RunViewProps) -> Element {
             .iter()
             .all(|n| props.state.status(&n.id).is_terminal());
     let startable = fresh || (over && at.is_none());
-    // Read by the timer below, which outlives any one render's props.
-    let history_len = use_hook(|| Rc::new(Cell::new(0usize)));
-    history_len.set(len);
-    use_future({
-        let history_len = history_len.clone();
-        move || {
-            let history_len = history_len.clone();
-            async move {
-                loop {
-                    let wait = REPLAY_STEP_MS / *speed.peek();
-                    tokio::time::sleep(std::time::Duration::from_millis(wait as u64)).await;
-                    if !*playing.peek() {
-                        continue;
-                    }
-                    let now = *cursor.peek();
-                    if now.is_some() {
-                        cursor.set(advance(now, history_len.get()));
-                    }
-                }
-            }
-        }
-    });
+    hooks::use_replay(len, cursor, playing, speed);
     let shown: RunState = match at {
         Some(i) => props.state.replayed(i),
         None => props.state.clone(),
@@ -569,52 +514,8 @@ pub fn RunView(props: RunViewProps) -> Element {
         .iter()
         .any(|n| status(&n.id) == NodeStatus::AwaitingApproval);
 
-    let mut tracks: Vec<Track> = vec![];
+    let (tracks, bar_y) = tracks_of(&plan, started, &status);
     let (start_x, end_x) = (plan.start_x, plan.end_x);
-    let mid_y = plan
-        .stations
-        .iter()
-        .map(|s| s.y)
-        .fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
-    let bar_y = (mid_y.0 + mid_y.1) / 2.0;
-
-    for root in &plan.roots {
-        if let Some(s) = plan.find(root) {
-            let to = status(root);
-            tracks.push(Track {
-                key: format!("start->{root}"),
-                d: curve(start_x, bar_y, s.x - R, s.y),
-                fill: fill(
-                    started,
-                    Some(to),
-                    beyond_skipped(root, &plan.edges, &status),
-                ),
-            });
-        }
-    }
-    for (from, to) in &plan.edges {
-        if let (Some(a), Some(b)) = (plan.find(from), plan.find(to)) {
-            let target = status(to);
-            tracks.push(Track {
-                key: format!("{from}->{to}"),
-                d: curve(a.x + R, a.y, b.x - R, b.y),
-                fill: fill(
-                    departed(status(from)),
-                    Some(target),
-                    beyond_skipped(to, &plan.edges, &status),
-                ),
-            });
-        }
-    }
-    for leaf in &plan.leaves {
-        if let Some(s) = plan.find(leaf) {
-            tracks.push(Track {
-                key: format!("{leaf}->end"),
-                d: curve(s.x + R, s.y, end_x, bar_y),
-                fill: fill(departed(status(leaf)), None, None),
-            });
-        }
-    }
     let finished = started && plan.leaves.iter().all(|l| departed(status(l)));
 
     // Which tracks this view has drawn stopping short, by run. Only so a track
@@ -635,35 +536,7 @@ pub fn RunView(props: RunViewProps) -> Element {
         })
         .collect();
 
-    let mut loops: Vec<Revise> = vec![];
-    if started {
-        for (id, rounds) in state.rejections.iter().filter(|(_, n)| **n > 0) {
-            let (Some(spec), Some(me)) = (props.graph.get(id), plan.find(id)) else {
-                continue;
-            };
-            let back_to = spec
-                .deps
-                .iter()
-                .filter_map(|d| plan.find(d))
-                .min_by(|a, b| (a.y - me.y).abs().total_cmp(&(b.y - me.y).abs()))
-                .map(|s| (s.x, s.y))
-                .unwrap_or((start_x + R, bar_y));
-            let low = back_to.1.min(me.y);
-            let above = plan
-                .stations
-                .iter()
-                .filter(|s| s.x > back_to.0 + 1.0 && s.x < me.x + R && s.y < low - 1.0)
-                .map(|s| s.y)
-                .max_by(f64::total_cmp);
-            let st = status(id);
-            loops.push(Revise {
-                key: format!("{id}-{rounds}"),
-                shape: revise_loop((me.x, me.y), back_to, above),
-                label: loop_label(st, *rounds),
-                live: st == NodeStatus::Rejected,
-            });
-        }
-    }
+    let loops = loops_of(&props.graph, state, &plan, bar_y, &status);
 
     rsx! {
         div {
@@ -773,6 +646,96 @@ pub fn RunView(props: RunViewProps) -> Element {
             }
         }
     }
+}
+
+/// The tracks between the stations, from the start bar to the end bar, each with how far
+/// it is filled; and the height of those bars.
+fn tracks_of(plan: &Map, started: bool, status: &dyn Fn(&str) -> NodeStatus) -> (Vec<Track>, f64) {
+    let mut tracks: Vec<Track> = vec![];
+    let (start_x, end_x) = (plan.start_x, plan.end_x);
+    let mid_y = plan
+        .stations
+        .iter()
+        .map(|s| s.y)
+        .fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+    let bar_y = (mid_y.0 + mid_y.1) / 2.0;
+
+    for root in &plan.roots {
+        if let Some(s) = plan.find(root) {
+            let to = status(root);
+            tracks.push(Track {
+                key: format!("start->{root}"),
+                d: curve(start_x, bar_y, s.x - R, s.y),
+                fill: fill(started, Some(to), beyond_skipped(root, &plan.edges, status)),
+            });
+        }
+    }
+    for (from, to) in &plan.edges {
+        if let (Some(a), Some(b)) = (plan.find(from), plan.find(to)) {
+            let target = status(to);
+            tracks.push(Track {
+                key: format!("{from}->{to}"),
+                d: curve(a.x + R, a.y, b.x - R, b.y),
+                fill: fill(
+                    departed(status(from)),
+                    Some(target),
+                    beyond_skipped(to, &plan.edges, status),
+                ),
+            });
+        }
+    }
+    for leaf in &plan.leaves {
+        if let Some(s) = plan.find(leaf) {
+            tracks.push(Track {
+                key: format!("{leaf}->end"),
+                d: curve(s.x + R, s.y, end_x, bar_y),
+                fill: fill(departed(status(leaf)), None, None),
+            });
+        }
+    }
+    (tracks, bar_y)
+}
+
+/// A loop back for each step sent back for another round, drawn above what it passes over.
+fn loops_of(
+    graph: &Graph,
+    state: &RunState,
+    plan: &Map,
+    bar_y: f64,
+    status: &dyn Fn(&str) -> NodeStatus,
+) -> Vec<Revise> {
+    let start_x = plan.start_x;
+    let started = state.started;
+    let mut loops: Vec<Revise> = vec![];
+    if started {
+        for (id, rounds) in state.rejections.iter().filter(|(_, n)| **n > 0) {
+            let (Some(spec), Some(me)) = (graph.get(id), plan.find(id)) else {
+                continue;
+            };
+            let back_to = spec
+                .deps
+                .iter()
+                .filter_map(|d| plan.find(d))
+                .min_by(|a, b| (a.y - me.y).abs().total_cmp(&(b.y - me.y).abs()))
+                .map(|s| (s.x, s.y))
+                .unwrap_or((start_x + R, bar_y));
+            let low = back_to.1.min(me.y);
+            let above = plan
+                .stations
+                .iter()
+                .filter(|s| s.x > back_to.0 + 1.0 && s.x < me.x + R && s.y < low - 1.0)
+                .map(|s| s.y)
+                .max_by(f64::total_cmp);
+            let st = status(id);
+            loops.push(Revise {
+                key: format!("{id}-{rounds}"),
+                shape: revise_loop((me.x, me.y), back_to, above),
+                label: loop_label(st, *rounds),
+                live: st == NodeStatus::Rejected,
+            });
+        }
+    }
+    loops
 }
 
 #[cfg(test)]

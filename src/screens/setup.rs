@@ -20,6 +20,7 @@ use crate::services::probe::Need;
 use crate::services::remote;
 use crate::services::store::{self, Layout};
 mod editor;
+mod parts;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SetupProps {
@@ -57,8 +58,8 @@ pub fn Setup(props: SetupProps) -> Element {
         .first()
         .map(|f| f.id.clone())
         .unwrap_or_default();
-    let mut flow_id = use_signal(|| first);
-    let mut node_id = use_signal(String::new);
+    let flow_id = use_signal(|| first);
+    let node_id = use_signal(String::new);
     let adding = use_signal(|| false);
     let mut confirm_restore = use_signal(|| false);
     let mut confirm_discard = use_signal(|| false);
@@ -140,28 +141,7 @@ pub fn Setup(props: SetupProps) -> Element {
                         },
                         onclick: {
                             let origin = props.repo.clone();
-                            move |_| {
-                                let mut book_now = book.read().clone();
-                                let mut scoped = scopes.read().clone();
-                                if let Some(repo) = origin.as_deref() {
-                                    let shipped = FlowBook::defaults();
-                                    for flow in &book_now.flows {
-                                        let new = on_disk.read().get(&flow.id).is_none()
-                                            && shipped.get(&flow.id).is_none();
-                                        if new && !everywhere.read().contains(&flow.id) {
-                                            scoped.only_on(&flow.id, repo);
-                                        }
-                                    }
-                                }
-                                // Scoped under the id it was made with, then
-                                // renamed with everything else that names it.
-                                for (old, new) in book_now.ids_from_labels() {
-                                    scoped.rename_flow(&old, &new);
-                                }
-                                book_now.save();
-                                store::save_repo_flows(&scoped);
-                                props.on_close.call(());
-                            }
+                            move |_| parts::save_draft(origin.as_deref(), book, scopes, on_disk, everywhere, props.on_close)
                         },
                         "Save"
                     }
@@ -206,53 +186,7 @@ pub fn Setup(props: SetupProps) -> Element {
                 },
 
                 // ── Flows ────────────────────────────────────────────────
-                div { class: "sidebar", style: "width: {sidebar_w}px;",
-                    div { class: "sidebar-head",
-                        div { class: "sidebar-title", "Flows" }
-                    }
-                    div { class: "sidebar-list",
-                        for flow in snapshot.flows.iter().cloned() {
-                            {
-                                let problems = validate(&flow).len();
-                                let id = flow.id.clone();
-                                rsx! {
-                                    div {
-                                        key: "{flow.id}",
-                                        class: if flow.id == current_id { "sidebar-row sidebar-row-on" } else { "sidebar-row" },
-                                        onclick: move |_| {
-                                            flow_id.set(id.clone());
-                                            node_id.set(String::new());
-                                        },
-                                        span { class: if problems == 0 { "dot dot-done" } else { "dot dot-failed" } }
-                                        span { class: "sidebar-label", "{flow.label}" }
-                                        if problems > 0 {
-                                            span { class: "sidebar-note status-failed", "{problems}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    div { class: "sidebar-foot",
-                        button {
-                            class: "btn",
-                            onclick: move |_| {
-                                let mut w = book.write();
-                                let id = w.free_flow_id("new_flow");
-                                w.flows.push(crate::services::flowdef::FlowDef {
-                                    id: id.clone(),
-                                    label: "New flow".into(),
-                                    handles: vec![],
-                                    nodes: vec![],
-                                });
-                                drop(w);
-                                flow_id.set(id);
-                                node_id.set(String::new());
-                            },
-                            "New flow"
-                        }
-                    }
-                }
+                {parts::flow_list(&snapshot, &current_id, sidebar_w, book, flow_id, node_id)}
 
                 div {
                     class: "divider",
@@ -275,115 +209,11 @@ pub fn Setup(props: SetupProps) -> Element {
         }
 
         if *confirm_discard.read() {
-            div { class: "modal-backdrop", onclick: move |_| confirm_discard.set(false),
-                div {
-                    class: "modal",
-                    onclick: move |e: Event<MouseData>| e.stop_propagation(),
-                    div { class: "modal-head",
-                        span { "Discard these changes?" }
-                        button {
-                            class: "modal-close",
-                            onclick: move |_| confirm_discard.set(false),
-                            "×"
-                        }
-                    }
-                    div { class: "modal-body",
-                        div { class: "probe probe-bad",
-                            "Your edits have not been written to flows.toml. Closing now "
-                            "leaves the flows exactly as they were when you opened Setup."
-                        }
-                        div { class: "approval-actions",
-                            button {
-                                class: "btn btn-danger",
-                                onclick: move |_| {
-                                    confirm_discard.set(false);
-                                    props.on_close.call(());
-                                },
-                                "Discard changes"
-                            }
-                            button {
-                                class: "btn",
-                                onclick: move |_| confirm_discard.set(false),
-                                "Keep editing"
-                            }
-                        }
-                    }
-                }
-            }
+            {parts::discard_dialog(confirm_discard, props.on_close)}
         }
 
         if *confirm_restore.read() {
-            {
-                let shipped = FlowBook::defaults();
-                let losing: Vec<String> = snapshot
-                    .flows
-                    .iter()
-                    .filter(|f| {
-                        shipped
-                            .get(&f.id)
-                            .map(|original| original != *f)
-                            .unwrap_or(true)
-                    })
-                    .map(|f| f.label.clone())
-                    .collect();
-
-                rsx! {
-                    div { class: "modal-backdrop", onclick: move |_| confirm_restore.set(false),
-                        div {
-                            class: "modal",
-                            onclick: move |e: Event<MouseData>| e.stop_propagation(),
-                            div { class: "modal-head",
-                                span { "Restore the shipped flows?" }
-                                button {
-                                    class: "modal-close",
-                                    onclick: move |_| confirm_restore.set(false),
-                                    "×"
-                                }
-                            }
-                            div { class: "modal-body",
-                                if losing.is_empty() {
-                                    p { class: "field-note",
-                                        "Nothing has been changed — restoring will leave the flows \
-                                         exactly as they are."
-                                    }
-                                } else {
-                                    div { class: "probe probe-bad",
-                                        "This replaces every flow with the two shipped ones. "
-                                        "{losing.len()} flow(s) would be lost. Nothing is written "
-                                        "until you press Save, so Cancel still puts them back."
-                                    }
-                                    div { class: "items",
-                                        for label in losing.iter() {
-                                            div { key: "{label}", class: "item",
-                                                span { class: "item-note note-deleted", "lost" }
-                                                span { class: "item-label", "{label}" }
-                                            }
-                                        }
-                                    }
-                                }
-                                div { class: "approval-actions",
-                                    button {
-                                        class: "btn btn-danger",
-                                        onclick: move |_| {
-                                            let restored = FlowBook::defaults();
-                                            flow_id.set(restored.flows[0].id.clone());
-                                            node_id.set(String::new());
-                                            book.set(restored);
-                                            confirm_restore.set(false);
-                                        },
-                                        "Restore defaults"
-                                    }
-                                    button {
-                                        class: "btn",
-                                        onclick: move |_| confirm_restore.set(false),
-                                        "Cancel"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            {parts::restore_dialog(&snapshot, confirm_restore, book, flow_id, node_id)}
         }
     }
 }
