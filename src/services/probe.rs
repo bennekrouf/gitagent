@@ -223,9 +223,15 @@ pub async fn probe_recent(repo: &str) -> RepoStatus {
 /// known before the pull requests can be listed, and the base branch before
 /// the release and unmerged-commit counts. Everything else goes at once.
 async fn probe_now(repo: &str) -> RepoStatus {
-    let (branch, changes, url, (ahead, behind), (base, _), in_progress) = tokio::join!(
+    let (branch, (changes, tracked_changes), url, (ahead, behind), (base, _), in_progress) = tokio::join!(
         async { git::current_branch(repo).await.unwrap_or_default() },
-        async { git::status(repo).await.map(|c| c.len()).unwrap_or(0) },
+        async {
+            let files = git::status(repo).await.unwrap_or_default();
+            (
+                files.len(),
+                files.iter().filter(|f| !f.is_untracked()).count(),
+            )
+        },
         git::remote_url(repo),
         ahead_behind(repo),
         stored_base_branch(repo),
@@ -247,6 +253,7 @@ async fn probe_now(repo: &str) -> RepoStatus {
     RepoStatus {
         branch,
         changes,
+        tracked_changes,
         forge,
         pr,
         prs,
@@ -411,6 +418,7 @@ mod default_pr_tests {
         RepoStatus {
             branch: "feat/x".into(),
             changes: 0,
+            tracked_changes: 0,
             forge: Forge::GitHub,
             pr: pr.map(brief),
             prs: prs.iter().map(|n| brief(n)).collect(),

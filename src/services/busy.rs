@@ -286,6 +286,13 @@ fn refusal(holder: &Holder) -> String {
     )
 }
 
+/// Whether another process holds `repo` right now — what a take-over waits
+/// out, after asking that process's run to end, before starting its own.
+pub fn held_elsewhere(repo: &str) -> bool {
+    let key = key(repo);
+    read(&file_for(&key)).is_some_and(|h| h.pid != std::process::id() && still_held(&h, &key))
+}
+
 /// Claims `repo` for a run of `what` (the flow's label), or says which run
 /// already has it.
 pub fn claim(repo: &str, what: &str, by: By) -> Result<Claim, String> {
@@ -597,6 +604,19 @@ mod tests {
         assert!(live.exists(), "a run still going keeps its repository");
         assert!(other.exists(), "an unreadable claim is left alone");
         assert!(tmp.exists(), "only claim files are swept");
+    }
+
+    #[test]
+    fn a_repository_is_held_elsewhere_only_by_another_live_process() {
+        let dir = repo();
+        let path = dir.to_string_lossy().into_owned();
+        assert!(!held_elsewhere(&path), "nobody holds it");
+        let mine = claim(&path, "Release", By::Window).expect("claim");
+        assert!(!held_elsewhere(&path), "this process's own claim");
+        drop(mine);
+        let file = held_by_another_process(&path, "Release", now(), Some(now()));
+        assert!(held_elsewhere(&path));
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]

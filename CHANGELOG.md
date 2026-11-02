@@ -17,6 +17,26 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A run Claude started no longer needs Claude to finish. When it waits on an
+  approval, the repository shows **Approve** and **Reject** right there, and
+  **Take over**, which ends Claude's run and starts the same flow in the
+  window, so you answer it from then on. Taking over runs the flow again from
+  the start, so a release drafts its notes again.
+
+### Changed
+
+- A pull request is no longer merged while the repository has uncommitted
+  changes. Those edits are usually the rest of the pull request, a fix for the
+  review or for CI, and merging first shipped it without them, then left them
+  stranded on a branch being deleted. The repository now asks for a commit
+  first, and **Trust all** runs Commit → PR before Review → Merge. Started by
+  hand, the merge step stops, lists the files and says to commit them first.
+  New files git does not track yet do not count, since no commit takes them.
+
 ## [0.1.160] - 2026-11-02
 
 ### Changed

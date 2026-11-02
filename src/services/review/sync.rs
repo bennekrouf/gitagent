@@ -148,6 +148,9 @@ pub(super) fn conflict_guide(number: &str, base: &str, message: &str) -> StepFai
 pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let forge = Forge::from_key(state.artifact("forge"));
     let number = state.artifact("pr_number").to_string();
+    if let Some(refusal) = uncommitted_in_the_way(repo, &number).await {
+        return Err(refusal);
+    }
 
     let out = match forge {
         Forge::GitHub => match git::run(
@@ -200,6 +203,42 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// Why the merge is refused while tracked files have uncommitted changes, or
+/// `None` when nothing is in the way.
+///
+/// The pull request is merged as it is on the forge, so those edits are not
+/// in it — and on its branch they are usually the rest of it, a fix for the
+/// review or for CI. Merging first ships it without them, and `gh pr merge`
+/// then fails to switch off the branch with them in the way, leaving them on
+/// a branch it has just deleted on origin. Untracked files are left out:
+/// no commit here takes them, and they do not stop a branch switch.
+async fn uncommitted_in_the_way(repo: &str, number: &str) -> Option<StepFailure> {
+    let files: Vec<String> = git::status(repo)
+        .await
+        .ok()?
+        .into_iter()
+        .filter(|f| !f.is_untracked())
+        .map(|f| f.path)
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    let shown: Vec<String> = files.iter().take(10).map(|f| format!("  {f}")).collect();
+    let more = match files.len().saturating_sub(shown.len()) {
+        0 => String::new(),
+        n => format!("\n  … and {n} more"),
+    };
+    Some(StepFailure::from(format!(
+        "This repository has uncommitted changes, so #{number} was not merged. Nothing \
+         has been changed.\n\n{}{more}\n\n\
+         Merging now would merge #{number} without them, and leave them stranded on a \
+         branch that is being deleted. Run Commit → PR first: on #{number}'s \
+         branch it adds them to the pull request, elsewhere it opens one of their own. \
+         Then Review → Merge again.",
+        shown.join("\n"),
+    )))
 }
 
 /// `gh pr merge --delete-branch` merges on GitHub first, then tidies up here:

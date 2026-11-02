@@ -128,6 +128,9 @@ impl Wants {
 pub struct RepoStatus {
     pub branch: String,
     pub changes: usize,
+    /// `changes` without the untracked files, which no commit here takes:
+    /// what has to be committed before a pull request can be merged.
+    pub tracked_changes: usize,
     pub forge: Forge,
     /// The PR for the checked-out branch specifically — what the "Commit /
     /// Review" affordance and the top-of-column `PrCard` react to.
@@ -246,12 +249,17 @@ impl RepoStatus {
         }
 
         let acting = self.pr_to_act_on();
-        // Someone else's pull request — one the checked-out branch does not
-        // own — never outranks your own uncommitted work. In a shared
-        // repository there is nearly always one open, and letting it win
-        // meant a dirty tree was never offered a commit at all.
+        // No pull request outranks uncommitted work, the checked-out branch's
+        // own included. On its branch the edits are usually the rest of it —
+        // a fix for the review, the change CI asked for — and merging first
+        // leaves them out of what was merged; and `gh pr merge` then has to
+        // switch branches with them in the way. Someone else's pull request
+        // never did: in a shared repository there is nearly always one open,
+        // and letting it win meant a dirty tree was never offered a commit at
+        // all. Untracked files do not count: no commit here takes them, so
+        // they would hold a merge back forever.
         let from_pr = acting
-            .filter(|_| self.pr.is_some() || self.changes == 0)
+            .filter(|_| self.tracked_changes == 0 && (self.pr.is_some() || self.changes == 0))
             .and_then(|pr| match pr.checks {
                 Checks::Passing | Checks::Unknown => Some(Wants::Merge),
                 Checks::Failing => Some(Wants::Attention),

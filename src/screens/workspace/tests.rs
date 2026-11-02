@@ -338,6 +338,7 @@ fn a_row_offers_the_commit_or_release_its_repository_is_ready_for() {
     let status = |changes: usize, release: bool| RepoStatus {
         branch: "main".into(),
         changes,
+        tracked_changes: changes,
         forge: crate::services::forge::Forge::GitHub,
         pr: None,
         prs: vec![],
@@ -420,6 +421,7 @@ fn a_row_ready_to_merge_offers_that_pull_request_by_number() {
     let ready = |pr: Option<PrBrief>, others: Vec<PrBrief>| RepoStatus {
         branch: "feat/x".into(),
         changes: 0,
+        tracked_changes: 0,
         forge: crate::services::forge::Forge::GitHub,
         pr,
         prs: others,
@@ -527,6 +529,7 @@ fn probed(changes: usize) -> RepoStatus {
     RepoStatus {
         branch: "main".into(),
         changes,
+        tracked_changes: changes,
         forge: crate::services::forge::Forge::GitHub,
         pr: None,
         prs: vec![brief("7"), brief("9")],
@@ -679,6 +682,28 @@ fn a_run_of_the_windows_own_hides_one_from_outside() {
         String::new(),
     )]);
     assert!(rows::watched_run("/no/such/repo", "commit_and_pr", &graph, &running, &runs).is_none());
+}
+
+#[test]
+fn claudes_waiting_run_can_be_answered_or_taken_over_here() {
+    let mut run = live("/no/such/repo", "commit_and_pr", false);
+    assert_eq!(context::waiting_step(&run), None, "working, not waiting");
+    run.steps[1].status = NodeStatus::AwaitingApproval.css().into();
+    assert_eq!(context::waiting_step(&run), Some(run.steps[1].id.clone()));
+    let mut terminal = run.clone();
+    terminal.terminal = true;
+    assert_eq!(
+        context::waiting_step(&terminal),
+        None,
+        "answered in its terminal"
+    );
+    let mut old = run.clone();
+    old.steps.iter_mut().for_each(|s| s.id.clear());
+    assert_eq!(
+        context::waiting_step(&old),
+        None,
+        "no step to match an answer to"
+    );
 }
 
 /// `live`, stopped on an approval at its second step.

@@ -459,6 +459,8 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         flow_kind,
         graph.clone(),
         active.clone(),
+        selected_flow,
+        begin,
     );
 
     // The flow tabs — pick a flow, hide one, or choose which are shown — for
