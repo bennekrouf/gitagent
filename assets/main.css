@@ -295,11 +295,16 @@ a.btn { text-decoration: none; }
     background: color-mix(in srgb, var(--green) 12%, transparent);
 }
 .sidebar-refresh svg { display: block; transform-origin: 50% 50%; }
-.sidebar-path {
+/* The folder, and beside it the button that clicks every row's button. */
+.sidebar-path-row {
+    display: flex; align-items: center; gap: 8px;
     padding: 0 12px 10px;
+    border-bottom: 1px solid var(--border2);
+}
+.sidebar-path {
+    flex: 1; min-width: 0;
     font-size: 10px; color: var(--text3);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    border-bottom: 1px solid var(--border2);
 }
 .sidebar-list { flex: 1; overflow-y: auto; padding: 6px; min-height: 0; }
 .sidebar-empty { padding: 20px 12px; font-size: 11px; color: var(--text3); line-height: 1.7; }
