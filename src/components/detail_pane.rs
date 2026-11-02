@@ -7,6 +7,8 @@ use crate::components::conflict_view::ConflictView;
 use crate::components::diff_view::DiffView;
 use crate::services::graph::{NodeRun, NodeSpec, NodeStatus};
 
+mod parts;
+
 #[derive(Props, Clone, PartialEq)]
 pub struct DetailPaneProps {
     pub spec: Option<NodeSpec>,
@@ -95,12 +97,12 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     // whether to commit these files, so folding away the one thing the
     // question is about — behind an unlabelled "…" — meant the answer to "how
     // do I choose the files" was a control nobody could find.
-    let mut show_files = use_signal(|| true);
+    let show_files = use_signal(|| true);
     // The files git is still waiting on, as the resolver last read them —
     // what holds back a fix that finishes the merge.
     let mut unresolved = use_signal(Vec::<String>::new);
     // Bumped by "Check again", for a file settled outside the app.
-    let mut rechecks = use_signal(|| 0u32);
+    let rechecks = use_signal(|| 0u32);
     // Anything a fix or a retry changes, so the conflict list is read again.
     let stamp = format!(
         "{:?}{}{}",
@@ -122,28 +124,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 span { class: "detail-status status-{run.status.css()}", "{run.status.label()}" }
             }
 
-            div { class: "contract",
-                div { class: "contract-col",
-                    div { class: "contract-label", "reads" }
-                    if spec.reads.is_empty() {
-                        div { class: "contract-none", "—" }
-                    } else {
-                        for key in spec.reads.iter() {
-                            div { key: "{key}", class: "chip", "{key}" }
-                        }
-                    }
-                }
-                div { class: "contract-col",
-                    div { class: "contract-label", "writes" }
-                    if spec.writes.is_empty() {
-                        div { class: "contract-none", "—" }
-                    } else {
-                        for key in spec.writes.iter() {
-                            div { key: "{key}", class: "chip chip-out", "{key}" }
-                        }
-                    }
-                }
-            }
+            {parts::contract(&spec)}
 
             // A failure over files git is still waiting on is settled here,
             // above the message about it. Shows nothing while nothing is stuck.
@@ -156,61 +137,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
             }
 
             if awaiting {
-                div { class: "approval",
-                    // A trusted run that stopped here says so at the node it
-                    // stopped on, rather than leaving an approval that looks
-                    // no different from any other while the run sits still.
-                    if !run.held.is_empty() {
-                        div { class: "approval-held", "{run.held}" }
-                    }
-                    if run.preview_diff.is_empty() {
-                        div { class: "approval-head", "This will run:" }
-                        pre { class: "approval-body", "{run.proposal}" }
-                    } else {
-                        div { class: "approval-head", "Diff to review:" }
-                        DiffView { diff: run.preview_diff.clone(), is_light: props.is_light }
-                    }
-
-                    if !run.items.is_empty() {
-                        div { class: "items-head",
-                            span { class: "items-head-label", "Files" }
-                            div { class: "items-head-right",
-                                span { class: "items-count", "{chosen} of {run.items.len()} selected" }
-                                button {
-                                    class: "items-toggle",
-                                    title: if *show_files.read() { "Hide the file list" } else { "Choose which files to include" },
-                                    onclick: {
-                                        let now = *show_files.read();
-                                        move |_| show_files.set(!now)
-                                    },
-                                    if *show_files.read() { "Hide" } else { "Choose files" }
-                                }
-                            }
-                        }
-                        if *show_files.read() {
-                            div { class: "items",
-                                for item in run.items.iter().cloned() {
-                                    label {
-                                        key: "{item.key}",
-                                        class: if item.included { "item" } else { "item item-off" },
-                                        input {
-                                            r#type: "checkbox",
-                                            checked: item.included,
-                                            disabled: read_only,
-                                            onchange: {
-                                                let node = toggle_id.clone();
-                                                let key = item.key.clone();
-                                                move |_| props.on_toggle.call((node.clone(), key.clone()))
-                                            },
-                                        }
-                                        span { class: "item-note note-{item.note}", "{item.note}" }
-                                        span { class: "item-label", "{item.label}" }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                {parts::approval(&run, toggle_id.clone(), chosen, read_only, props.is_light, props.on_toggle, show_files)}
             }
 
             if let Some(diff) = props.diff.clone().filter(|d| !d.trim().is_empty()) {
@@ -303,79 +230,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 // The fixes on offer, then the step's own choices — all of it
                 // in the panel's footer, where every decision on a step is.
                 div { class: "detail-foot",
-                    div { class: "remedies",
-                        if run.remedies.is_empty() {
-                            div { class: "remedies-none",
-                                "No automatic fix for this. Resolve it, then retry."
-                            }
-                        } else {
-                            div { class: "remedies-head", "Fix it from here" }
-                            for (index, remedy) in run.remedies.iter().enumerate() {
-                                div { key: "{remedy.display}", class: "remedy",
-                                    div { class: "remedy-main",
-                                        div { class: "remedy-label", "{remedy.label}" }
-                                        code { class: "remedy-cmd", "{remedy.display}" }
-                                    }
-                                    {
-                                        let held = remedy.once_resolved && !unresolved.read().is_empty();
-                                        let btn_class = if remedy.done {
-                                            "btn"
-                                        } else if remedy.abandons {
-                                            "btn btn-danger"
-                                        } else {
-                                            "btn btn-primary"
-                                        };
-                                        rsx! {
-                                    button {
-                                        class: btn_class,
-                                        disabled: remedy.running || remedy.done || held,
-                                        title: if held { "Resolve every file in Resolve conflicts above first" } else { "" },
-                                        onclick: {
-                                            let node = remedy_id.clone();
-                                            move |_| props.on_remedy.call((node.clone(), index))
-                                        },
-                                        if remedy.running { "Running…" }
-                                        else if remedy.done { "Done" }
-                                        else if remedy.failed { "Run again" }
-                                        else if remedy.abandons { "Abandon" }
-                                        else { "Run" }
-                                    }
-                                        }
-                                    }
-                                }
-                                if remedy.once_resolved && !remedy.done && !unresolved.read().is_empty() {
-                                    {
-                                        let left = unresolved.read().clone();
-                                        rsx! {
-                                            div { class: "remedy-waiting",
-                                                "Git is still waiting on {left.join(\", \")}. Pick a side for each \
-                                                 conflict in Resolve conflicts above and save. If you already \
-                                                 fixed it in your editor, pick it in that list and click Mark \
-                                                 resolved. This unlocks once nothing is left. "
-                                                button {
-                                                    class: "clash-btn",
-                                                    onclick: move |_| *rechecks.write() += 1,
-                                                    "Check again"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                if !remedy.output.is_empty() {
-                                    if remedy.failed {
-                                        div { class: "remedy-stopped", "That stopped before finishing:" }
-                                    }
-                                    if remedy.failed && remedy.output.contains("unmerged files") {
-                                        div { class: "remedy-waiting",
-                                            "Git refused because a file still has conflicts in it. Resolve it \
-                                             in Resolve conflicts above, then run this again."
-                                        }
-                                    }
-                                    pre { class: if remedy.failed { "remedy-out remedy-out-failed" } else { "remedy-out" }, "{remedy.output}" }
-                                }
-                            }
-                        }
-                    }
+                    {parts::remedies(&run, remedy_id.clone(), props.on_remedy, unresolved, rechecks)}
 
                 div { class: "detail-actions",
                     button {
