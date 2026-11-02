@@ -157,6 +157,46 @@ pub fn may_continue(state: &RunState, graph: &Graph) -> bool {
     })
 }
 
+/// What a run should do with `node` when "Trust all" is on.
+///
+/// Trust all is the person saying they will not be there: start it, press
+/// All, and every repository should go as far as it can — commit, review,
+/// merge, release — without one more question. So the holds `decide` keeps
+/// for a trusted run started by hand are lifted here: release notes are
+/// approved as drafted, the release script and other gated commands run, and
+/// a merge goes ahead whatever the analysis thought and with no CI at all.
+///
+/// The one hold left is CI that has failed. Merging a red pull request is how
+/// a broken base branch gets released a step later, by the same run, with
+/// nobody having looked. Checks still running are not a hold either: the CI
+/// step waits for them under Trust all, so what reaches here has finished.
+pub fn decide_trusting_all(node: &NodeSpec, state: &RunState) -> Verdict {
+    match node.step {
+        Step::Merge if state.artifact("checks_state") == "failing" => Verdict::Hold(
+            "CI is failing on this pull request. Trust all merges everything else, but not \
+             a red pull request: the release after it would ship the breakage."
+                .into(),
+        ),
+        Step::Merge if state.artifact("checks_state") == "pending" => Verdict::Hold(
+            "CI was still running when the wait for it ran out. Approve the merge once \
+             the checks are in."
+                .into(),
+        ),
+        _ => Verdict::Approve,
+    }
+}
+
+/// `decide` or `decide_trusting_all`, whichever applies right now. Read at
+/// every approval, so turning Trust all off in the window takes effect at the
+/// next step of a run already going.
+pub fn verdict(node: &NodeSpec, state: &RunState) -> Verdict {
+    if super::store::trust_all() {
+        decide_trusting_all(node, state)
+    } else {
+        decide(node, state)
+    }
+}
+
 /// What a trusted run should do with `node`, given everything the run has
 /// produced so far.
 pub fn decide(node: &NodeSpec, state: &RunState) -> Verdict {

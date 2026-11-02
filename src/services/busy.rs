@@ -59,8 +59,8 @@ impl By {
         match self {
             By::Window => "Wait for it to finish, or stop it in that window.",
             By::Claude => {
-                "Wait for it to finish, or answer or reject its approval in Claude — \
-                 ending that Claude session lets it go too."
+                "Wait for it to finish, or answer or reject its approval in Claude or on \
+                 its tab in the GitAgent window — ending that Claude session lets it go too."
             }
             By::Terminal => "Wait for it to finish, or answer or stop it in that terminal.",
         }

@@ -71,9 +71,9 @@ pub(super) fn topbar(
             button {
                 class: if *global_trust.read() { "kit-btn kit-on" } else { "kit-btn" },
                 title: if *global_trust.read() {
-                    "Every repository and every flow is running trusted. Click to go back to approving each one yourself."
+                    "Every repository and every flow approves its own steps, release notes, releases and merges included. Only a merge whose CI failed stops for you. Click to go back to approving each one yourself."
                 } else {
-                    "Trust every repository and every flow: runs answer their own approvals instead of asking, the same as clicking \u{201c}Trusted run\u{201d} everywhere at once."
+                    "Trust every repository and every flow: runs approve every step themselves, release notes, releases and merges included, and wait for CI rather than asking. Only a merge whose CI failed stops for you."
                 },
                 onclick: move |_| {
                     let on = !*global_trust.read();

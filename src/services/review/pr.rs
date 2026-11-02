@@ -248,53 +248,37 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
     // from the sidebar's list, not just the one the local branch happens to
     // have open.
     let number = state.artifact("pr_number");
-    let out = git::run(
-        repo,
-        "gh",
-        &[
-            "pr",
-            "view",
-            number,
-            "--json",
-            "statusCheckRollup,mergeable,mergeStateStatus",
-        ],
-    )
-    .await?;
-    let value: serde_json::Value =
-        serde_json::from_str(&out).map_err(|e| format!("could not read the gh response: {e}"))?;
-
-    let mut lines = vec![];
-    let mut failing: Vec<(String, String)> = vec![];
-    let (mut pass, mut fail, mut pending) = (0, 0, 0);
-    if let Some(checks) = value["statusCheckRollup"].as_array() {
-        for check in checks {
-            let name = check["name"]
-                .as_str()
-                .or_else(|| check["context"].as_str())
-                .unwrap_or("check");
-            let status = check["status"].as_str().unwrap_or("");
-            let conclusion = check["conclusion"]
-                .as_str()
-                .or_else(|| check["state"].as_str())
-                .unwrap_or("");
-
-            let verdict = if status == "IN_PROGRESS" || status == "QUEUED" || status == "PENDING" {
-                pending += 1;
-                "pending"
-            } else if matches!(conclusion, "SUCCESS" | "NEUTRAL" | "SKIPPED") {
-                pass += 1;
-                "pass"
-            } else {
-                fail += 1;
-                failing.push((
-                    name.to_string(),
-                    check["detailsUrl"].as_str().unwrap_or_default().to_string(),
-                ));
-                "fail"
-            };
-            lines.push(format!("  {verdict:<8} {name}"));
+    // With Trust all on, nobody is there to come back once the checks are
+    // in, and a merge held on "still running" would leave every repository
+    // stopped at it. So the step waits for them, up to `CI_WAIT`, rather
+    // than reporting a pending state that only a person could act on.
+    let waiting_since = std::time::Instant::now();
+    let (value, lines, failing, pass, fail, pending) = loop {
+        let out = git::run(
+            repo,
+            "gh",
+            &[
+                "pr",
+                "view",
+                number,
+                "--json",
+                "statusCheckRollup,mergeable,mergeStateStatus",
+            ],
+        )
+        .await?;
+        let value: serde_json::Value = serde_json::from_str(&out)
+            .map_err(|e| format!("could not read the gh response: {e}"))?;
+        let (lines, failing, pass, fail, pending) = tally(&value);
+        if pending > 0
+            && fail == 0
+            && crate::services::store::trust_all()
+            && waiting_since.elapsed() < CI_WAIT
+        {
+            tokio::time::sleep(CI_POLL).await;
+            continue;
         }
-    }
+        break (value, lines, failing, pass, fail, pending);
+    };
 
     let merge_state = value["mergeStateStatus"]
         .as_str()
@@ -382,6 +366,52 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// How long a Trust all run waits for a pull request's checks to finish.
+const CI_WAIT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+
+/// How often it asks again while it waits.
+const CI_POLL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Each check on the pull request as a line, the failing ones with their
+/// links, and the passing, failing and pending counts.
+type Tally = (Vec<String>, Vec<(String, String)>, usize, usize, usize);
+
+fn tally(value: &serde_json::Value) -> Tally {
+    let mut lines = vec![];
+    let mut failing: Vec<(String, String)> = vec![];
+    let (mut pass, mut fail, mut pending) = (0, 0, 0);
+    if let Some(checks) = value["statusCheckRollup"].as_array() {
+        for check in checks {
+            let name = check["name"]
+                .as_str()
+                .or_else(|| check["context"].as_str())
+                .unwrap_or("check");
+            let status = check["status"].as_str().unwrap_or("");
+            let conclusion = check["conclusion"]
+                .as_str()
+                .or_else(|| check["state"].as_str())
+                .unwrap_or("");
+
+            let verdict = if status == "IN_PROGRESS" || status == "QUEUED" || status == "PENDING" {
+                pending += 1;
+                "pending"
+            } else if matches!(conclusion, "SUCCESS" | "NEUTRAL" | "SKIPPED") {
+                pass += 1;
+                "pass"
+            } else {
+                fail += 1;
+                failing.push((
+                    name.to_string(),
+                    check["detailsUrl"].as_str().unwrap_or_default().to_string(),
+                ));
+                "fail"
+            };
+            lines.push(format!("  {verdict:<8} {name}"));
+        }
+    }
+    (lines, failing, pass, fail, pending)
 }
 
 /// An earlier pull request from the same branch, squash-merged already:

@@ -583,3 +583,45 @@ fn a_pull_request_with_no_checks_at_all_is_not_merged_as_passing() {
         .to_string();
     assert!(reason.contains("0 of 0 is not a pass"), "{reason}");
 }
+
+#[test]
+fn trust_all_approves_what_a_trusted_run_holds_release_included() {
+    for step in [Step::WriteNotes, Step::RunScript, Step::RunRemote] {
+        assert!(decide(&node(step), &RunState::default()).reason().is_some());
+        assert_eq!(
+            decide_trusting_all(&node(step), &RunState::default()),
+            Verdict::Approve,
+            "{step:?}"
+        );
+    }
+}
+
+#[test]
+fn trust_all_merges_whatever_the_analysis_thought_and_without_ci() {
+    for s in [
+        state("risky", "3", "passing"),
+        state("", "0", "passing"),
+        state("looks_safe", "0", "none"),
+        state("looks_safe", "0", "unknown"),
+        state("looks_safe", "0", ""),
+    ] {
+        assert_eq!(
+            decide_trusting_all(&node(Step::Merge), &s),
+            Verdict::Approve
+        );
+    }
+}
+
+#[test]
+fn trust_all_still_stops_at_a_merge_ci_has_not_passed() {
+    let red = state("looks_safe", "0", "failing");
+    assert!(decide_trusting_all(&node(Step::Merge), &red)
+        .reason()
+        .is_some_and(|why| why.contains("failing")));
+    // The CI step waits for pending checks under Trust all; still pending
+    // here means that wait ran out.
+    let pending = state("looks_safe", "0", "pending");
+    assert!(decide_trusting_all(&node(Step::Merge), &pending)
+        .reason()
+        .is_some());
+}

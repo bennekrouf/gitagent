@@ -299,9 +299,11 @@ impl Run {
 
     /// Answered by trust: asked for when the run started, or "Trust all"
     /// turned on in the window, re-read at every step so turning it off there
-    /// takes effect here too.
+    /// takes effect here too. A hold ends a trusted run's trust, but not
+    /// Trust all's: that one is not to ask again after the one answer it
+    /// could not give itself.
     pub fn trusting(&self) -> bool {
-        self.held.is_none() && (self.trusted || store::trust_all())
+        store::trust_all() || (self.held.is_none() && self.trusted)
     }
 
     /// The step stopped at an approval, if one is.
@@ -442,7 +444,7 @@ impl Run {
                     .post(&mut self.state, &node.id);
                 // Trusted: the window's rules decide, not this driver's leniency.
                 if self.trusting() {
-                    match trusted::decide(&node, &resolved) {
+                    match trusted::verdict(&node, &resolved) {
                         trusted::Verdict::Approve => {
                             telemetry::record(telemetry::Event::ApprovalDecided {
                                 approved: true,
