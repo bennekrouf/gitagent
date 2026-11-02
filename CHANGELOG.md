@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- A release is no longer cut while the newest pull request merged since the
+  last one failed its checks. GitAgent says which pull request and which checks,
+  and runs the release once a pull request with passing checks has fixed it.
+
 ## [0.1.156] - 2026-11-02
 
 ### Added

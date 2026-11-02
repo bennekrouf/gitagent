@@ -147,6 +147,15 @@ pub(super) async fn run_script(
             )));
         }
     }
+    if release {
+        if let Some(red) = red_since_release(repo).await {
+            return Err(StepFailure::from(format!(
+                "Not released: {red} `{command}` was not run, so no version is cut from \
+                 code that does not build. Fix it in a pull request whose checks pass, \
+                 then release again."
+            )));
+        }
+    }
 
     let (ok, output) =
         git::run_shell_streaming(repo, &command, node.setting("stdin"), on_line).await;
@@ -184,6 +193,75 @@ pub(super) async fn run_script(
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// Why a release must not be cut now, if it must not: the newest pull request
+/// merged since the last tag failed its checks.
+///
+/// The apps' CI runs on pull requests, not on main, so main's own commits
+/// carry no result: the newest pull request's run is the latest word on
+/// whether main builds — an older red one a later green one fixed is not.
+/// Only GitHub is read; anywhere else, and when GitHub can't be asked, the
+/// release goes ahead as before.
+pub(super) async fn red_since_release(repo: &str) -> Option<String> {
+    let url = git::remote_url(repo).await?;
+    if forge::detect(&url) != Forge::GitHub {
+        return None;
+    }
+    let since = git::run(repo, "git", &["describe", "--tags", "--abbrev=0", "HEAD"])
+        .await
+        .ok()
+        .map(|t| t.trim().to_string());
+    let range = since.as_ref().map(|t| format!("{t}..HEAD"));
+    let mut args = vec!["log", "--format=%s", "-n", "200"];
+    if let Some(range) = &range {
+        args.push(range);
+    }
+    let subjects: Vec<String> = git::run(repo, "git", &args)
+        .await
+        .ok()?
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let newest = crate::services::release::pr_numbers(&subjects)
+        .into_iter()
+        .next()?;
+    let json = git::run(
+        repo,
+        "gh",
+        &[
+            "pr",
+            "view",
+            newest.trim_start_matches('#'),
+            "--json",
+            "statusCheckRollup",
+        ],
+    )
+    .await
+    .ok()?;
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    red_reason(&newest, since.as_deref(), &value["statusCheckRollup"])
+}
+
+/// What `red_since_release` says about one pull request's checks: something
+/// only when they failed.
+pub(super) fn red_reason(
+    pr: &str,
+    since: Option<&str>,
+    rollup: &serde_json::Value,
+) -> Option<String> {
+    if crate::services::probe::rollup(rollup) != crate::services::probe::Checks::Failing {
+        return None;
+    }
+    let names: Vec<String> = crate::services::probe::failed_checks(rollup)
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    let since = since.map_or(String::new(), |t| format!(" since {t}"));
+    Some(format!(
+        "{pr}, the newest pull request merged{since}, failed its checks ({}).",
+        names.join(", ")
+    ))
 }
 
 /// The tag HEAD already is, when nothing has been committed since the last

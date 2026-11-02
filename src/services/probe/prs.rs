@@ -146,7 +146,7 @@ pub(super) async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
 
 /// A failing check outranks a pending one: red is worth surfacing immediately,
 /// and a run still going could turn red anyway.
-pub(super) fn rollup(value: &serde_json::Value) -> Checks {
+pub(crate) fn rollup(value: &serde_json::Value) -> Checks {
     let Some(checks) = value.as_array() else {
         return Checks::Unknown;
     };
@@ -176,7 +176,7 @@ pub(super) fn rollup(value: &serde_json::Value) -> Checks {
 /// Actions and apps, and commit statuses (`context`, `targetUrl`) from older
 /// integrations. A name reported twice — a re-run, a matrix leg — is listed
 /// once, with the first link.
-pub(super) fn failed_checks(value: &serde_json::Value) -> Vec<FailedCheck> {
+pub(crate) fn failed_checks(value: &serde_json::Value) -> Vec<FailedCheck> {
     let mut out: Vec<FailedCheck> = vec![];
     for check in value.as_array().into_iter().flatten() {
         if !has_failed(check) {

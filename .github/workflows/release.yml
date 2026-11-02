@@ -28,8 +28,6 @@ permissions:
   contents: write
 
 env:
-  # The desktop-kit tag the apps build against; move it to take a kit change.
-  DESKTOP_KIT_REF: v0.1.7
 
 jobs:
   # ── When triggered via workflow_dispatch: bump version and create the tag ──
@@ -94,15 +92,25 @@ jobs:
       - uses: actions/checkout@v4
 
       # desktop-kit, the code every desktop app shares, sits beside the app
-      # (Cargo.toml: path = "../desktop-kit"), at the tag DESKTOP_KIT_REF pins.
-      - uses: actions/checkout@v4
-        with:
-          repository: bennekrouf/desktop-kit
-          ref: ${{ env.DESKTOP_KIT_REF }}
-          path: desktop-kit
+      # (Cargo.toml: path = "../desktop-kit"): its branch of the same name as
+      # this pull request's when there is one, so a change to both builds
+      # together whichever is pushed first; main otherwise, and for a release.
       - name: Put desktop-kit beside the app
         shell: bash
-        run: mv desktop-kit ../desktop-kit
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          url=https://github.com/bennekrouf/desktop-kit.git
+          ref=main
+          if [ -n "$BRANCH" ] && git ls-remote --exit-code --heads "$url" "$BRANCH" >/dev/null; then
+            ref=$BRANCH
+          fi
+          git clone --quiet --depth 1 --branch "$ref" "$url" ../desktop-kit
+          echo "desktop-kit $ref at $(git -C ../desktop-kit rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The kit as it is now in Cargo.lock: its version and the crates it
+          # needs. Nothing else moves, and --locked holds for the rest.
+          rustup toolchain install >/dev/null
+          cargo update --quiet -p desktop-kit
 
       # Installs the version rust-toolchain.toml pins.
       - run: rustup toolchain install && rustup target add aarch64-apple-darwin
@@ -309,15 +317,25 @@ jobs:
       - uses: actions/checkout@v4
 
       # desktop-kit, the code every desktop app shares, sits beside the app
-      # (Cargo.toml: path = "../desktop-kit"), at the tag DESKTOP_KIT_REF pins.
-      - uses: actions/checkout@v4
-        with:
-          repository: bennekrouf/desktop-kit
-          ref: ${{ env.DESKTOP_KIT_REF }}
-          path: desktop-kit
+      # (Cargo.toml: path = "../desktop-kit"): its branch of the same name as
+      # this pull request's when there is one, so a change to both builds
+      # together whichever is pushed first; main otherwise, and for a release.
       - name: Put desktop-kit beside the app
         shell: bash
-        run: mv desktop-kit ../desktop-kit
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          url=https://github.com/bennekrouf/desktop-kit.git
+          ref=main
+          if [ -n "$BRANCH" ] && git ls-remote --exit-code --heads "$url" "$BRANCH" >/dev/null; then
+            ref=$BRANCH
+          fi
+          git clone --quiet --depth 1 --branch "$ref" "$url" ../desktop-kit
+          echo "desktop-kit $ref at $(git -C ../desktop-kit rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The kit as it is now in Cargo.lock: its version and the crates it
+          # needs. Nothing else moves, and --locked holds for the rest.
+          rustup toolchain install >/dev/null
+          cargo update --quiet -p desktop-kit
 
       # Installs the version rust-toolchain.toml pins.
       - run: rustup toolchain install
@@ -480,15 +498,25 @@ jobs:
       - uses: actions/checkout@v4
 
       # desktop-kit, the code every desktop app shares, sits beside the app
-      # (Cargo.toml: path = "../desktop-kit"), at the tag DESKTOP_KIT_REF pins.
-      - uses: actions/checkout@v4
-        with:
-          repository: bennekrouf/desktop-kit
-          ref: ${{ env.DESKTOP_KIT_REF }}
-          path: desktop-kit
+      # (Cargo.toml: path = "../desktop-kit"): its branch of the same name as
+      # this pull request's when there is one, so a change to both builds
+      # together whichever is pushed first; main otherwise, and for a release.
       - name: Put desktop-kit beside the app
         shell: bash
-        run: mv desktop-kit ../desktop-kit
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          url=https://github.com/bennekrouf/desktop-kit.git
+          ref=main
+          if [ -n "$BRANCH" ] && git ls-remote --exit-code --heads "$url" "$BRANCH" >/dev/null; then
+            ref=$BRANCH
+          fi
+          git clone --quiet --depth 1 --branch "$ref" "$url" ../desktop-kit
+          echo "desktop-kit $ref at $(git -C ../desktop-kit rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The kit as it is now in Cargo.lock: its version and the crates it
+          # needs. Nothing else moves, and --locked holds for the rest.
+          rustup toolchain install >/dev/null
+          cargo update --quiet -p desktop-kit
 
       # Installs the version rust-toolchain.toml pins.
       - run: rustup toolchain install
