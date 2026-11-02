@@ -51,9 +51,12 @@ mod context;
 mod dialogs;
 mod flows;
 mod middle;
+mod panel;
+mod rows;
 mod sidebar;
 mod strip;
 mod topbar;
+mod watch;
 use flows::*;
 
 /// One run per repository, per flow, per pull request — the third slot is
@@ -122,7 +125,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // checked-out branch has open" — the same default behaviour as before
     // this existed. Set by picking a specific PR from the sidebar's list.
     let selected_pr = use_signal(String::new);
-    let mut selected_node = use_signal(String::new);
+    let selected_node = use_signal(String::new);
     let running = use_signal(BTreeSet::<Key>::new);
     // A fix being run for "couldn't list pull requests", by repository:
     // whether it is still running, and what it printed.
@@ -140,7 +143,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // approval asks a person again.
     // Remembered, and shared with the MCP server, which reads it to answer a
     // run's approvals the way this window would.
-    let mut global_trust = use_signal(store::trust_all);
+    let global_trust = use_signal(store::trust_all);
     // Why the last trusted run stopped, when the reason was not "there is
     // nothing left". Cleared when the next one starts.
     let chain_note = use_signal(String::new);
@@ -150,10 +153,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // list is one click away for approving and reading logs.
     let run_view = use_signal(|| true);
     // The step whose panel is open over the run map, if any.
-    let mut drawer = use_signal(|| Option::<String>::None);
+    let drawer = use_signal(|| Option::<String>::None);
     // The step the panel last showed, kept after it closes so the panel can
     // slide out with its content still in it instead of going blank first.
-    let mut panel_step = use_signal(|| Option::<String>::None);
+    let panel_step = use_signal(|| Option::<String>::None);
     // Folded to a strip at the right edge: the map gets its room back and the
     // step stays one click away. Remembered — between openings and across
     // restarts — so a panel folded once stays folded for the next step, and a
@@ -170,49 +173,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // A pull request whose diff is open in the run view's panel, by number,
     // instead of a step. And the diffs fetched for it, by repository and
     // number: `None` while git is still fetching.
-    let mut diff_panel = use_signal(|| Option::<String>::None);
+    let diff_panel = use_signal(|| Option::<String>::None);
     let pr_diffs = use_signal(PrDiffs::new);
     // A step approved from its panel, kept open on its log while it runs.
-    let mut close_when_done = use_signal(|| Option::<(Key, String)>::None);
-    use_effect(move || {
-        let Some((key, step)) = close_when_done.read().clone() else {
-            return;
-        };
-        // Closed by hand, or moved to another step or repository: the panel
-        // is yours again.
-        let shown: Key = (
-            selected_repo.read().clone().unwrap_or_default(),
-            selected_flow.read().clone(),
-            selected_pr.read().clone(),
-        );
-        if shown != key || drawer.read().as_deref() != Some(step.as_str()) {
-            close_when_done.set(None);
-            return;
-        }
-        let status = states
-            .read()
-            .get(&key)
-            .map(|state| state.status(&step))
-            .unwrap_or_default();
-        match status {
-            NodeStatus::Done | NodeStatus::Skipped | NodeStatus::Bypassed => {
-                close_when_done.set(None);
-                drawer.set(None);
-            }
-            NodeStatus::Failed | NodeStatus::Rejected | NodeStatus::Blocked => {
-                close_when_done.set(None);
-            }
-            NodeStatus::Pending | NodeStatus::Running | NodeStatus::AwaitingApproval => {}
-        }
-    });
-    use_effect(move || {
-        if let Some(step) = drawer.read().clone() {
-            panel_step.set(Some(step));
-            // A step taking the panel — clicked, or come to need you — takes
-            // it from a diff being read.
-            diff_panel.set(None);
-        }
-    });
+    let close_when_done = use_signal(|| Option::<(Key, String)>::None);
     // Opens a pull request's diff in the run view's panel, fetching it with
     // git: the base and head from origin, compared here, as the review flow
     // does — so it costs none of the forge's API budget. A diff already
@@ -224,33 +188,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let mut setup_open = use_signal(|| false);
     let mut mcp_open = use_signal(|| false);
     // GitAgent Pro: the licence, and whether its window is open.
-    let mut licence_status = use_signal(licence::current);
+    let licence_status = use_signal(licence::current);
     let mut licence_open = use_signal(|| false);
-    // The licence is asked about at start and then daily; between checks,
-    // and offline, the last answer stands (for a week, for Pro).
-    use_future(move || async move {
-        loop {
-            let wait = match licence::check().await {
-                Ok(now) => {
-                    if *licence_status.peek() != now {
-                        licence_status.set(now);
-                        crate::refresh_window_title();
-                    }
-                    licence::CHECK_EVERY
-                }
-                Err(_) => {
-                    // The answer on disk may just have aged past the grace.
-                    let now = licence::current();
-                    if *licence_status.peek() != now {
-                        licence_status.set(now);
-                        crate::refresh_window_title();
-                    }
-                    licence::RETRY_EVERY
-                }
-            };
-            tokio::time::sleep(wait).await;
-        }
-    });
+    watch::use_licence_check(licence_status);
     // Which flows the *current* repository has chosen not to see — a filter
     // on top of the shared flow list, not a copy of it. `flows.toml` never
     // changes when a flow is hidden here.
@@ -284,78 +224,29 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // next one you selected, which reads as a panel that will not close.
     let picker_open = use_signal(|| Option::<String>::None);
 
-    // A step that stops for you — to ask for approval, or because it failed —
-    // opens its panel over the run map on its own, once each time: close it
-    // while the step still waits and it stays closed. Not for a step a
-    // trusted run is about to answer — the panel would only flash open — but
-    // yes for one it held back for you, such as a merge the reviews were
-    // unhappy about, even with Trust all on, and yes for any failure. Not
-    // away from another step that needs you too, which would have the two
-    // fight for it.
-    let mut auto_opened = use_signal(|| Option::<(u64, String, usize)>::None);
-    use_effect(move || {
-        if !*run_view.read() {
-            return;
-        }
-        let Some(repo) = selected_repo.read().clone() else {
-            return;
-        };
-        let key: Key = (
-            repo,
-            selected_flow.read().clone(),
-            selected_pr.read().clone(),
-        );
-        let states = states.read();
-        let Some(state) = states.get(&key) else {
-            return;
-        };
-        let Some((step, at)) = state.newest_for_a_person() else {
-            return;
-        };
-        let this = (state.run, step.clone(), at);
-        if auto_opened.peek().as_ref() == Some(&this) {
-            return;
-        }
-        // Read, not peeked: a trusted run that holds the step takes itself out
-        // of `trusted`, and that is the moment to open.
-        if answers_itself(state, &step, trusted.read().contains(&key)) {
-            return;
-        }
-        auto_opened.set(Some(this));
-        let showing_another = drawer
-            .peek()
-            .as_ref()
-            .is_some_and(|open| open != &step && needs_a_person(state.status(open)));
-        if !showing_another {
-            selected_node.set(step.clone());
-            drawer.set(Some(step));
-        }
-    });
-
-    // Escape closes a step's panel over the run map. Listened for on the
-    // window, not the panel, because nothing in the panel has focus after
-    // a click on the map. The handler is kept on `window` and replaced on
-    // each mount, so a workspace opened twice never stacks two of them.
-    use_future(move || async move {
-        let mut keys = document::eval(
-            "if (window._gaEscape) window.removeEventListener('keydown', window._gaEscape);\
-             window._gaEscape = (e) => { if (e.key === 'Escape') dioxus.send(true); };\
-             window.addEventListener('keydown', window._gaEscape);",
-        );
-        while keys.recv::<bool>().await.is_ok() {
-            // A dialog in front owns the key: closing the panel hidden
-            // behind it would be a change nobody could see happen.
-            let dialog_open = *settings_open.peek()
-                || *licence_open.peek()
-                || branches_open.peek().is_some()
-                || base_editor_open.peek().is_some()
-                || confirm_hide.peek().is_some()
-                || picker_open.peek().is_some();
-            if !dialog_open {
-                drawer.set(None);
-                diff_panel.set(None);
-            }
-        }
+    let panel = panel::Panel {
+        states,
+        selected_repo,
+        selected_flow,
+        selected_pr,
+        selected_node,
+        trusted,
+        run_view,
+        drawer,
+        panel_step,
+        diff_panel,
+        close_when_done,
+    };
+    panel::use_close_when_done(panel);
+    panel::use_panel_follows_drawer(panel);
+    panel::use_auto_open(panel);
+    panel::use_escape_closes(panel, move || {
+        *settings_open.peek()
+            || *licence_open.peek()
+            || branches_open.peek().is_some()
+            || base_editor_open.peek().is_some()
+            || confirm_hide.peek().is_some()
+            || picker_open.peek().is_some()
     });
 
     // Hiding a flow is one operation whether it comes from a tab's × or from
@@ -390,174 +281,31 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // repositories each needing a `gh` round-trip is seconds sequentially and
     // barely one concurrently. Results land as they arrive, so the list fills
     // in rather than appearing all at once.
+    let probe = watch::Probe {
+        repos,
+        statuses,
+        probing,
+        picked,
+        selected_repo,
+        selected_flow,
+        book,
+    };
     let opened = workspace.clone();
     use_coroutine(move |_rx: UnboundedReceiver<()>| {
         let opened = opened.clone();
-        async move {
-            refresh_all(
-                &opened,
-                repos,
-                statuses,
-                probing,
-                picked,
-                selected_repo,
-                selected_flow,
-                book,
-                false,
-            );
-        }
+        async move { probe.all(&opened, false) }
     });
-
-    // Runs GitAgent's MCP server is driving for a client such as Claude, read
-    // from the file it writes after every step — see `services::live`. Read
-    // when the file changes, and now and then regardless, so a run whose
-    // server went away drops off.
-    let mut live_runs = use_signal(crate::services::live::load);
-    // The flows, too, can change from outside: the MCP server's Setup tools
-    // write the same files Setup does. Picked up here so a flow Claude made
-    // shows as a tab without reopening the window — but not while Setup is
-    // open, whose draft would then be compared against a moved target.
-    let flow_files_changed_at = || {
-        let dir = store::data_dir();
-        ["flows.toml", "repo_flows.json"].map(|f| {
-            std::fs::metadata(dir.join(f))
-                .and_then(|m| m.modified())
-                .ok()
-        })
-    };
-    use_future(move || async move {
-        let mut stamp = crate::services::live::changed_at();
-        let mut flows_stamp = flow_files_changed_at();
-        let mut ticks = 0u32;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            ticks = ticks.wrapping_add(1);
-            let now = crate::services::live::changed_at();
-            if now != stamp || ticks.is_multiple_of(15) {
-                stamp = now;
-                let runs = crate::services::live::load();
-                if *live_runs.peek() != runs {
-                    live_runs.set(runs);
-                }
-            }
-            let flows_now = flow_files_changed_at();
-            if flows_now != flows_stamp && !*setup_open.peek() {
-                flows_stamp = flows_now;
-                book.set(FlowBook::load());
-                repo_flows.set(store::load_repo_flows());
-            }
-        }
-    });
-
-    // Something outside this window changed a repository — a commit from a
-    // terminal, a push, GitAgent's own MCP server running a flow — and its row
-    // and tabs should say so without a Refresh. A run of this window's own is
-    // left alone: it re-reads the repository when it settles.
-    use_future(move || async move {
-        let mut seen: BTreeMap<String, u64> = BTreeMap::new();
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let paths: Vec<String> = repos.read().iter().map(|r| r.path.clone()).collect();
-            for path in paths {
-                if running.peek().iter().any(|k| k.0 == path) {
-                    continue;
-                }
-                let now = git::change_fingerprint(&path);
-                if seen
-                    .insert(path.clone(), now)
-                    .is_some_and(|before| before != now)
-                {
-                    reprobe(path, statuses);
-                }
-            }
-        }
-    });
-
-    // What the MCP server changes for a client such as Claude, besides runs
-    // and flows: Trust all turned off, the model's region switched, and a
-    // Refresh asked for. Each is a file in the data directory, picked up when
-    // it changes.
-    let mut model_here = props.llm_config;
-    let opened_folder = workspace.clone();
-    let mut states_here = states;
-    use_future(move || {
-        let refresh_folder = opened_folder.clone();
-        async move {
-            let changed_at = |f: &str| {
-                std::fs::metadata(store::data_dir().join(f))
-                    .and_then(|m| m.modified())
-                    .ok()
-            };
-            let model_files = || {
-                (
-                    changed_at("settings.json"),
-                    changed_at("folder_models.json"),
-                )
-            };
-            let mut trust_stamp = changed_at("trust.json");
-            let mut model_stamp = model_files();
-            let mut refresh_stamp = changed_at(store::REFRESH_FILE);
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                // The top bar says Trust all is off at once, rather than
-                // "Trusting everything" over runs that now ask.
-                let now = changed_at("trust.json");
-                if now != trust_stamp {
-                    trust_stamp = now;
-                    let all = store::trust_all();
-                    if *global_trust.peek() != all {
-                        global_trust.set(all);
-                    }
-                }
-                // Not while Settings is open: its draft would be saved over the
-                // region just chosen, or shown beside a top bar that disagrees.
-                let now = model_files();
-                if now != model_stamp && !*settings_open.peek() {
-                    model_stamp = now;
-                    let cfg = store::load_settings_for(Some(&refresh_folder));
-                    if *model_here.peek() != cfg {
-                        model_here.set(cfg);
-                    }
-                }
-                let now = changed_at(store::REFRESH_FILE);
-                if now != refresh_stamp {
-                    refresh_stamp = now;
-                    match store::refresh_request().scope_for(&refresh_folder) {
-                        Some(store::RefreshScope::Folder) => {
-                            forget_finished(&mut states_here.write(), &running.peek(), None);
-                            refresh_all(
-                                &refresh_folder,
-                                repos,
-                                statuses,
-                                probing,
-                                picked,
-                                selected_repo,
-                                selected_flow,
-                                book,
-                                true,
-                            );
-                        }
-                        Some(store::RefreshScope::Repo(path)) => {
-                            let found = repos
-                                .peek()
-                                .iter()
-                                .find(|r| store::same_path(&r.path, &path))
-                                .map(|r| r.path.clone());
-                            if let Some(path) = found {
-                                forget_finished(
-                                    &mut states_here.write(),
-                                    &running.peek(),
-                                    Some(&path),
-                                );
-                                reprobe(path, statuses);
-                            }
-                        }
-                        None => {}
-                    }
-                }
-            }
-        }
-    });
+    let live_runs = watch::use_live_runs(book, repo_flows, setup_open);
+    watch::use_repo_changes(repos, running, statuses);
+    watch::use_outside_settings(
+        workspace.clone(),
+        probe,
+        states,
+        running,
+        global_trust,
+        props.llm_config,
+        settings_open,
+    );
 
     let llm_config = props.llm_config;
     let wiring = Wiring {
@@ -609,43 +357,13 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         .unwrap_or(Graph { nodes: vec![] });
     let flow_first_node = current.as_ref().map(|f| f.first_node()).unwrap_or_default();
 
-    let entries: Vec<RepoEntry> = repo_list
-        .iter()
-        .map(|repo| RepoEntry {
-            path: repo.path.clone(),
-            label: repo.label.clone(),
-            wants: status_map.get(&repo.path).map(|s| s.wants()),
-            branch: status_map
-                .get(&repo.path)
-                .map(|s| s.branch.clone())
-                .unwrap_or_default(),
-            detail: status_map
-                .get(&repo.path)
-                .map(|s| s.summary())
-                .unwrap_or_default(),
-            forge: forge_map.get(&repo.path).cloned(),
-            // Several PR-scoped runs can be in flight for this repo+flow at
-            // once — the sidebar shows whichever most needs a look, the same
-            // way `phase_of` already picks the most urgent status within one.
-            // Every flow, not just the one on screen: a review parked at an
-            // approval must still show while the commit flow is selected.
-            phase: states_snapshot
-                .iter()
-                .filter(|((r, _, _), _)| *r == repo.path)
-                .map(|(_, s)| phase_of(s))
-                .min_by_key(|p| p.priority())
-                .unwrap_or(Phase::Idle),
-            ahead: status_map.get(&repo.path).map(|s| s.ahead).unwrap_or(0),
-            behind: status_map.get(&repo.path).map(|s| s.behind).unwrap_or(0),
-            open_pr_count: status_map.get(&repo.path).map(|s| s.prs.len()).unwrap_or(0),
-            prs_error: status_map.get(&repo.path).and_then(|s| s.prs_error.clone()),
-            approval: approval_for(&states_snapshot, &flows, &repo.path),
-            start: status_map.get(&repo.path).and_then(|s| {
-                row_start(&book.read(), s, &repo_flows.read().hidden_for(&repo.path))
-                    .map(|(_, label, _)| label)
-            }),
-        })
-        .collect();
+    let entries = rows::repo_entries(
+        &repo_list,
+        &status_map,
+        &states_snapshot,
+        &book.read(),
+        &repo_flows.read(),
+    );
 
     let active = selected_repo.read().clone();
     let cfg = props.llm_config.read().clone();
@@ -713,35 +431,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // for a review, else the checked-out branch's. Built once, shown in the
     // list view and the run view alike, so the pull request being validated is
     // in sight in both.
-    // A run Claude (or a terminal) is driving on the flow on screen, drawn on
-    // its graph as if it were the window's own. A terminal run is read-only;
-    // an MCP run's approvals can be answered here as well as in Claude. Not while the window runs
-    // something in this repository itself: that run is the one on screen.
+    // A run Claude (or a terminal) is driving on the flow on screen: see
+    // `rows::watched_run`.
     let watched: Option<Watched> = active.as_ref().and_then(|repo| {
-        if running.read().iter().any(|k| &k.0 == repo) {
-            return None;
-        }
-        let resolved = dunce::canonicalize(repo)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| repo.clone());
-        live_runs
-            .read()
-            .iter()
-            .find(|r| (r.repo == resolved || &r.repo == repo) && r.flow == flow_id)
-            .and_then(|r| {
-                r.as_state(&graph).map(|state| Watched {
-                    state,
-                    finished: r.finished,
-                    note: if r.terminal {
-                        "This run was started in a terminal. Answer it there.".into()
-                    } else {
-                        "Claude started this run through GitAgent\u{2019}s MCP server. \
-                         Answer it here or in Claude."
-                            .into()
-                    },
-                    remote: (!r.terminal).then_some((r.pid, r.run)),
-                })
-            })
+        rows::watched_run(repo, &flow_id, &graph, &running.read(), &live_runs.read())
     });
 
     let flow_context: Element = context::flow_context(

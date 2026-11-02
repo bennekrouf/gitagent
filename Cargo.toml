@@ -43,6 +43,10 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
+[dev-dependencies]
+# Renders a component to HTML in tests, the way desktop-kit tests its header.
+dioxus-ssr = "=0.7.10"
+
 [lints.clippy]
 # The same lints in every desktop app. A panic is a crash the user sees, so unwrap and expect
 # are refused outside tests, as is unsafe code without a SAFETY comment. Where one is right

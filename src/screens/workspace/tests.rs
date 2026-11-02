@@ -520,3 +520,163 @@ fn someone_awaiting_approval_still_outranks_a_running_task() {
     let (_, node_id, _) = default_selection(&book, &states, "/repo", None, &[], &[]);
     assert_eq!(node_id, "commit");
 }
+
+// ── What the sidebar and the run view are given ───────────────────────────
+
+fn probed(changes: usize) -> RepoStatus {
+    RepoStatus {
+        branch: "main".into(),
+        changes,
+        forge: crate::services::forge::Forge::GitHub,
+        pr: None,
+        prs: vec![brief("7"), brief("9")],
+        prs_error: None,
+        ahead: 2,
+        behind: 1,
+        unmerged: 0,
+        release: crate::services::release::ReleaseState {
+            last_tag: Some("v1".into()),
+            commits: 0,
+            prs: vec![],
+            releases: false,
+            since_shipped: false,
+        },
+        in_progress: None,
+    }
+}
+
+fn repo(path: &str) -> store::Repo {
+    store::Repo {
+        path: path.into(),
+        label: path.trim_start_matches('/').into(),
+    }
+}
+
+#[test]
+fn a_row_is_built_from_its_probe_and_says_nothing_before_one() {
+    let repos = [repo("/a"), repo("/b")];
+    let statuses = BTreeMap::from([("/a".to_string(), probed(3))]);
+    let book = FlowBook::defaults();
+    let rows = rows::repo_entries(
+        &repos,
+        &statuses,
+        &States::new(),
+        &book,
+        &store::RepoFlows::default(),
+    );
+    assert_eq!(rows.len(), 2);
+
+    let a = &rows[0];
+    assert_eq!((a.path.as_str(), a.label.as_str()), ("/a", "a"));
+    assert_eq!(a.branch, "main");
+    assert_eq!((a.ahead, a.behind, a.open_pr_count), (2, 1, 2));
+    assert_eq!(a.forge, Some(crate::services::forge::Forge::GitHub));
+    assert!(a.wants.is_some() && a.start.is_some());
+    assert_eq!(a.phase, Phase::Idle);
+
+    // Not probed yet: an empty row, not a guess.
+    let b = &rows[1];
+    assert!(b.wants.is_none() && b.forge.is_none() && b.start.is_none());
+    assert_eq!((b.branch.as_str(), b.ahead, b.open_pr_count), ("", 0, 0));
+}
+
+#[test]
+fn a_row_shows_its_most_urgent_run_on_any_flow() {
+    let repos = [repo("repo")];
+    let statuses = BTreeMap::from([("repo".to_string(), probed(3))]);
+    let book = FlowBook::defaults();
+    let mut states = states_with("commit_and_pr", "", waiting_at_push());
+    let mut done = RunState::fresh(&commit_and_pr().to_graph());
+    done.started = true;
+    states.insert(("repo".into(), "review_and_merge".into(), "7".into()), done);
+    let rows = rows::repo_entries(
+        &repos,
+        &statuses,
+        &states,
+        &book,
+        &store::RepoFlows::default(),
+    );
+    let expected = phase_of(&states[&("repo".into(), "commit_and_pr".into(), String::new())]);
+    assert_eq!(rows[0].phase, expected);
+    assert_ne!(rows[0].phase, Phase::Idle);
+    assert!(rows[0].approval.is_some());
+}
+
+#[test]
+fn a_hidden_flow_is_not_offered_on_its_row() {
+    let repos = [repo("/a")];
+    let statuses = BTreeMap::from([("/a".to_string(), probed(3))]);
+    let book = FlowBook::defaults();
+    let mut hidden = store::RepoFlows::default();
+    hidden.hide("/a", "commit_and_pr");
+    let rows = rows::repo_entries(&repos, &statuses, &States::new(), &book, &hidden);
+    assert!(rows[0].start.is_none());
+}
+
+fn live(repo: &str, flow: &str, terminal: bool) -> crate::services::live::LiveRun {
+    let graph = commit_and_pr().to_graph();
+    crate::services::live::LiveRun {
+        pid: 42,
+        run: 3,
+        repo: repo.into(),
+        flow: flow.into(),
+        flow_label: "Commit".into(),
+        steps: graph
+            .nodes
+            .iter()
+            .map(|n| crate::services::live::LiveStep {
+                id: n.id.clone(),
+                title: n.id.clone(),
+                status: NodeStatus::Pending.css().into(),
+                status_label: String::new(),
+                summary: String::new(),
+            })
+            .collect(),
+        waiting: None,
+        finished: false,
+        trusted: false,
+        terminal,
+        updated: 0,
+    }
+}
+
+#[test]
+fn a_run_claude_drives_on_the_flow_on_screen_is_shown_and_can_be_answered() {
+    let graph = commit_and_pr().to_graph();
+    let runs = [live("/no/such/repo", "commit_and_pr", false)];
+    let none = BTreeSet::new();
+    let w = rows::watched_run("/no/such/repo", "commit_and_pr", &graph, &none, &runs).unwrap();
+    assert_eq!(w.remote, Some((42, 3)));
+    assert!(w.note.contains("Claude"));
+    // Another flow, or another repository: not this one.
+    assert!(rows::watched_run("/no/such/repo", "release", &graph, &none, &runs).is_none());
+    assert!(rows::watched_run("/other", "commit_and_pr", &graph, &none, &runs).is_none());
+}
+
+#[test]
+fn a_terminal_run_is_shown_read_only() {
+    let graph = commit_and_pr().to_graph();
+    let runs = [live("/no/such/repo", "commit_and_pr", true)];
+    let w = rows::watched_run(
+        "/no/such/repo",
+        "commit_and_pr",
+        &graph,
+        &BTreeSet::new(),
+        &runs,
+    )
+    .unwrap();
+    assert_eq!(w.remote, None);
+    assert!(w.note.contains("terminal"));
+}
+
+#[test]
+fn a_run_of_the_windows_own_hides_one_from_outside() {
+    let graph = commit_and_pr().to_graph();
+    let runs = [live("/no/such/repo", "commit_and_pr", false)];
+    let running = BTreeSet::from([(
+        "/no/such/repo".to_string(),
+        "review_and_merge".to_string(),
+        String::new(),
+    )]);
+    assert!(rows::watched_run("/no/such/repo", "commit_and_pr", &graph, &running, &runs).is_none());
+}
