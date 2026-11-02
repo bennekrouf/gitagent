@@ -1,18 +1,19 @@
-//! Keeping a run going while the window is hidden.
+//! Keeping GitAgent working while its window is hidden.
 //!
 //! macOS puts an app it cannot see into App Nap, which throttles its main
 //! thread to a crawl. That is where every run is driven from — the step that
 //! waits on `git push` or a model, notices it finished and starts the next
-//! one — so a hidden window looked like a stopped run, and caught up the
-//! moment it was shown again. The commands themselves kept going; the app
-//! stopped noticing.
+//! one — and where the window notices what happens without a click: a run
+//! Claude starts over MCP, an approval answered elsewhere, a trusted chain
+//! moving on, the repositories read again. A hidden window looked stopped,
+//! and caught up the moment it was shown again.
 //!
-//! Telling the system that work the person started is under way is the
-//! documented way out. It is held only while something is running, so an
-//! idle GitAgent naps like any other app, and it still lets the Mac go to
-//! sleep: a long run is not a reason to keep a laptop awake.
+//! Telling the system that work the person asked for is under way is the
+//! documented way out. A window holds it for as long as it has a folder open,
+//! so the welcome screen naps like any other app, and it still lets the Mac go
+//! to sleep: watching repositories is not a reason to keep a laptop awake.
 
-/// Held while work is running; dropping it lets the app nap again.
+/// Held while a folder is open; dropping it lets the app nap again.
 pub struct Activity {
     #[cfg(target_os = "macos")]
     token:
@@ -27,7 +28,7 @@ impl Activity {
             use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
             let token = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
                 NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
-                &NSString::from_str("Running a GitAgent flow"),
+                &NSString::from_str("Watching repositories and running GitAgent flows"),
             );
             Some(Self { token })
         }
@@ -59,8 +60,8 @@ mod tests {
             let held = Activity::begin();
             assert_eq!(held.is_some(), cfg!(target_os = "macos"));
         }
-        // Taking it again after a release works: the effect does exactly this
-        // every time a run starts after the last one ended.
+        // Taking it again after a release works: a window does exactly this
+        // when another folder is opened in it.
         assert_eq!(Activity::begin().is_some(), cfg!(target_os = "macos"));
     }
 }
