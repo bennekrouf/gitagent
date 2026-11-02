@@ -4,6 +4,7 @@
 use super::*;
 use crate::services::flowdef::FlowDef;
 use crate::services::forge::Forge;
+use crate::services::live::{self, LiveRun};
 use crate::services::probe::FlowKind;
 use crate::services::store::Repo;
 
@@ -51,6 +52,8 @@ pub(super) struct Shown {
     pub flow_context: Result<VNode, RenderError>,
     pub flow_strip: Result<VNode, RenderError>,
     pub watched: Option<Watched>,
+    /// Claude's run in this repository waiting on an approval, and the step.
+    pub blocker: Option<(LiveRun, String)>,
     pub props: WorkspaceProps,
 }
 
@@ -67,6 +70,7 @@ pub(super) fn middle_pane(
         chain_note,
         run_view,
         setup_open,
+        wiring,
         ..
     } = s;
     let (repo_list, active) = (&d.repo_list, d.active.clone());
@@ -74,7 +78,7 @@ pub(super) fn middle_pane(
     // Built once for both views: while the run view was open this note had
     // nowhere to go, so a Play that was refused said nothing at all — which
     // is indistinguishable from a button that does not work.
-    let note = chain_banner(chain_note, setup_open);
+    let note = chain_banner(chain_note, setup_open, d.blocker.clone(), wiring);
 
     rsx! {
         match active.clone() {
@@ -527,16 +531,64 @@ fn list_arm(
 /// The note a refused start or a stopped chain leaves behind, with the way
 /// out of it: Setup for a flow that cannot answer what the repository needs,
 /// and a cross for everything else.
-fn chain_banner(mut chain_note: Signal<String>, mut setup_open: Signal<bool>) -> Element {
+///
+/// While Claude's run holds the repository at an approval, the way out is
+/// that approval instead: shown on its tab, or rejected from here. Otherwise
+/// the only one who can let the repository go is whoever is at that Claude
+/// session — and a run started there and forgotten keeps refusing every start
+/// for as long as the session stays open.
+fn chain_banner(
+    mut chain_note: Signal<String>,
+    mut setup_open: Signal<bool>,
+    blocker: Option<(LiveRun, String)>,
+    wiring: Wiring,
+) -> Element {
+    let Wiring {
+        mut selected_flow,
+        mut selected_pr,
+        mut selected_node,
+        ..
+    } = wiring;
     rsx! {
         if !chain_note.read().is_empty() {
             div { class: "chain-note",
                 span { class: "chain-note-icon", "\u{26a0}" }
                 span { class: "chain-note-text", "{chain_note}" }
-                button {
-                    class: "chain-note-open",
-                    onclick: move |_| setup_open.set(true),
-                    "Open Setup"
+                if let Some((run, step)) = blocker {
+                    button {
+                        class: "chain-note-open",
+                        title: "Open the run on its tab, where its approval can be answered",
+                        onclick: {
+                            let (flow, step) = (run.flow.clone(), step.clone());
+                            move |_| {
+                                selected_flow.set(flow.clone());
+                                selected_pr.set(String::new());
+                                selected_node.set(step.clone());
+                                chain_note.set(String::new());
+                            }
+                        },
+                        "Show it"
+                    }
+                    button {
+                        class: "chain-note-open",
+                        title: "Reject the step Claude\u{2019}s run is waiting on: nothing is run, and the run ends",
+                        onclick: move |_| {
+                            live::answer(live::Answer {
+                                pid: run.pid,
+                                run: run.run,
+                                step: step.clone(),
+                                approved: false,
+                            });
+                            chain_note.set(String::new());
+                        },
+                        "Reject it"
+                    }
+                } else {
+                    button {
+                        class: "chain-note-open",
+                        onclick: move |_| setup_open.set(true),
+                        "Open Setup"
+                    }
                 }
                 button {
                     class: "chain-note-close",

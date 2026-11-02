@@ -433,6 +433,11 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let watched: Option<Watched> = active.as_ref().and_then(|repo| {
         rows::watched_run(repo, &flow_id, &graph, &running.read(), &live_runs.read())
     });
+    // Claude's run in this repository, stopped on an approval: what a refused
+    // start offers to show or reject — see `rows::waiting_blocker`.
+    let blocker = active
+        .as_ref()
+        .and_then(|repo| rows::waiting_blocker(repo, &running.read(), &live_runs.read()));
 
     let flow_context: Element = context::flow_context(
         statuses,
@@ -562,7 +567,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     },
                 }
 
-                {middle::middle_pane(middle::Mid { probing, selected_pr, selected_node, running, chain_note, run_view, drawer, panel_step, panel_folded, diff_panel, pr_diffs, close_when_done, setup_open, branches_busy, middle_w, panel_w, dragging, drag_from, is_light, wiring }, middle::Shown { repo_list: repo_list.clone(), status_map: status_map.clone(), forge_map: forge_map.clone(), states_snapshot: states_snapshot.clone(), flows: flows.clone(), flow_id: flow_id.clone(), flow_problems: flow_problems.clone(), current: current.clone(), flow_kind, graph: graph.clone(), flow_first_node: flow_first_node.clone(), active: active.clone(), flow_context: flow_context.clone(), flow_strip: flow_strip.clone(), watched: watched.clone(), props: props.clone() }, set_folded, begin, start, repo_actions)}
+                {middle::middle_pane(middle::Mid { probing, selected_pr, selected_node, running, chain_note, run_view, drawer, panel_step, panel_folded, diff_panel, pr_diffs, close_when_done, setup_open, branches_busy, middle_w, panel_w, dragging, drag_from, is_light, wiring }, middle::Shown { repo_list: repo_list.clone(), status_map: status_map.clone(), forge_map: forge_map.clone(), states_snapshot: states_snapshot.clone(), flows: flows.clone(), flow_id: flow_id.clone(), flow_problems: flow_problems.clone(), current: current.clone(), flow_kind, graph: graph.clone(), flow_first_node: flow_first_node.clone(), active: active.clone(), flow_context: flow_context.clone(), flow_strip: flow_strip.clone(), watched: watched.clone(), blocker: blocker.clone(), props: props.clone() }, set_folded, begin, start, repo_actions)}
             }
         }
 

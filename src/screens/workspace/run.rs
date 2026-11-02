@@ -182,13 +182,17 @@ pub(super) async fn drive(
                 }
 
                 if auto.is_none() && trusted.read().contains(&key) {
-                    let verdict = trusted::decide(&node, &state);
+                    let verdict = trusted::verdict(&node, &state);
                     if let Some(why) = verdict.reason() {
                         // It stopped, so it is no longer trusting: the button
                         // goes back to offering it, and the rest of the run is
                         // the person's again. Resuming on their approval and
                         // carrying on clicking would be the one behaviour that
                         // makes "it stopped for you" untrue.
+                        //
+                        // Except under Trust all, which is the person saying
+                        // not to ask again: once they answer the one thing
+                        // it could not, the run carries on as it was.
                         states
                             .write()
                             .entry(key.clone())
@@ -197,7 +201,9 @@ pub(super) async fn drive(
                             .entry(node.id.clone())
                             .or_default()
                             .held = why.to_string();
-                        trusted.write().remove(&key);
+                        if !store::trust_all() {
+                            trusted.write().remove(&key);
+                        }
                         // No second notification: becoming `AwaitingApproval`
                         // already sent one, and the reason is on the node.
                     }

@@ -291,8 +291,10 @@ pub(super) fn trust_all(turn_off: bool) -> Value {
     json!({
         "trust_all": store::trust_all(),
         "note": if store::trust_all() {
-            "On: every run answers its own approvals by the Trusted run's rules. Only the \
-             user can turn it on, in the GitAgent window; pass turn_off: true to turn it off."
+            "On: every run approves every step itself, release notes and release scripts \
+             included, merges whatever the analysis found and waits for CI that is still \
+             running. It stops only at a merge whose CI failed. Only the user can turn it \
+             on, in the GitAgent window; pass turn_off: true to turn it off."
         } else {
             "Off: runs ask, unless started with trusted: true or approved with \
              stop_asking: true. Only the user can turn it on, in the GitAgent window."

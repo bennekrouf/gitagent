@@ -17,6 +17,29 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- **Trust all** now means not being asked again. With it on, runs approve
+  release notes as drafted, run the release script, and merge pull requests
+  whatever the analysis found or when no CI ran, so pressing **All** in the
+  sidebar takes every repository through commit, review, merge and release on
+  its own. A pull request whose checks are still running is waited for rather
+  than stopped at. The one thing it still stops at is a merge whose CI failed,
+  so a broken branch is never released; once you answer that, the run carries
+  on without asking again. **Trusted run** on a single repository keeps its
+  stricter rules.
+
+### Fixed
+
+- A run Claude started and left waiting on an approval no longer leaves you
+  stuck when you try to start something in that repository. The message that
+  says it is in the way now offers **Show it**, which opens the run on its tab
+  so you can answer the approval, and **Reject it**, which turns the step down
+  and ends the run so the repository is free again. The message no longer
+  offers to open Setup, which could not help.
+
 ## [0.1.159] - 2026-11-02
 
 ### Changed
