@@ -21,7 +21,9 @@ were never released.
 
 ### Changed
 
-- Packaging only — no user-visible change.
+- The "Use GitAgent from Claude or Codex" window now looks and reads the same as
+  in the other Mayorana apps, with a copy button on every step, and Escape
+  closes it.
 
 ## [0.1.152] - 2026-11-02
 

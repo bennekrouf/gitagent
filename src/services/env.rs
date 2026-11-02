@@ -54,75 +54,21 @@ const FALLBACKS: &[&str] = &[
 
 /// Adopts the login shell's `PATH`, merged with whatever we already have.
 /// Call once, before anything runs a subprocess.
-/// Splits `KEY=value` lines into pairs, ignoring blanks and malformed rows.
-pub fn parse_env_lines(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .filter_map(|line| line.split_once('='))
-        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-        .filter(|(k, v)| !k.is_empty() && !v.is_empty())
-        .collect()
-}
-
 /// Carries the allowlisted variables over from the login shell.
 ///
 /// Anything already set in the real environment wins — a value passed on the
 /// command line or by a parent process is more deliberate than a profile.
 pub fn adopt_login_env() {
-    let Some(text) = login_shell_env() else {
-        return;
-    };
-    for (key, value) in adoptable(&text) {
+    for (key, value) in desktop_kit::shell::login_vars(INHERITED) {
         if std::env::var(&key).ok().filter(|v| !v.is_empty()).is_none() {
             std::env::set_var(&key, value);
         }
     }
 }
 
-/// The variables worth adopting out of the shell's output.
-///
-/// Filtering here and not only when building the probe script is the point.
-/// `-lc` runs the login profile, and profiles talk: nvm, conda, direnv and
-/// corporate banners all print to stdout, and anything among that noise
-/// shaped like `KEY=value` would otherwise be adopted as if we had asked for
-/// it. The allowlist has to govern what is accepted, not merely what is
-/// requested.
-fn adoptable(text: &str) -> Vec<(String, String)> {
-    parse_env_lines(text)
-        .into_iter()
-        .filter(|(key, _)| INHERITED.contains(&key.as_str()))
-        .collect()
-}
-
-#[cfg(unix)]
-fn login_shell_env() -> Option<String> {
-    use std::process::{Command, Stdio};
-
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let script = INHERITED
-        .iter()
-        .map(|key| format!("printf '{key}=%s\\n' \"${key}\""))
-        .collect::<Vec<_>>()
-        .join("; ");
-
-    let output = Command::new(&shell)
-        .args(["-lc", &script])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-#[cfg(not(unix))]
-fn login_shell_env() -> Option<String> {
-    None
-}
-
 pub fn adopt_login_path() {
     let current = std::env::var("PATH").unwrap_or_default();
-    let login = login_shell_path();
+    let login = desktop_kit::shell::login_path();
     let cargo_bin = dirs::home_dir().map(|h| h.join(".cargo/bin").to_string_lossy().to_string());
 
     let mut extras: Vec<String> = FALLBACKS.iter().map(|s| s.to_string()).collect();
@@ -180,31 +126,6 @@ fn merge_path_lists(sep: char, sources: &[String]) -> String {
         }
     }
     out.join(&sep.to_string())
-}
-
-#[cfg(unix)]
-fn login_shell_path() -> Option<String> {
-    use std::process::{Command, Stdio};
-
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let output = Command::new(&shell)
-        // -l reads the profile (where `brew shellenv` normally is); no -i, so
-        // an interactive prompt can never block startup.
-        .args(["-lc", "printf '%s' \"$PATH\""])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!text.is_empty()).then_some(text)
-}
-
-#[cfg(not(unix))]
-fn login_shell_path() -> Option<String> {
-    None
 }
 
 /// What to actually start when asked for `program`.
@@ -407,57 +328,11 @@ mod tests {
     }
 
     #[test]
-    fn exported_secrets_are_read_out_of_the_shell_output() {
-        let pairs = parse_env_lines("OPENAI_API_KEY=sk-abc\nGH_TOKEN=ghp_1\n");
-        assert_eq!(pairs.len(), 2);
-        assert_eq!(pairs[0], ("OPENAI_API_KEY".into(), "sk-abc".into()));
-    }
-
-    #[test]
-    fn a_variable_that_is_not_set_contributes_nothing() {
-        // The shell prints `KEY=` for anything unset.
-        assert!(parse_env_lines("OPENAI_API_KEY=\nGH_TOKEN=\n").is_empty());
-    }
-
-    #[test]
-    fn a_value_containing_an_equals_sign_survives_intact() {
-        let pairs = parse_env_lines("AZURE_DEVOPS_EXT_PAT=abc=def==");
-        assert_eq!(pairs[0].1, "abc=def==");
-    }
-
-    #[test]
-    fn malformed_rows_are_skipped_rather_than_panicking() {
-        assert!(parse_env_lines("no equals sign here\n\n").is_empty());
-    }
-
-    #[test]
     fn only_variables_the_app_reads_are_carried_over() {
         // An allowlist, not a wholesale copy of the shell environment.
         assert!(INHERITED.contains(&"OPENAI_API_KEY"));
         assert!(INHERITED.contains(&"AZURE_DEVOPS_EXT_PAT"));
         assert!(!INHERITED.contains(&"AWS_SECRET_ACCESS_KEY"));
-    }
-
-    /// A login profile is not a clean pipe. Whatever it prints alongside the
-    /// answer must not be adopted just for being shaped like an assignment.
-    #[test]
-    fn a_chatty_login_profile_cannot_smuggle_variables_in() {
-        let stdout = "nvm: using node v20.11.0\n\
-                      CONDA_PREFIX=/opt/miniconda3\n\
-                      AWS_SECRET_ACCESS_KEY=leaked\n\
-                      OPENAI_API_KEY=sk-real\n\
-                      AZURE_DEVOPS_EXT_PAT=\n\
-                      GH_TOKEN=\n";
-        let found = adoptable(stdout);
-        let adopted: Vec<&str> = found.iter().map(|(k, _)| k.as_str()).collect();
-        // Only what was asked for, and only what was actually set.
-        assert_eq!(adopted, vec!["OPENAI_API_KEY"]);
-    }
-
-    #[test]
-    fn the_requested_variables_still_come_through() {
-        let stdout = "OPENAI_API_KEY=sk-abc\nAZURE_DEVOPS_EXT_PAT=pat-1\nGH_TOKEN=ghp_1\n";
-        assert_eq!(adoptable(stdout).len(), 3);
     }
 
     #[test]
@@ -506,15 +381,6 @@ mod tests {
     fn nothing_at_all_still_yields_a_usable_path() {
         let merged = merge_paths("", None, &extras());
         assert!(merged.split(':').any(|p| p == "/usr/bin"));
-    }
-
-    /// Not an assertion about this machine — just proof the probe returns
-    /// something shaped like a PATH when a shell is available.
-    #[test]
-    fn the_login_shell_probe_returns_a_path_or_nothing() {
-        if let Some(path) = login_shell_path() {
-            assert!(path.contains('/'), "got {path}");
-        }
     }
 
     fn on_disk(files: &'static [&'static str]) -> impl Fn(&std::path::Path) -> bool {
