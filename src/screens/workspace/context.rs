@@ -2,7 +2,7 @@
 //! its run, its pull request.
 
 use super::*;
-use crate::services::live::LiveRun;
+use crate::services::live::{self, LiveRun};
 use crate::services::probe::FlowKind;
 
 #[allow(clippy::too_many_arguments)]
@@ -26,6 +26,8 @@ pub(super) fn flow_context(
     flow_kind: FlowKind,
     _graph: Graph,
     active: Option<String>,
+    selected_flow: Signal<String>,
+    begin: impl FnMut(bool) + Copy + 'static,
 ) -> Element {
     match active.clone() {
         None => rsx! {},
@@ -79,11 +81,48 @@ pub(super) fn flow_context(
                             if live.terminal {
                                 "{title} is waiting for approval \u{2014} answer it in the terminal where the run was started."
                             } else {
-                                "{title} is waiting for approval \u{2014} answer it in Claude, where the run was started."
+                                "{title} is waiting for approval \u{2014} answer it here or in Claude."
                             }
                         }
                         if !on_graph && !proposal.trim().is_empty() {
                             pre { class: "live-run-proposal", "{proposal}" }
+                        }
+                        // Claude's server answers what the window writes, so
+                        // its run never needs the Claude session to move on —
+                        // and Take over hands the repository to this window
+                        // altogether, for when that session is not coming
+                        // back to it.
+                        if let Some(step) = waiting_step(&live) {
+                            div { class: "live-run-actions",
+                                button {
+                                    class: "btn btn-primary",
+                                    title: "Approve this step here. Claude\u{2019}s run carries on from it.",
+                                    onclick: {
+                                        let (pid, run, step) = (live.pid, live.run, step.clone());
+                                        move |_| live::answer(live::Answer { pid, run, step: step.clone(), approved: true })
+                                    },
+                                    "Approve"
+                                }
+                                button {
+                                    class: "btn",
+                                    title: "Reject this step here. Nothing is run, and Claude\u{2019}s run ends.",
+                                    onclick: {
+                                        let (pid, run, step) = (live.pid, live.run, step.clone());
+                                        move |_| live::answer(live::Answer { pid, run, step: step.clone(), approved: false })
+                                    },
+                                    "Reject"
+                                }
+                                button {
+                                    class: "btn",
+                                    title: "End Claude\u{2019}s run and start {live.flow_label} again in this window, where you answer it from now on. Steps it already did are run again.",
+                                    onclick: {
+                                        let live = live.clone();
+                                        let repo = repo.clone();
+                                        move |_| take_over(live.clone(), step.clone(), repo.clone(), selected_flow, selected_pr, selected_node, begin)
+                                    },
+                                    "Take over"
+                                }
+                            }
                         }
                     }
                 }
@@ -263,4 +302,60 @@ pub(super) fn flow_context(
             }            }
         }
     }
+}
+
+/// The id of the step a run Claude is driving waits on, when the window can
+/// answer it: not a terminal run's, and not from a server too old to name its
+/// steps, whose answer could not be matched to one.
+pub(super) fn waiting_step(live: &LiveRun) -> Option<String> {
+    if live.terminal || live.finished {
+        return None;
+    }
+    live.steps
+        .iter()
+        .find(|s| s.status == "awaiting" && !s.id.is_empty())
+        .map(|s| s.id.clone())
+}
+
+/// How long a take-over waits for Claude's server to let the repository go.
+/// Its server reads the window's answers every second.
+const TAKE_OVER_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Ends Claude's run and starts its flow in this window instead.
+///
+/// The run lives in Claude's server, a process of its own that the window
+/// cannot drive, so it cannot be moved across as it stands. What can be done
+/// is to turn its waiting step down — which ends it and lets the repository
+/// go — and run the same flow here, from the top. The steps already done are
+/// done again; for a release that means the notes are drafted again, which
+/// is the price of not depending on that Claude session any longer.
+fn take_over(
+    live: LiveRun,
+    step: String,
+    repo: String,
+    mut selected_flow: Signal<String>,
+    mut selected_pr: Signal<String>,
+    mut selected_node: Signal<String>,
+    mut begin: impl FnMut(bool) + Copy + 'static,
+) {
+    live::answer(live::Answer {
+        pid: live.pid,
+        run: live.run,
+        step,
+        approved: false,
+    });
+    spawn(async move {
+        let since = std::time::Instant::now();
+        while crate::services::busy::held_elsewhere(&repo) && since.elapsed() < TAKE_OVER_WAIT {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+        selected_flow.set(live.flow.clone());
+        // The pull request a review was about is not in what the server
+        // writes; empty falls back to the checked-out branch's own.
+        selected_pr.set(String::new());
+        selected_node.set(String::new());
+        // Refused, if Claude's server still has not let go: the start says
+        // so, and why, as any other start would.
+        begin(false);
+    });
 }

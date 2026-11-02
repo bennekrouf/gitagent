@@ -683,3 +683,25 @@ fn a_run_of_the_windows_own_hides_one_from_outside() {
     )]);
     assert!(rows::watched_run("/no/such/repo", "commit_and_pr", &graph, &running, &runs).is_none());
 }
+
+#[test]
+fn claudes_waiting_run_can_be_answered_or_taken_over_here() {
+    let mut run = live("/no/such/repo", "commit_and_pr", false);
+    assert_eq!(context::waiting_step(&run), None, "working, not waiting");
+    run.steps[1].status = NodeStatus::AwaitingApproval.css().into();
+    assert_eq!(context::waiting_step(&run), Some(run.steps[1].id.clone()));
+    let mut terminal = run.clone();
+    terminal.terminal = true;
+    assert_eq!(
+        context::waiting_step(&terminal),
+        None,
+        "answered in its terminal"
+    );
+    let mut old = run.clone();
+    old.steps.iter_mut().for_each(|s| s.id.clear());
+    assert_eq!(
+        context::waiting_step(&old),
+        None,
+        "no step to match an answer to"
+    );
+}

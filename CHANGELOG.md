@@ -19,6 +19,14 @@ were never released.
 
 ## [Unreleased]
 
+### Added
+
+- A run Claude started no longer needs Claude to finish. When it waits on an
+  approval, the repository shows **Approve** and **Reject** right there, and
+  **Take over**, which ends Claude's run and starts the same flow in the
+  window, so you answer it from then on. Taking over runs the flow again from
+  the start, so a release drafts its notes again.
+
 ### Changed
 
 - A pull request is no longer merged while the repository has uncommitted
