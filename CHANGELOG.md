@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Added an 'Approve All' button in the repository sidebar. This button allows
+  users to approve all pending steps and start all due flows in a repository
+  with a single click, streamlining the workflow.
+
 ## [0.1.155] - 2026-11-02
 
 ### Added
