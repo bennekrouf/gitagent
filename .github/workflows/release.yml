@@ -27,8 +27,6 @@ on:
 permissions:
   contents: write
 
-env:
-
 jobs:
   # ── When triggered via workflow_dispatch: bump version and create the tag ──
   prepare:
