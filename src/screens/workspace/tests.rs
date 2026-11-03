@@ -566,6 +566,7 @@ fn a_row_is_built_from_its_probe_and_says_nothing_before_one() {
         &States::new(),
         &book,
         &store::RepoFlows::default(),
+        &BTreeMap::new(),
     );
     assert_eq!(rows.len(), 2);
 
@@ -584,6 +585,72 @@ fn a_row_is_built_from_its_probe_and_says_nothing_before_one() {
 }
 
 #[test]
+fn a_row_says_nothing_about_a_release_whose_flows_are_all_hidden() {
+    let repos = [repo("/kit")];
+    let mut kit = probed(0);
+    kit.changes = 0;
+    kit.tracked_changes = 0;
+    kit.pr = None;
+    kit.prs = vec![];
+    kit.unmerged = 0;
+    kit.ahead = 0;
+    kit.release = crate::services::release::ReleaseState {
+        last_tag: Some("v0.1.7".into()),
+        commits: 6,
+        prs: vec![],
+        releases: true,
+        since_shipped: false,
+    };
+    let statuses = BTreeMap::from([("/kit".to_string(), kit)]);
+    // Two flows that answer a release, as a book with a Deploy beside its
+    // Release has.
+    let mut book = FlowBook::defaults();
+    for id in ["release", "deploy_vps"] {
+        let mut flow = book.get("commit_and_pr").unwrap().clone();
+        flow.id = id.into();
+        flow.handles = vec![Need::Release.key().to_string()];
+        book.flows.push(flow);
+    }
+    let mut lists = store::RepoFlows::default();
+    lists.hide("/kit", "release");
+    let one_left = rows::repo_entries(
+        &repos,
+        &statuses,
+        &States::new(),
+        &book,
+        &lists,
+        &BTreeMap::new(),
+    );
+    assert_eq!(
+        one_left[0].wants,
+        Some(Wants::Release),
+        "a Deploy can still ship it"
+    );
+    lists.hide("/kit", "deploy_vps");
+
+    let shown = rows::repo_entries(
+        &repos,
+        &statuses,
+        &States::new(),
+        &book,
+        &store::RepoFlows::default(),
+        &BTreeMap::new(),
+    );
+    assert_eq!(shown[0].wants, Some(Wants::Release));
+
+    let hidden = rows::repo_entries(
+        &repos,
+        &statuses,
+        &States::new(),
+        &book,
+        &lists,
+        &BTreeMap::new(),
+    );
+    assert_eq!(hidden[0].wants, Some(Wants::Nothing));
+    assert!(hidden[0].start.is_none());
+}
+
+#[test]
 fn a_row_shows_its_most_urgent_run_on_any_flow() {
     let repos = [repo("repo")];
     let statuses = BTreeMap::from([("repo".to_string(), probed(3))]);
@@ -598,6 +665,7 @@ fn a_row_shows_its_most_urgent_run_on_any_flow() {
         &states,
         &book,
         &store::RepoFlows::default(),
+        &BTreeMap::new(),
     );
     let expected = phase_of(&states[&("repo".into(), "commit_and_pr".into(), String::new())]);
     assert_eq!(rows[0].phase, expected);
@@ -612,7 +680,14 @@ fn a_hidden_flow_is_not_offered_on_its_row() {
     let book = FlowBook::defaults();
     let mut hidden = store::RepoFlows::default();
     hidden.hide("/a", "commit_and_pr");
-    let rows = rows::repo_entries(&repos, &statuses, &States::new(), &book, &hidden);
+    let rows = rows::repo_entries(
+        &repos,
+        &statuses,
+        &States::new(),
+        &book,
+        &hidden,
+        &BTreeMap::new(),
+    );
     assert!(rows[0].start.is_none());
 }
 

@@ -1,6 +1,7 @@
 //! The repositories down the left.
 
 use super::*;
+use crate::components::repo_sidebar::Settle;
 use crate::services::store::{Repo, RepoFlows};
 
 #[allow(clippy::too_many_arguments)]
@@ -21,6 +22,8 @@ pub(super) fn sidebar(
     mut diff_panel: Signal<Option<String>>,
     repo_flows: Signal<RepoFlows>,
     sidebar_w: Signal<f64>,
+    mut settling: Signal<BTreeMap<String, Settle>>,
+    all_left: Signal<usize>,
     _flow_id: String,
     entries: Vec<RepoEntry>,
     active: Option<String>,
@@ -33,36 +36,24 @@ pub(super) fn sidebar(
             selected: active.clone(),
             workspace: props.workspace.clone(),
             probing: *probing.read(),
+            all_busy: *all_left.read() > 0,
+            on_all: move |_| {
+                all::press_all(
+                    repos, statuses, states, book, repo_flows, running, settling, all_left,
+                    selected_repo, selected_flow, selected_pr, selected_node, drawer, begin,
+                )
+            },
             on_refresh: {
                 let workspace = workspace.clone();
                 move |_| {
+                    // A repository All gave up on is read afresh like the rest.
+                    settling.write().retain(|_, s| *s != Settle::StillWriting);
                     forget_finished(&mut states.write(), &running.read(), None);
                     refresh_all(&workspace, repos, statuses, probing, picked, selected_repo, selected_flow, book, true);
                 }
             },
             on_approve: move |approval: Approval| {
-                // The same decision the detail pane's button writes,
-                // and only if the step is still the one waiting: the
-                // list can be a render behind a run that moved on.
-                let mut w = states.write();
-                if let Some(state) = w.get_mut(&approval.run) {
-                    if state.status(&approval.node) == NodeStatus::AwaitingApproval {
-                        // As the pane's own button does: a panel left
-                        // open on the step just approved closes with it.
-                        let shown: Key = (
-                            selected_repo.peek().clone().unwrap_or_default(),
-                            selected_flow.peek().clone(),
-                            selected_pr.peek().clone(),
-                        );
-                        if shown == approval.run
-                            && drawer.peek().as_deref() == Some(approval.node.as_str())
-                        {
-                            drawer.set(None);
-                        }
-                        state.decisions.insert(approval.node, true);
-                        approvals().notify_waiters();
-                    }
-                }
+                all::approve(states, approval, (selected_repo, selected_flow, selected_pr), drawer);
             },
             on_start: move |path: String| {
                 let Some((flow_id, _, pr)) = statuses.read().get(&path).and_then(|s| {
@@ -85,6 +76,9 @@ pub(super) fn sidebar(
                 begin(false);
             },
             on_reprobe: move |path: String| {
+                if settling.peek().get(&path) == Some(&Settle::StillWriting) {
+                    settling.write().remove(&path);
+                }
                 forget_finished(&mut states.write(), &running.read(), Some(&path));
                 reprobe(path, statuses);
             },
@@ -94,7 +88,10 @@ pub(super) fn sidebar(
                         &book.read(),
                         &states.read(),
                         &path,
-                        statuses.read().get(&path).map(|s| s.wants()),
+                        statuses
+                            .read()
+                            .get(&path)
+                            .map(|s| book.read().wants_here(s, &repo_flows.read().hidden_for(&path))),
                         statuses
                             .read()
                             .get(&path)

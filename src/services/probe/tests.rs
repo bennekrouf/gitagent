@@ -196,6 +196,47 @@ fn a_release_is_not_hidden_behind_a_pull_request_still_building() {
 }
 
 #[test]
+fn a_release_nothing_here_can_ship_is_not_said() {
+    // desktop-kit: tagged, commits since the last tag, and every Release and
+    // Deploy flow hidden on it. "release due" with no button beside it was a
+    // claim of work deliberately not done from there.
+    let mut s = status(0, None);
+    s.release = ReleaseState {
+        last_tag: Some("v0.1.7".into()),
+        commits: 6,
+        prs: vec![],
+        releases: true,
+        since_shipped: false,
+    };
+    assert_eq!(s.wants(), Wants::Release, "the history still says so");
+    assert_eq!(s.wants_where(|need| need != Need::Release), Wants::Nothing);
+}
+
+#[test]
+fn a_need_nothing_answers_gives_way_to_the_next_one_something_does() {
+    // A release outranks a pull request still building — but with no flow to
+    // cut it, the pull request is what is left to watch.
+    let mut s = status(0, Some(Checks::Pending));
+    s.release = ReleaseState {
+        last_tag: Some("v1".into()),
+        commits: 2,
+        prs: vec![],
+        releases: true,
+        since_shipped: false,
+    };
+    assert_eq!(s.wants(), Wants::Release);
+    assert_eq!(s.wants_where(|need| need != Need::Release), Wants::Wait);
+}
+
+#[test]
+fn an_unfinished_rebase_is_said_whatever_flows_there_are() {
+    // No flow answers it, on purpose: Preflight does.
+    let mut s = status(2, None);
+    s.in_progress = Some(crate::services::git::InProgress::Rebase);
+    assert_eq!(s.wants_where(|_| false), Wants::Resolve);
+}
+
+#[test]
 fn a_pending_pull_request_with_nothing_else_is_still_a_wait() {
     let s = status(0, Some(Checks::Pending));
     assert_eq!(s.wants(), Wants::Wait);

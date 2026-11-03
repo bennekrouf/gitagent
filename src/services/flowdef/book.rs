@@ -294,6 +294,17 @@ impl FlowBook {
     /// choosing a flow on someone's behalf has to go through here: a hidden
     /// flow is a flow they said does not apply to this repository, and
     /// picking it for them anyway is the app overruling that.
+    /// What a repository needs that a flow shown there can do something
+    /// about. See `RepoStatus::wants_where`.
+    pub fn wants_here(
+        &self,
+        status: &crate::services::probe::RepoStatus,
+        hidden: &[String],
+    ) -> crate::services::probe::Wants {
+        let runnable = self.runnable_for(hidden);
+        status.wants_where(|need| runnable.iter().any(|f| f.answers(need)))
+    }
+
     pub fn runnable_for(&self, hidden: &[String]) -> Vec<&FlowDef> {
         self.flows
             .iter()
