@@ -17,6 +17,34 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- **All** in the repository list now checks every repository again before
+  pressing anything, instead of trusting labels that could be minutes old.
+  Where there are uncommitted files, it waits until none of them has changed
+  for 20 seconds before committing, so a coding agent that is still writing
+  never has half an edit committed. The row shows "being edited" with a
+  countdown while it waits. If the files are still changing after two
+  minutes, All leaves that repository alone and the row says "still being
+  edited". The other repositories carry on either way.
+- **All** no longer approves a step if files changed after the step was
+  proposed. It leaves the approval for you and says why: what the step
+  lists may no longer match what is on disk.
+
+### Fixed
+
+- When the tests fail in **Commit → PR**, the repository list now says so
+  right away, instead of reading "running" while the commit message was still
+  being drafted. The run no longer drafts a message once the commit it was for
+  can't happen, so a model call isn't spent on nothing.
+- A repository whose run failed now shows which step failed, such as
+  "Run tests failed", with a **See why** button. The button opens that step's
+  output, where you can Retry or Skip it. The list used to offer to start
+  the same flow again, which would only have failed at the same step. Once
+  the repository needs something else, the row goes back to showing that.
+
 ## [0.1.161] - 2026-11-02
 
 ### Added

@@ -167,6 +167,16 @@ impl Approval {
     }
 }
 
+/// Where All has got to with a repository whose files it is waiting on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Settle {
+    /// Files here changed recently: this many seconds more of nothing
+    /// changing and All carries on.
+    Waiting(u64),
+    /// They kept changing until All gave up, and it left this one alone.
+    StillWriting,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct RepoEntry {
     pub path: String,
@@ -202,6 +212,24 @@ pub struct RepoEntry {
     /// What the row offers to start in place of its note — "Commit 3 files",
     /// "Run release" — when a flow here answers what the repository needs.
     pub start: Option<String>,
+    /// The step a run here failed on, while the repository still needs what
+    /// that run was doing. Shown in place of `start`: starting the same flow
+    /// again would only fail the same way.
+    pub failed_step: Option<String>,
+    /// Set while All waits for this repository's files to stop changing, or
+    /// once it gave up on them. Outranks every button: none of them is safe
+    /// to press while something is still writing here.
+    pub settle: Option<Settle>,
+}
+
+impl RepoEntry {
+    /// Whether the row is showing a button All would press: an Approve, or
+    /// a ▶ for what the repository is due.
+    pub fn offers_a_button(&self) -> bool {
+        self.settle.is_none()
+            && (self.approval.is_some()
+                || (self.start.is_some() && !self.phase.is_live() && self.failed_step.is_none()))
+    }
 }
 
 fn row_class(selected: bool) -> &'static str {
@@ -268,6 +296,11 @@ pub struct RepoSidebarProps {
     pub on_approve: EventHandler<Approval>,
     /// Start the flow a row's button names, on that repository.
     pub on_start: EventHandler<String>,
+    /// Press every row's button — carefully: see the workspace's `press_all`.
+    pub on_all: EventHandler<()>,
+    /// Whether All is still working through the list.
+    #[props(default)]
+    pub all_busy: bool,
     #[props(default = 224.0)]
     pub width: f64,
 }
@@ -310,10 +343,10 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                 move |_| props.on_select.call(path.clone())
                             },
                             span {
-                                class: if !entry.phase.is_live() {
-                                    format!("dot dot-{}", entry.wants.map(|w| w.css()).unwrap_or("pending"))
-                                } else {
+                                class: if entry.phase.is_live() || entry.failed_step.is_some() {
                                     format!("dot dot-{}", entry.phase.css())
+                                } else {
+                                    format!("dot dot-{}", entry.wants.map(|w| w.css()).unwrap_or("pending"))
                                 },
                             }
                         }
@@ -398,28 +431,25 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
             {
                 // Every row's button at once: each Approve, and each ▶ that
                 // starts what a repository is due (a commit, a release).
-                let pending: Vec<RepoEntry> = props
-                    .entries
-                    .iter()
-                    .filter(|e| e.approval.is_some() || (e.start.is_some() && !e.phase.is_live()))
-                    .cloned()
-                    .collect();
-                let n = pending.len();
+                // The count is what the list shows now; what All actually
+                // presses is decided again from a fresh read of each one.
+                let n = props.entries.iter().filter(|e| e.offers_a_button()).count();
                 rsx! {
                     div { class: "sidebar-path-row",
                         div { class: "sidebar-path", "{props.workspace}" }
-                        if n > 0 {
+                        if props.all_busy {
                             button {
                                 class: "row-approve sidebar-approve-all",
-                                title: "Click every waiting button in this list: approve each step waiting on you, and start each flow a repository is due ({n})",
-                                onclick: move |_| {
-                                    for e in &pending {
-                                        match e.approval.clone() {
-                                            Some(approval) => props.on_approve.call(approval),
-                                            None => props.on_start.call(e.path.clone()),
-                                        }
-                                    }
-                                },
+                                disabled: true,
+                                title: "Waiting for files that are still changing to sit still before committing them",
+                                span { class: "row-approve-icon", "\u{2026}" }
+                                "All"
+                            }
+                        } else if n > 0 {
+                            button {
+                                class: "row-approve sidebar-approve-all",
+                                title: "Click every waiting button in this list ({n}). Every repository is checked again first, and one with uncommitted files waits until they have not changed for 20 seconds, so nothing is committed while an agent is still writing it",
+                                onclick: move |_| props.on_all.call(()),
                                 span { class: "row-approve-icon", "\u{2713}" }
                                 "All ({n})"
                             }
@@ -442,10 +472,10 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                 move |_| props.on_select.call(path.clone())
                             },
                             span {
-                            class: if !entry.phase.is_live() {
-                                format!("dot dot-{}", entry.wants.map(|w| w.css()).unwrap_or("pending"))
-                            } else {
+                            class: if entry.phase.is_live() || entry.failed_step.is_some() {
                                 format!("dot dot-{}", entry.phase.css())
+                            } else {
+                                format!("dot dot-{}", entry.wants.map(|w| w.css()).unwrap_or("pending"))
                             },
                         }
                             match entry.forge.clone() {
@@ -455,7 +485,7 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                             span { class: "sidebar-main",
                                 span { class: "sidebar-label-row",
                                     span { class: "sidebar-label", "{entry.label}" }
-                                    if entry.phase.left_a_failure() {
+                                    if entry.phase.left_a_failure() && entry.failed_step.is_none() {
                                         span {
                                             class: "run-failed-mark",
                                             title: "The last run on this repository failed \u{2014} open it to see where",
@@ -490,7 +520,28 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     }
                                 }
                             }
-                            if let Some(approval) = entry.approval.clone() {
+                            if let Some(settle) = entry.settle {
+                                // Ahead of every button: none is safe to
+                                // press while something is writing here.
+                                match settle {
+                                    Settle::Waiting(left) => rsx! {
+                                        span {
+                                            class: "sidebar-note status-awaiting row-settle",
+                                            title: "Files here changed in the last 20 seconds. All waits until they sit still, so it never commits half an edit",
+                                            span { class: "note-icon", "\u{270e}" }
+                                            "being edited \u{00b7} {left}s"
+                                        }
+                                    },
+                                    Settle::StillWriting => rsx! {
+                                        span {
+                                            class: "sidebar-note status-awaiting row-settle",
+                                            title: "Files here kept changing for 2 minutes, so All left this repository alone. Press All again once whatever is writing has finished",
+                                            span { class: "note-icon", "\u{270e}" }
+                                            "still being edited"
+                                        }
+                                    },
+                                }
+                            } else if let Some(approval) = entry.approval.clone() {
                                 // In place of "needs you", and of the re-check
                                 // button that would otherwise take the slot on
                                 // hover — which is exactly when you reach for it.
@@ -505,6 +556,29 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                     },
                                     span { class: "row-approve-icon", "\u{2713}" }
                                     "Approve"
+                                }
+                            } else if let Some(step) = entry.failed_step.clone() {
+                                // In place of "Commit 3 files": the same flow
+                                // started again would fail at the same step,
+                                // so the row says where it stopped and offers
+                                // the way to it — the step's output, with
+                                // Retry and Skip beside it.
+                                span { class: "sidebar-note status-failed row-failed-note",
+                                    title: "{step} failed",
+                                    span { class: "note-icon", "\u{2715}" }
+                                    "{step} failed"
+                                }
+                                button {
+                                    class: "row-fix",
+                                    title: "Open the run on \u{201c}{step}\u{201d}: read why it failed, fix it, then Retry \u{2014} or Skip the step to carry on without it",
+                                    onclick: {
+                                        let path = entry.path.clone();
+                                        move |evt: Event<MouseData>| {
+                                            evt.stop_propagation();
+                                            props.on_select.call(path.clone());
+                                        }
+                                    },
+                                    "See why"
                                 }
                             } else if let Some(label) = entry.start.clone().filter(|_| !entry.phase.is_live()) {
                                 // In place of "uncommitted" or "release due":
@@ -701,7 +775,32 @@ mod tests {
             prs_error: None,
             approval: None,
             start: None,
+            failed_step: None,
+            settle: None,
         }
+    }
+
+    #[test]
+    fn a_repository_being_written_offers_no_button_to_press() {
+        use crate::services::probe::Wants;
+        // While All waits on its files, neither a commit nor an approval is
+        // safe — and once it gave up, pressing All again is the way back.
+        let mut e = entry(Some(Wants::Commit), Phase::Idle);
+        e.start = Some("Commit 2 files".into());
+        assert!(e.offers_a_button());
+        for settle in [Settle::Waiting(12), Settle::StillWriting] {
+            e.settle = Some(settle);
+            assert!(!e.offers_a_button(), "{settle:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_run_is_not_started_again_by_all() {
+        use crate::services::probe::Wants;
+        let mut e = entry(Some(Wants::Commit), Phase::Failed);
+        e.start = Some("Commit 2 files".into());
+        e.failed_step = Some("Run tests".into());
+        assert!(!e.offers_a_button());
     }
 
     #[test]
@@ -767,6 +866,27 @@ mod tests {
             assert!(wants.is_worth_saying(), "{wants:?} is work someone must do");
             assert!(!wants.icon().is_empty(), "{wants:?} needs a glyph");
         }
+    }
+
+    #[test]
+    fn failed_tests_do_not_leave_the_run_drafting_a_message_nobody_will_use() {
+        // The test step runs straight after the scan, before the commit
+        // message is drafted. Once it fails the commit can never happen, so
+        // the drafting step must not run — while it did, the row read
+        // "running" over a run that had already failed.
+        let flow = commit_and_pr_flow();
+        let mut s = started();
+        s.set_status("preflight", NodeStatus::Done);
+        s.set_status("scan", NodeStatus::Done);
+        s.set_status("test", NodeStatus::Failed);
+        s.propagate_block(&flow);
+        assert_eq!(s.status("draft_commit"), NodeStatus::Blocked);
+        assert_eq!(s.next_ready(&flow), None);
+        assert_eq!(phase_of(&s), Phase::Failed);
+
+        // And a retry of the tests puts the message back in the queue.
+        s.retry_from("test", &flow);
+        assert_eq!(s.status("draft_commit"), NodeStatus::Pending);
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub(super) fn repo_entries(
     states: &States,
     book: &FlowBook,
     repo_flows: &RepoFlows,
+    settling: &BTreeMap<String, crate::components::repo_sidebar::Settle>,
 ) -> Vec<RepoEntry> {
     repo_list
         .iter()
@@ -44,9 +45,41 @@ pub(super) fn repo_entries(
                     row_start(book, s, &repo_flows.hidden_for(&repo.path))
                         .map(|(_, label, _)| label)
                 }),
+                failed_step: failed_step(states, book, &repo.path, status.map(|s| s.wants())),
+                settle: settling.get(&repo.path).copied(),
             }
         })
         .collect()
+}
+
+/// The title of the step a failed run here stopped on, when that run is still
+/// the answer to what the repository needs — its commit failed and the files
+/// are still uncommitted, say.
+///
+/// Once the repository has moved on (committed by hand, a release now due),
+/// the failure is history: the row goes back to what is needed now and only
+/// keeps the mark beside the name.
+pub(super) fn failed_step(
+    states: &States,
+    book: &FlowBook,
+    repo: &str,
+    wants: Option<Wants>,
+) -> Option<String> {
+    let need = wants?.need()?;
+    states
+        .iter()
+        .filter(|((r, _, _), s)| r == repo && phase_of(s) == Phase::Failed)
+        .find_map(|((_, flow, _), state)| {
+            let def = book.get(flow).filter(|def| def.answers(need))?;
+            let (step, _) = state.newest_for_a_person()?;
+            let graph = def.to_graph();
+            Some(
+                graph
+                    .get(&step)
+                    .map(|spec| spec.title.clone())
+                    .unwrap_or(step),
+            )
+        })
 }
 
 /// A run Claude (or a terminal) is driving on the flow on screen, drawn on

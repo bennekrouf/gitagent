@@ -435,6 +435,27 @@ a.btn { text-decoration: none; }
 }
 .row-run:hover { color: #fff; background: var(--green-bg); border-color: var(--green-bg); }
 .row-run:active { transform: scale(0.95); }
+/* All is waiting for this repository's files to stop changing. Kept on
+   hover, like the buttons it stands in for. */
+.row-settle { flex-shrink: 0; white-space: nowrap; }
+/* A run here failed and the repository still needs what it was doing: the
+   row says where it stopped, and offers the way to it instead of a restart
+   that would stop in the same place. */
+.row-failed-note {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row-fix {
+    flex-shrink: 0;
+    display: inline-flex; align-items: center;
+    font-family: inherit; font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+    padding: 3px 9px; border-radius: 999px; cursor: pointer;
+    white-space: nowrap;
+    color: var(--red);
+    background: color-mix(in srgb, var(--red) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+}
+.row-fix:hover { color: #fff; background: var(--red); border-color: var(--red); }
+.row-fix:active { transform: scale(0.95); }
 .sidebar-detail {
     font-size: 10px; color: var(--text3);
     background: var(--bg3); border-radius: 9px; padding: 1px 6px;

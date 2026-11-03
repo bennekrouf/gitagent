@@ -566,6 +566,7 @@ fn a_row_is_built_from_its_probe_and_says_nothing_before_one() {
         &States::new(),
         &book,
         &store::RepoFlows::default(),
+        &BTreeMap::new(),
     );
     assert_eq!(rows.len(), 2);
 
@@ -598,6 +599,7 @@ fn a_row_shows_its_most_urgent_run_on_any_flow() {
         &states,
         &book,
         &store::RepoFlows::default(),
+        &BTreeMap::new(),
     );
     let expected = phase_of(&states[&("repo".into(), "commit_and_pr".into(), String::new())]);
     assert_eq!(rows[0].phase, expected);
@@ -612,7 +614,14 @@ fn a_hidden_flow_is_not_offered_on_its_row() {
     let book = FlowBook::defaults();
     let mut hidden = store::RepoFlows::default();
     hidden.hide("/a", "commit_and_pr");
-    let rows = rows::repo_entries(&repos, &statuses, &States::new(), &book, &hidden);
+    let rows = rows::repo_entries(
+        &repos,
+        &statuses,
+        &States::new(),
+        &book,
+        &hidden,
+        &BTreeMap::new(),
+    );
     assert!(rows[0].start.is_none());
 }
 
