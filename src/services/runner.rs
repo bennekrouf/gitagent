@@ -303,7 +303,12 @@ impl Run {
     /// Trust all's: that one is not to ask again after the one answer it
     /// could not give itself.
     pub fn trusting(&self) -> bool {
-        store::trust_all() || (self.held.is_none() && self.trusted)
+        self.trusting_with(store::trust_all())
+    }
+
+    /// `trusting`, with Trust all given rather than read from disk.
+    pub fn trusting_with(&self, trust_all: bool) -> bool {
+        trust_all || (self.held.is_none() && self.trusted)
     }
 
     /// The step stopped at an approval, if one is.

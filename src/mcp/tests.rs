@@ -12,10 +12,16 @@ fn run(trusted: bool) -> Run {
 
 #[test]
 fn a_trusted_run_stops_trusting_at_its_first_hold() {
+    // Trust all is given rather than read: with it on in this machine's
+    // settings, a hold rightly changes nothing, and the test failed there.
     let mut r = run(true);
-    assert!(r.trusting());
+    assert!(r.trusting_with(false));
     r.held = Some("CI is still running".into());
-    assert!(!r.trusting(), "from the hold on, the run is the person's");
+    assert!(
+        !r.trusting_with(false),
+        "from the hold on, the run is the person's"
+    );
+    assert!(r.trusting_with(true), "but Trust all does not ask again");
     let out = report(&r);
     assert_eq!(out["held"], "CI is still running");
     assert_eq!(out["trusted"], false);
