@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- **Review → Merge** no longer calls a pull request conflicted when GitHub
+  is only holding it for checks still running or a review still missing.
+  It used to offer to merge the base branch in, which restarts the checks
+  being waited on, or to close the pull request. Now it says the pull
+  request is clean and offers **Wait for the checks, then merge**, or to
+  let GitHub merge it by itself once everything passes.
+
 ## [0.1.161] - 2026-11-02
 
 ### Added
