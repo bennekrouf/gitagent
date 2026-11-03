@@ -110,7 +110,22 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     };
     let close = move |_| save_and_close();
     // Esc closes it the same way, saving first.
-    desktop_kit::ui::use_escape(EventHandler::new(move |_| save_and_close()));
+    use_future(move || async move {
+        let mut keys = document::eval(
+            "if (window._gaSettingsEscape) window.removeEventListener('keydown', window._gaSettingsEscape);\
+             window._gaSettingsEscape = (e) => { if (e.key === 'Escape') dioxus.send(true); };\
+             window.addEventListener('keydown', window._gaSettingsEscape);",
+        );
+        while keys.recv::<bool>().await.is_ok() {
+            save_and_close();
+        }
+    });
+    use_drop(|| {
+        document::eval(
+            "if (window._gaSettingsEscape) { window.removeEventListener('keydown', window._gaSettingsEscape); \
+             delete window._gaSettingsEscape; }",
+        );
+    });
 
     // Named, because the model chosen here belongs to this folder alone: the
     // window beside it is not about to change under you.
