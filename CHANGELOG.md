@@ -35,6 +35,11 @@ were never released.
 
 ### Fixed
 
+- A repository no longer says "release due" when every flow that could
+  ship it is hidden there, as with a shared library you never release from
+  GitAgent. The row shows the next thing it can act on, or nothing, and the
+  count at the top of the list leaves it out. The home screen, the repository
+  GitAgent opens on, and what it tells Claude now agree with the list.
 - When the tests fail in **Commit → PR**, the repository list now says so
   right away, instead of reading "running" while the commit message was still
   being drafted. The run no longer drafts a message once the commit it was for

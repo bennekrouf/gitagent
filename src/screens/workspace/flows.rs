@@ -114,7 +114,7 @@ pub(super) fn row_start(
     status: &RepoStatus,
     hidden: &[String],
 ) -> Option<(String, String, String)> {
-    let wants = status.wants();
+    let wants = book.wants_here(status, hidden);
     let need = wants.need()?;
     let flow = book
         .runnable_for(hidden)

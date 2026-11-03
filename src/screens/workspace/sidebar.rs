@@ -88,7 +88,10 @@ pub(super) fn sidebar(
                         &book.read(),
                         &states.read(),
                         &path,
-                        statuses.read().get(&path).map(|s| s.wants()),
+                        statuses
+                            .read()
+                            .get(&path)
+                            .map(|s| book.read().wants_here(s, &repo_flows.read().hidden_for(&path))),
                         statuses
                             .read()
                             .get(&path)

@@ -18,10 +18,14 @@ pub(super) fn repo_entries(
         .iter()
         .map(|repo| {
             let status = status_map.get(&repo.path);
+            let hidden = repo_flows.hidden_for(&repo.path);
+            // Only what a flow shown here can act on: a need whose flows are
+            // all hidden is not worth a label, a dot or a place in the count.
+            let wants = status.map(|s| book.wants_here(s, &hidden));
             RepoEntry {
                 path: repo.path.clone(),
                 label: repo.label.clone(),
-                wants: status.map(|s| s.wants()),
+                wants,
                 branch: status.map(|s| s.branch.clone()).unwrap_or_default(),
                 detail: status.map(|s| s.summary()).unwrap_or_default(),
                 forge: status.map(|s| s.forge.clone()),
@@ -45,7 +49,7 @@ pub(super) fn repo_entries(
                     row_start(book, s, &repo_flows.hidden_for(&repo.path))
                         .map(|(_, label, _)| label)
                 }),
-                failed_step: failed_step(states, book, &repo.path, status.map(|s| s.wants())),
+                failed_step: failed_step(states, book, &repo.path, wants),
                 settle: settling.get(&repo.path).copied(),
             }
         })

@@ -103,8 +103,12 @@ pub(super) fn press_all(
                     }
                     return;
                 }
-                let failed =
-                    rows::failed_step(&states.peek(), &book.peek(), &path, Some(status.wants()));
+                let failed = {
+                    let wants = book
+                        .peek()
+                        .wants_here(&status, &repo_flows.peek().hidden_for(&path));
+                    rows::failed_step(&states.peek(), &book.peek(), &path, Some(wants))
+                };
                 let live = states
                     .peek()
                     .iter()

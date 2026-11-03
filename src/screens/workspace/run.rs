@@ -604,10 +604,15 @@ pub(super) fn refresh_all(
         }
         picked.set(true);
         let map = statuses.read().clone();
-        let best = first_with_work(
-            list.iter()
-                .filter_map(|r| map.get(&r.path).map(|s| (r.path.clone(), s.wants()))),
-        );
+        let lists = store::load_repo_flows();
+        let best = first_with_work(list.iter().filter_map(|r| {
+            map.get(&r.path).map(|s| {
+                (
+                    r.path.clone(),
+                    book.read().wants_here(s, &lists.hidden_for(&r.path)),
+                )
+            })
+        }));
 
         if let Some((path, wants)) = best {
             // Open on whichever flow says it answers this, whatever its name.

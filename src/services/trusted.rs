@@ -66,7 +66,7 @@ pub fn next_flow(
     status: &RepoStatus,
     hidden: &[String],
 ) -> Option<(String, String)> {
-    let need = status.wants().need()?;
+    let need = book.wants_here(status, hidden).need()?;
     let flow = book
         .runnable_for(hidden)
         .into_iter()
