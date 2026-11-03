@@ -155,8 +155,9 @@ pub(super) fn remedies(
                             let left = unresolved.read().clone();
                             rsx! {
                                 div { class: "remedy-waiting",
-                                    "Git is still waiting on {left.join(\", \")}. Pick a side for each \
-                                     conflict in Resolve conflicts above and save. If you already \
+                                    "Git is still waiting on {left.join(\", \")}. Resolve with AI or \
+                                     pick a side for each conflict in Resolve conflicts above, and \
+                                     save. If you already \
                                      fixed it in your editor, pick it in that list and click Mark \
                                      resolved. This unlocks once nothing is left. "
                                     button {

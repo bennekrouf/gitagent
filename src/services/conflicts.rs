@@ -21,6 +21,9 @@ use std::path::Path;
 
 use super::git;
 
+pub mod ai;
+pub use ai::Proposal;
+
 /// One stretch of a conflicted file: either text both sides agree on, or a
 /// clash between them.
 #[derive(Clone, Debug, PartialEq)]
@@ -44,21 +47,24 @@ pub struct Clash {
     pub raw: String,
 }
 
-/// Which side of a clash to keep.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which side of a clash to keep — or what the model wrote in its place.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Pick {
     Current,
     Incoming,
     /// Current, then incoming below it.
     Both,
+    /// The model's merge of the two sides, kept once you save it.
+    Proposed(Proposal),
 }
 
 impl Clash {
-    pub fn take(&self, pick: Pick) -> String {
+    pub fn take(&self, pick: &Pick) -> String {
         match pick {
             Pick::Current => self.current.clone(),
             Pick::Incoming => self.incoming.clone(),
             Pick::Both => format!("{}{}", self.current, self.incoming),
+            Pick::Proposed(p) => p.text.clone(),
         }
     }
 }
@@ -168,7 +174,7 @@ pub fn resolve(pieces: &[Piece], picks: &[Option<Pick>]) -> String {
         match piece {
             Piece::Same(text) => out.push_str(text),
             Piece::Clash(clash) => {
-                match picks.get(n).copied().flatten() {
+                match picks.get(n).and_then(Option::as_ref) {
                     Some(pick) => out.push_str(&clash.take(pick)),
                     None => out.push_str(&clash.raw),
                 }
@@ -257,7 +263,9 @@ pub async fn take_whole(repo: &str, file: &Conflicted, pick: Pick) -> Result<(),
     let (deleted, flag) = match pick {
         Pick::Current => (file.current_deleted(), "--ours"),
         Pick::Incoming => (file.incoming_deleted(), "--theirs"),
-        Pick::Both => return Err("a whole file can only be taken from one side".into()),
+        Pick::Both | Pick::Proposed(_) => {
+            return Err("a whole file can only be taken from one side".into())
+        }
     };
     if deleted {
         git::run(repo, "git", &["rm", "--quiet", "--", &file.path]).await?;

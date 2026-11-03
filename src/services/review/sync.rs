@@ -19,8 +19,10 @@ pub fn conflict_followup(number: &str, base: &str, output: &str) -> Option<StepF
     let message = format!(
         "{base} is merged into #{number}'s branch everywhere except where both sides \
          changed the same lines. Nothing has been pushed.\n\n\
-         Resolve {} above — pick a side for each conflict — or in your editor, \
-         where each sits between <<<<<<< and >>>>>>>:\n{}\n\n\
+         Resolve {} above: Resolve with AI proposes a merge of each conflict for \
+         you to check before anything is saved. Or pick a side for each yourself, \
+         or fix them in your editor, where each sits between <<<<<<< and \
+         >>>>>>>:\n{}\n\n\
          In each conflict, Current is #{number}'s branch — the pull request's own \
          changes — and Incoming is {base}. When {base} already has an earlier \
          version of the same change, from a pull request merged before, Current is \
@@ -154,10 +156,9 @@ pub(super) fn conflict_guide(number: &str, base: &str, message: &str) -> StepFai
          - If that merges cleanly, it pushes the branch, waits for GitHub to recheck \
            #{number}, and tries the merge again.\n\
          - If both sides changed the same lines, git stops and marks them in the files \
-           with <<<<<<< and >>>>>>>, and nothing is pushed. Fix those files, start any \
-           flow — Preflight offers Finish the merge — then run Commit → PR to push the \
-           branch (it finds #{number} rather than opening another), and Review → Merge \
-           again.\n\n\
+           with <<<<<<< and >>>>>>>, and nothing is pushed. They open here to resolve: \
+           Resolve with AI proposes a merge of each for you to check, or pick sides \
+           yourself. Then Finish the merge: it commits, pushes, and merges again.\n\n\
          Otherwise, close #{number} without merging.\n\n{message}"
     );
     // Positional arguments rather than text spliced into the script: a branch
