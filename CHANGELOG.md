@@ -17,6 +17,23 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- The MCP button is on the first screen too, where you pick a folder, so you
+  can connect GitAgent to Claude before opening any repositories.
+
+### Changed
+
+- The header has no gear any more: the flag already opens Settings, so the
+  gear beside it was a second button for the same window.
+
+### Fixed
+
+- Esc closes Settings, and saves what you changed, just like the close
+  button.
+
 ## [0.1.164] - 2026-11-03
 
 ### Added
