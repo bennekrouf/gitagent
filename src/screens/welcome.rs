@@ -10,6 +10,7 @@ use dioxus::prelude::*;
 
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
+use crate::services::flowdef::FlowBook;
 use crate::services::git;
 use crate::services::llm::LlmConfig;
 use crate::services::probe::{self, Wants};
@@ -80,15 +81,21 @@ pub fn Welcome(props: WelcomeProps) -> Element {
             todo.dedup();
             todo.retain(|p| !repo_wants.peek().contains_key(p));
 
+            let book = FlowBook::load();
+            let lists = store::load_repo_flows();
             futures_util::stream::iter(todo)
-                .for_each_concurrent(6, |path| async move {
-                    let status = if fresh {
-                        probe::probe(&path).await
-                    } else {
-                        probe::probe_recent(&path).await
-                    };
-                    let wants = status.wants();
-                    repo_wants.write().insert(path, wants);
+                .for_each_concurrent(6, |path| {
+                    let book = &book;
+                    let lists = &lists;
+                    async move {
+                        let status = if fresh {
+                            probe::probe(&path).await
+                        } else {
+                            probe::probe_recent(&path).await
+                        };
+                        let wants = book.wants_here(&status, &lists.hidden_for(&path));
+                        repo_wants.write().insert(path, wants);
+                    }
                 })
                 .await;
             checking.set(false);

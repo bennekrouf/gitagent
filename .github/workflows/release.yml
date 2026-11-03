@@ -809,8 +809,14 @@ jobs:
           > GitAgent also needs `git` on PATH, and `gh` for the Review → Merge flow.
           EOF
 
-          gh release create "$TAG" \
-            --title "GitAgent $TAG" \
-            --notes-file notes.md \
-            release/latest.json \
-            release/releases.json
+          # A re-run of a failed build (a macOS runner that never came) finds
+          # the release already made: refresh its feeds rather than fail.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber release/latest.json release/releases.json
+          else
+            gh release create "$TAG" \
+              --title "GitAgent $TAG" \
+              --notes-file notes.md \
+              release/latest.json \
+              release/releases.json
+          fi

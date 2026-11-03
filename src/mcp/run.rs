@@ -7,7 +7,7 @@ pub(super) async fn repo_insight(repo: &str) -> Result<Value, String> {
     let book = FlowBook::load();
     let lists = store::load_repo_flows();
     let hidden = lists.hidden_for(repo);
-    let wants = status.wants();
+    let wants = book.wants_here(&status, &hidden);
     let next = trusted::next_flow(&book, &status, &hidden);
     let flows: Vec<Value> = book
         .runnable_for(&hidden)
@@ -86,7 +86,7 @@ pub(super) async fn list_repos(folder: &str) -> Result<Value, String> {
             "name": repo.label,
             "branch": status.branch,
             "uncommitted_files": status.changes,
-            "needs": status.wants().note(),
+            "needs": book.wants_here(&status, &hidden.hidden_for(&repo.path)).note(),
             "pull_requests": status.prs.iter().map(|pr| json!({
                 "number": pr.number,
                 "title": pr.title,

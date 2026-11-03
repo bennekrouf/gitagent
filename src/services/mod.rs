@@ -16,6 +16,7 @@ pub mod llm;
 pub mod notes;
 pub mod notify;
 pub mod probe;
+pub mod quiet;
 pub mod release;
 pub mod remote;
 pub mod review;

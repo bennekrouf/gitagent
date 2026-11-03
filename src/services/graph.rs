@@ -303,6 +303,10 @@ pub struct NodeRun {
     /// Why a trusted run declined to click this one through. Empty when no
     /// trusted run was involved, or when it approved.
     pub held: String,
+    /// When the approval was put in front of the person. A file changed
+    /// after this is one the proposal never saw — what All checks before it
+    /// clicks a step through.
+    pub posted_at: Option<std::time::SystemTime>,
 }
 
 impl NodeRun {
@@ -495,7 +499,26 @@ impl RunState {
                             | NodeStatus::Blocked
                     )
                 });
-                if dead {
+                // A model step only writes text for the steps after it. With
+                // every one of those dead, running it is a model call nobody
+                // reads — and while it runs, a run that has already failed
+                // reads as still going. A deterministic step may do something
+                // in its own right, so it is left to run.
+                let pointless = node.kind == NodeKind::Model && {
+                    let mut dependents = graph
+                        .nodes
+                        .iter()
+                        .filter(|n| n.deps.contains(&node.id))
+                        .peekable();
+                    dependents.peek().is_some()
+                        && dependents.all(|n| {
+                            matches!(
+                                self.status(&n.id),
+                                NodeStatus::Rejected | NodeStatus::Blocked
+                            )
+                        })
+                };
+                if dead || pointless {
                     self.set_status(&node.id, NodeStatus::Blocked);
                     changed = true;
                 }

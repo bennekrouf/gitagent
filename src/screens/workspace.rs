@@ -47,6 +47,7 @@ use run::*;
 mod detail;
 use detail::*;
 mod actions;
+mod all;
 mod context;
 mod dialogs;
 mod flows;
@@ -127,6 +128,10 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let selected_pr = use_signal(String::new);
     let selected_node = use_signal(String::new);
     let running = use_signal(BTreeSet::<Key>::new);
+    // Where the sidebar's All has got to: repositories whose files it is
+    // waiting on, and how many it has still to finish with.
+    let settling = use_signal(BTreeMap::<String, crate::components::repo_sidebar::Settle>::new);
+    let all_left = use_signal(|| 0usize);
     // A fix being run for "couldn't list pull requests", by repository:
     // whether it is still running, and what it printed.
     let pr_fix = use_signal(BTreeMap::<String, (bool, String)>::new);
@@ -360,6 +365,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         &states_snapshot,
         &book.read(),
         &repo_flows.read(),
+        &settling.read(),
     );
 
     let active = selected_repo.read().clone();
@@ -559,7 +565,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
                     }
                 },
 
-                {sidebar::sidebar(workspace.clone(), repos, statuses, probing, picked, states, selected_repo, book, selected_flow, selected_pr, selected_node, running, drawer, diff_panel, repo_flows, sidebar_w, flow_id.clone(), entries.clone(), active.clone(), begin, props.clone())}
+                {sidebar::sidebar(workspace.clone(), repos, statuses, probing, picked, states, selected_repo, book, selected_flow, selected_pr, selected_node, running, drawer, diff_panel, repo_flows, sidebar_w, settling, all_left, flow_id.clone(), entries.clone(), active.clone(), begin, props.clone())}
 
                 div {
                     class: "divider",

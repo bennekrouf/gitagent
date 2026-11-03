@@ -242,6 +242,19 @@ impl RepoStatus {
     /// were still running reported "waiting", and a release sitting behind it
     /// was never even considered.
     pub fn wants(&self) -> Wants {
+        self.wants_where(|_| true)
+    }
+
+    /// `wants`, leaving out every need `answered` says nothing here can act
+    /// on — what a repository needs *from you, with the flows it has*.
+    ///
+    /// A repository whose Release and Deploy flows are all hidden still has
+    /// commits since its last tag; saying "release due" over it, with no
+    /// button beside it, is a claim of work you have deliberately said is not
+    /// done from here. Left out, the next thing that can be acted on wins, or
+    /// nothing. A state no flow is meant to answer — an unfinished rebase —
+    /// is never left out: it is settled in Preflight, not by a flow.
+    pub fn wants_where(&self, answered: impl Fn(Need) -> bool) -> Wants {
         // Nothing else is worth reporting while git is mid-operation: every
         // other answer would be advice you cannot act on.
         if self.in_progress.is_some() {
@@ -282,6 +295,7 @@ impl RepoStatus {
         ]
         .into_iter()
         .flatten()
+        .filter(|w| w.need().is_none_or(&answered))
         .min()
         .unwrap_or(Wants::Nothing)
     }

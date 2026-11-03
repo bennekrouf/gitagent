@@ -55,6 +55,7 @@ impl Proposal {
         entry.proposal = self.proposal;
         entry.items = self.items;
         entry.preview_diff = self.preview_diff;
+        entry.posted_at = Some(std::time::SystemTime::now());
         state.set_status(node, NodeStatus::AwaitingApproval);
     }
 }
