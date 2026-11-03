@@ -2,11 +2,18 @@
 //! files git is waiting on, each clash as its two sides with Current,
 //! Incoming or Both to choose, and Save to write the file and stage it once
 //! nothing in it is left to decide. Renders nothing while nothing is stuck.
+//!
+//! Resolve with AI comes first: the model proposes a merge of each clash,
+//! shown in place of the two sides for you to keep or undo, and nothing is
+//! written until Save. Once asked for one file, it is asked for each next
+//! file as it opens, so a merge with many files is a run of reviews.
 
 use dioxus::prelude::*;
 
 use crate::services::conflicts::{self, Clash, Conflicted, Pick, Piece};
 use crate::services::git::{self, InProgress};
+use crate::services::llm::Asker;
+use crate::services::store;
 
 /// Unchanged text longer than this between two clashes is folded to its
 /// edges: it is context for the clash, not something to read.
@@ -37,6 +44,12 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
     // done rather than as the resolver vanishing.
     let mut seen = use_signal(|| false);
     let mut reload = use_signal(|| 0u32);
+    let ai = Ai {
+        on: use_signal(|| false),
+        asking: use_signal(|| false),
+        note: use_signal(String::new),
+        model: use_signal(|| false),
+    };
 
     let repo = props.repo.clone();
     let stamp = props.stamp.clone();
@@ -51,8 +64,13 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                 .peek()
                 .clone()
                 .filter(|p| found.iter().any(|f| &f.path == p));
+            // Only a file opening fresh is proposed for: one read again after
+            // a partial save keeps what you undid undone.
+            let fresh = keep.is_none();
             let next = keep.or_else(|| found.first().map(|f| f.path.clone()));
             let done = conflicts::resolved(&repo).await;
+            let mut model = ai.model;
+            model.set(store::load_settings_for(Some(&repo)).uses_model());
             if !found.is_empty() || !done.is_empty() {
                 seen.set(true);
             }
@@ -66,7 +84,13 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                     .map(|p| conflicts::clash_count(p))
                     .unwrap_or(0);
                 picks.set(vec![None; n]);
-                pieces.set(read);
+                pieces.set(read.clone());
+                open.set(next.clone());
+                if fresh && *ai.on.peek() && n > 0 {
+                    if let Ok(read) = read {
+                        ai.ask(repo.clone(), path.clone(), read, state, open, picks, error);
+                    }
+                }
             }
             open.set(next);
         });
@@ -158,8 +182,13 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                                     let read = conflicts::read(&repo, &to).await;
                                     let n = read.as_ref().map(|p| conflicts::clash_count(p)).unwrap_or(0);
                                     picks.set(vec![None; n]);
-                                    pieces.set(read);
-                                    open.set(Some(to));
+                                    pieces.set(read.clone());
+                                    open.set(Some(to.clone()));
+                                    if *ai.on.peek() && n > 0 {
+                                        if let Ok(read) = read {
+                                            ai.ask(repo, to, read, state, open, picks, error);
+                                        }
+                                    }
                                 });
                             }
                         },
@@ -231,6 +260,21 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                     StartOver { repo: props.repo.clone(), paths: vec![path.clone()], busy: busy(), open, act: act_handle }
                 }
             } else {
+                AiBar {
+                    ai,
+                    chosen: chosen.clone(),
+                    onask: {
+                        let repo = props.repo.clone();
+                        let path = path.clone();
+                        let read = read.clone();
+                        move |_| {
+                            let Ok(p) = &read else { return };
+                            let mut on = ai.on;
+                            on.set(true);
+                            ai.ask(repo.clone(), path.clone(), p.clone(), state, open, picks, error);
+                        }
+                    },
+                }
                 div { class: "conflicts-text",
                     for (i, piece) in read.clone().unwrap_or_default().into_iter().enumerate() {
                         match piece {
@@ -244,7 +288,7 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                                     ClashBlock {
                                         key: "c{i}",
                                         clash,
-                                        pick: chosen.get(at).copied().flatten(),
+                                        pick: chosen.get(at).cloned().flatten(),
                                         on_pick: move |p: Option<Pick>| {
                                             if let Some(slot) = picks.write().get_mut(at) {
                                                 *slot = p;
@@ -315,6 +359,135 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
     }
 }
 
+/// The AI resolver's state, shared by the bar above a file and the reads
+/// that open the next one.
+#[derive(Clone, Copy, PartialEq)]
+struct Ai {
+    /// Asked for once here, so each file is proposed as it opens.
+    on: Signal<bool>,
+    asking: Signal<bool>,
+    /// The model's last line of progress — the wait for a local model.
+    note: Signal<String>,
+    /// Whether a model is set up for this repository at all.
+    model: Signal<bool>,
+}
+
+impl Ai {
+    /// Asks the model for every clash in `pieces` and puts what comes back
+    /// in the clashes still undecided, if `path` is still the file open.
+    #[allow(clippy::too_many_arguments)]
+    fn ask(
+        self,
+        repo: String,
+        path: String,
+        pieces: Vec<Piece>,
+        state: Signal<Option<InProgress>>,
+        open: Signal<Option<String>>,
+        mut picks: Signal<Vec<Option<Pick>>>,
+        mut error: Signal<String>,
+    ) {
+        let (mut asking, mut note) = (self.asking, self.note);
+        if *asking.peek() {
+            return;
+        }
+        asking.set(true);
+        note.set(String::new());
+        error.set(String::new());
+        spawn(async move {
+            let cfg = store::load_settings_for(Some(&repo));
+            let kind = (*state.peek()).map(|s| s.label()).unwrap_or("merge");
+            let mut on_line = |line: &str| note.set(line.to_string());
+            let mut asker = Asker {
+                what: format!("Resolving conflicts in {path}"),
+                on_line: &mut on_line,
+            };
+            let got = conflicts::ai::propose(&cfg, &path, kind, &pieces, &mut asker).await;
+            asking.set(false);
+            note.set(String::new());
+            if open.peek().as_deref() != Some(path.as_str()) {
+                return;
+            }
+            match got {
+                Ok(proposals) => {
+                    let mut w = picks.write();
+                    for (slot, proposal) in w.iter_mut().zip(proposals) {
+                        if slot.is_none() {
+                            *slot = proposal.map(Pick::Proposed);
+                        }
+                    }
+                }
+                Err(e) => error.set(e),
+            }
+        });
+    }
+}
+
+/// The first thing over a file's conflicts: Resolve with AI, or how far it
+/// got, or why it cannot run here.
+#[component]
+fn AiBar(ai: Ai, chosen: Vec<Option<Pick>>, onask: EventHandler<()>) -> Element {
+    let proposed: Vec<&conflicts::Proposal> = chosen
+        .iter()
+        .filter_map(|p| match p {
+            Some(Pick::Proposed(p)) => Some(p),
+            _ => None,
+        })
+        .collect();
+    let unsure = proposed.iter().filter(|p| !p.sure).count();
+    let open = chosen.iter().filter(|p| p.is_none()).count();
+    let note = ai.note.read().clone();
+    rsx! {
+        div { class: "conflicts-ai",
+            if (ai.asking)() {
+                span { class: "conflicts-ai-busy",
+                    "✨ Asking the model to merge both sides…"
+                    if !note.is_empty() { " {note}" }
+                }
+            } else if !(ai.model)() {
+                button {
+                    class: "btn",
+                    disabled: true,
+                    title: "Pick a model provider in Settings to have conflicts proposed for you.",
+                    "✨ Resolve with AI"
+                }
+                span { class: "conflicts-ai-note",
+                    "No model is set up — pick one in Settings, or choose sides below."
+                }
+            } else if proposed.is_empty() {
+                button {
+                    class: "btn btn-primary",
+                    disabled: open == 0,
+                    title: "Asks your model to merge the two sides of each conflict. You see every \
+                            answer before anything is written; nothing is saved until you Save.",
+                    onclick: move |_| onask.call(()),
+                    "✨ Resolve with AI"
+                }
+                span { class: "conflicts-ai-note", "or choose a side for each conflict below." }
+            } else {
+                span { class: "conflicts-ai-note", {proposal_summary(proposed.len(), unsure, open)} }
+                if open > 0 {
+                    button { class: "clash-btn", onclick: move |_| onask.call(()), "Ask again for the rest" }
+                }
+            }
+        }
+    }
+}
+
+/// What the model left you to do, in a line.
+fn proposal_summary(proposed: usize, unsure: usize, open: usize) -> String {
+    let mut out = format!(
+        "✨ AI proposed {proposed} {}. Check each, Undo any you disagree with, then Save.",
+        if proposed == 1 { "fix" } else { "fixes" }
+    );
+    if unsure > 0 {
+        out.push_str(&format!(" {unsure} marked to check closely."));
+    }
+    if open > 0 {
+        out.push_str(&format!(" {open} left for you."));
+    }
+    out
+}
+
 /// One of the git actions above, run by `act`.
 type Job = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>;
 
@@ -369,12 +542,14 @@ fn ClashBlock(clash: Clash, pick: Option<Pick>, on_pick: EventHandler<Option<Pic
     rsx! {
         div { class: if pick.is_some() { "clash clash-picked" } else { "clash" },
             div { class: "clash-bar",
-                if let Some(p) = pick {
+                if let Some(p) = &pick {
                     span { class: "clash-kept",
                         match p {
                             Pick::Current => "Kept current",
                             Pick::Incoming => "Kept incoming",
                             Pick::Both => "Kept both",
+                            Pick::Proposed(p) if p.sure => "✨ Proposed by AI",
+                            Pick::Proposed(_) => "✨ Proposed by AI — check this one",
                         }
                     }
                     button { class: "clash-btn", onclick: move |_| on_pick.call(None), "Undo" }
@@ -384,7 +559,12 @@ fn ClashBlock(clash: Clash, pick: Option<Pick>, on_pick: EventHandler<Option<Pic
                     button { class: "clash-btn", onclick: move |_| on_pick.call(Some(Pick::Both)), "Accept both" }
                 }
             }
-            if let Some(p) = pick {
+            if let Some(p) = &pick {
+                if let Pick::Proposed(proposal) = p {
+                    if !proposal.why.is_empty() {
+                        div { class: "clash-why", "{proposal.why}" }
+                    }
+                }
                 pre { class: "clash-side clash-result", "{shown(&clash.take(p))}" }
             } else {
                 div { class: "clash-label clash-label-current", "{current}" }

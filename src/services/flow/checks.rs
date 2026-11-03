@@ -559,7 +559,8 @@ pub(super) async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome
         } else {
             format!(
                 "A {} is in progress. Git is waiting on {} file(s):\n{}\n\n\
-                 Resolve them above — pick a side for each conflict — or in your \
+                 Resolve them above — Resolve with AI proposes a merge of each \
+                 conflict for you to check, or pick a side yourself — or in your \
                  editor, where each has <<<<<<< markers, then finish below. \
                  Nothing else can run until this is settled.",
                 state.label(),

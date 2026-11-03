@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- **Resolve with AI** now comes first wherever a merge stops on conflicts.
+  Your model proposes a merge of each conflict, with a sentence on what it
+  kept and why, and flags the ones worth a closer look. Nothing is written
+  until you save, any proposal can be undone to pick a side yourself, and
+  once you have used it, each next file is proposed as it opens. Without a
+  model set up, the button says how to turn it on.
+
 ## [0.1.163] - 2026-11-03
 
 ### Fixed
