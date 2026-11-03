@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use desktop_kit::ui::{Header, ModelBadge, Theme};
 use dioxus::prelude::*;
 
+use crate::components::mcp_panel::McpPanel;
 use crate::components::settings_panel::SettingsPanel;
 use crate::screens::setup::Setup;
 use crate::services::flowdef::FlowBook;
@@ -31,6 +32,7 @@ pub struct WelcomeProps {
 pub fn Welcome(props: WelcomeProps) -> Element {
     let mut registry = use_signal(store::load_registry);
     let mut settings_open = use_signal(|| false);
+    let mut mcp_open = use_signal(|| false);
     let mut setup_open = use_signal(|| false);
     let mut error = use_signal(String::new);
     // The folder whose repositories are being checked before it opens, and
@@ -149,6 +151,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     rsx! {
         Header {
             on_settings: move |_| settings_open.set(true),
+            on_mcp: move |_| mcp_open.set(true),
             model: rsx! {
                 ModelBadge {
                     label: cfg.active_region().map_or(cfg.active_model(), |r| r.label).to_string(),
@@ -340,6 +343,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 theme,
                 on_close: move |_| settings_open.set(false),
             }
+        }
+        if *mcp_open.read() {
+            McpPanel { on_close: move |_| mcp_open.set(false) }
         }
     }
 }
