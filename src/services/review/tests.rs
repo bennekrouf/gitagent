@@ -296,6 +296,51 @@ fn a_merge_conflict_offers_resolving_before_abandoning() {
 }
 
 #[test]
+fn checks_still_running_are_not_read_as_a_conflict() {
+    // #199: clean against main, its required checks still running. GitHub's
+    // refusal says "not mergeable" too, and was taken for a conflict — which
+    // offered to merge main in (restarting the checks) or close the PR.
+    let failure = merge_failure(
+        "199",
+        "main",
+        "X Pull request bennekrouf/gitagent#199 is not mergeable: the base branch policy \
+         prohibits the merge. To have the pull request merged after all the requirements \
+         have been met, add the `--auto` flag."
+            .to_string(),
+    );
+    assert!(
+        failure.message.contains("no conflicts"),
+        "{}",
+        failure.message
+    );
+    assert!(!failure.message.contains("<<<<<<<"));
+    assert_eq!(failure.remedies.len(), 2);
+
+    let watch = &failure.remedies[0];
+    assert_eq!(watch.program, "sh");
+    assert!(watch.args[1].contains("gh pr checks \"$1\" --watch"));
+    assert_eq!(watch.args[3], "199", "the number travels as an argument");
+    assert!(watch.retry_after, "once the checks pass, the merge is next");
+    assert!(!watch.abandons);
+
+    let auto = &failure.remedies[1];
+    assert_eq!(auto.args[0..4], ["pr", "merge", "199", "--auto"]);
+    assert!(
+        !auto.retry_after,
+        "GitHub finishes it; merging again would only fail"
+    );
+    assert!(!auto.abandons, "it is the merge, done another way");
+
+    assert!(
+        !failure
+            .remedies
+            .iter()
+            .any(|r| r.args.iter().any(|a| a == "close")),
+        "nothing offers to close a pull request that only has to wait"
+    );
+}
+
+#[test]
 fn the_update_remedy_targets_the_pull_requests_own_base() {
     let failure = merge_failure("1", "develop", "not mergeable".to_string());
     assert_eq!(failure.remedies[0].args[4], "develop");

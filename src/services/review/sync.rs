@@ -78,7 +78,16 @@ git commit --no-edit && git push || exit 1
 /// conflict against the base branch. Nothing here can resolve a content
 /// conflict for a person, but it can take them to the point where only that
 /// is left — and say, right where the failure is, every step after it.
+///
+/// "not mergeable: the base branch policy prohibits the merge" is nothing of
+/// the kind: the branch merges cleanly, and GitHub is holding it for checks
+/// still running or a review still missing. It used to be read as a
+/// conflict, which offered to merge the base in — a push that restarts the
+/// very checks being waited on — or to close the pull request.
 pub(super) fn merge_failure(number: &str, base: &str, message: String) -> StepFailure {
+    if message.contains("base branch policy prohibits") {
+        return policy_guide(number, &message);
+    }
     if !message.contains("not mergeable") {
         return StepFailure {
             message,
@@ -86,6 +95,53 @@ pub(super) fn merge_failure(number: &str, base: &str, message: String) -> StepFa
         };
     }
     conflict_guide(number, base, &message)
+}
+
+/// A pull request GitHub will not merge yet because the branch's rules are
+/// not met — required checks still running or red, or a required review.
+pub(super) fn policy_guide(number: &str, message: &str) -> StepFailure {
+    let guide = format!(
+        "GitHub is holding #{number}: the rules on its base branch are not met yet. \
+         It has no conflicts, and nothing has been merged or changed.\n\n\
+         Usually its required checks are still running. Wait for the checks (below) \
+         watches them and merges as soon as they pass. If one fails, it stops there \
+         and says which; fix it in a commit on the branch and run Review \u{2192} Merge \
+         again.\n\n\
+         Or let GitHub merge it by itself once everything passes, and move on. If it \
+         is waiting on a review instead, that review is the way forward.\n\n{message}"
+    );
+    // Positional argument rather than text spliced into the script.
+    let watch = Remedy::new(
+        &format!("Wait for the checks, then merge #{number}"),
+        "sh",
+        &[
+            "-c",
+            r#"gh pr checks "$1" --watch --interval 15"#,
+            "sh",
+            number,
+        ],
+    );
+    let watch = Remedy {
+        display: format!("gh pr checks {number} --watch   (then merges again)"),
+        ..watch
+    };
+    // The merge, done another way: GitHub finishes it once the rules are met.
+    let auto = Remedy::completes(
+        &format!("Merge #{number} automatically once it passes"),
+        "gh",
+        &[
+            "pr",
+            "merge",
+            number,
+            "--auto",
+            "--squash",
+            "--delete-branch",
+        ],
+    );
+    StepFailure {
+        message: guide,
+        remedies: vec![watch, auto],
+    }
 }
 
 /// A pull request that conflicts with its base, and the ways out of it.
