@@ -104,10 +104,13 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
         });
     };
 
-    let close = move |_| {
+    let save_and_close = move || {
         store::save_settings_for(folder.read().as_deref(), &cfg.read());
         props.on_close.call(());
     };
+    let close = move |_| save_and_close();
+    // Esc closes it the same way, saving first.
+    desktop_kit::ui::use_escape(EventHandler::new(move |_| save_and_close()));
 
     // Named, because the model chosen here belongs to this folder alone: the
     // window beside it is not about to change under you.
