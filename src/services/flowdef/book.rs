@@ -11,6 +11,7 @@ impl FlowBook {
             adopted: vec![
                 ADOPTED_TEST_STEP.to_string(),
                 ADOPTED_NOTES_STEPS.to_string(),
+                ADOPTED_WATCH_RELEASE.to_string(),
                 ADOPTED_IDS_FROM_LABELS.to_string(),
             ],
             flows: vec![
@@ -109,6 +110,7 @@ impl FlowBook {
                 // `|` rather than `||`: each adoption must get its turn.
                 if book.adopt_missing_test_step()
                     | book.adopt_notes_steps()
+                    | book.adopt_watch_release()
                     | book.adopt_second_opinion()
                     | book.adopt_lenses()
                     | renamed.is_some()
@@ -183,6 +185,19 @@ impl FlowBook {
         self.adopted.push(ADOPTED_NOTES_STEPS.to_string());
         for flow in &mut self.flows {
             flow.insert_notes_steps();
+        }
+        true
+    }
+
+    /// Adds the step that follows the release build to every flow that runs
+    /// `release.sh`, once ever — same contract as `adopt_missing_test_step`.
+    pub fn adopt_watch_release(&mut self) -> bool {
+        if self.adopted.iter().any(|a| a == ADOPTED_WATCH_RELEASE) {
+            return false;
+        }
+        self.adopted.push(ADOPTED_WATCH_RELEASE.to_string());
+        for flow in &mut self.flows {
+            flow.insert_watch_step();
         }
         true
     }

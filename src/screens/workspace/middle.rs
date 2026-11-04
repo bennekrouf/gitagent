@@ -439,6 +439,13 @@ fn list_arm(
     // the one just opened, or the one just merged.
     let pr_url = state.artifact("pr_url").to_string();
     let finished = state.started && state.is_finished(&graph);
+    // Said once the run is over, so a release that went out unasked is not
+    // only visible to whoever opens each step.
+    let unasked = if finished {
+        unasked_note(&state.approved_automatically(&graph))
+    } else {
+        None
+    };
 
     rsx! {
         div { class: "graph-col", style: "width: {middle_w}px;",
@@ -507,6 +514,9 @@ fn list_arm(
                 }
             }
 
+            if let Some(note) = unasked {
+                div { class: "footer footer-auto", "{note}" }
+            }
             if finished && !pr_url.is_empty() {
                 div { class: "footer footer-ok",
                     a { class: "footer-link", href: "{pr_url}", target: "_blank", "{pr_url}" }
@@ -598,4 +608,25 @@ fn chain_banner(
             }
         }
     }
+}
+
+/// One line naming the steps nothing asked you about, grouped by what
+/// approved them: "Approved without asking you, by Trust all: Commit, Release".
+/// `None` when a person approved everything.
+pub(super) fn unasked_note(approved: &[(String, String)]) -> Option<String> {
+    let mut by: Vec<(&str, Vec<&str>)> = vec![];
+    for (step, who) in approved {
+        match by.iter_mut().find(|(w, _)| w == who) {
+            Some((_, steps)) => steps.push(step),
+            None => by.push((who, vec![step])),
+        }
+    }
+    if by.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = by
+        .iter()
+        .map(|(who, steps)| format!("by {who}: {}", steps.join(", ")))
+        .collect();
+    Some(format!("Approved without asking you, {}", parts.join("; ")))
 }

@@ -736,3 +736,61 @@ fn green_pending_or_no_checks_let_a_release_through() {
         assert_eq!(checks::red_reason("#64", None, &rollup), None, "{rollup}");
     }
 }
+
+#[test]
+fn a_script_that_refuses_says_why_first() {
+    let output = "Release plan — publishkit\n❌ Tag v0.1.58 already exists\n❌ Working tree is dirty — commit or stash first\n";
+    let failure = script_failure(
+        "./scripts/deploy.sh",
+        output.into(),
+        &ReleaseFindings::default(),
+    );
+    assert!(
+        failure.message.starts_with(
+            "`./scripts/deploy.sh` stopped:\n\n❌ Tag v0.1.58 already exists\n❌ Working tree is dirty"
+        ),
+        "{}",
+        failure.message
+    );
+    assert!(
+        failure.message.contains("Everything it printed"),
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        failure_summary(&failure.message),
+        "Tag v0.1.58 already exists"
+    );
+}
+
+#[test]
+fn a_release_without_notes_is_summed_up_by_the_script_s_own_words() {
+    let failure = script_failure(
+        "./scripts/release.sh",
+        NO_NOTES_OUTPUT.into(),
+        &ReleaseFindings::default(),
+    );
+    assert_eq!(
+        failure_summary(&failure.message),
+        "Release notes: nothing under [Unreleased] in CHANGELOG.md"
+    );
+}
+
+#[test]
+fn a_crash_with_no_reason_is_just_failed() {
+    let failure = script_failure(
+        "make deploy",
+        "make: *** [deploy] Error 2".into(),
+        &ReleaseFindings::default(),
+    );
+    assert!(failure.message.starts_with("`make deploy` failed."));
+    assert_eq!(failure_summary(&failure.message), "failed");
+}
+
+#[test]
+fn a_long_reason_is_cut_on_the_card() {
+    let long = format!("❌ {}", "x".repeat(300));
+    let summary = failure_summary(&long);
+    assert_eq!(summary.chars().count(), 120);
+    assert!(summary.ends_with('…'));
+}

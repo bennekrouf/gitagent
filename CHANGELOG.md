@@ -17,6 +17,38 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- A release now ends when it is published, not when its tag is pushed. A new
+  **Published** step follows the GitHub Actions build the tag started, job by
+  job, and says when every platform is done. A job that fails, or never gets
+  a runner, is named with a button that re-runs just the failed jobs; one
+  still running after an hour is called stuck, with a button to cancel it.
+  It is added after the release script in your existing release flows, once;
+  delete it in Setup if you don't want it.
+- Steps that ran without asking you now say so. A step approved by
+  **Trust all**, a trusted run or **All** is marked "auto-approved" on its
+  card, its detail says what approved it, and when the run ends one line lists
+  everything you were not asked about — so a release script that ran on its
+  own no longer looks like one you approved.
+
+### Fixed
+
+- A pull request merged on GitHub now shows up as a release due straight
+  away. The repository list used to read your copy's last fetch, so it could
+  say "clean" while work waited to be released, and the Release flow found
+  nothing to release.
+- A release no longer goes out when GitHub can't be reached to check for
+  merged work. It used to carry on with what this copy already had, which
+  could leave out what had just been merged; now it stops and says why.
+- When a script stops itself, its own reason is what you see. A release
+  script that refuses ("Release notes: nothing under [Unreleased]", "Tag
+  v0.1.58 already exists") shows that line on the step's card, at the top of
+  its detail and in the notification, instead of a bare "failed" with the
+  reason somewhere in the log.
+
 ## [0.1.165] - 2026-11-03
 
 ### Added

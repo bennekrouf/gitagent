@@ -44,6 +44,8 @@ pub enum Step {
     // ── Release ──
     DraftNotes,
     WriteNotes,
+    /// Follows the build the release tag started until it is published.
+    WatchRelease,
     // ── Generic ──
     RunTests,
     RunScript,
@@ -307,6 +309,11 @@ pub struct NodeRun {
     /// after this is one the proposal never saw — what All checks before it
     /// clicks a step through.
     pub posted_at: Option<std::time::SystemTime>,
+    /// What approved this step when no person did — "Trust all" or "a trusted
+    /// run". Empty when a person approved it, or it needed no approval. A
+    /// release that went out on its own has to say so afterwards, or nobody
+    /// knows a script ran unasked.
+    pub approved_by: String,
 }
 
 impl NodeRun {
@@ -541,6 +548,7 @@ impl RunState {
             run.preview_diff.clear();
             run.items.clear();
             run.held.clear();
+            run.approved_by.clear();
             self.set_status(id, NodeStatus::Pending);
         }
         // Free every blocked node, then work out from scratch which of them
@@ -573,12 +581,26 @@ impl RunState {
             run.items.clear();
             run.remedies.clear();
             run.held.clear();
+            run.approved_by.clear();
         }
         for node in &graph.nodes {
             if self.status(&node.id) == NodeStatus::Blocked {
                 self.set_status(&node.id, NodeStatus::Pending);
             }
         }
+    }
+
+    /// The steps approved without asking anyone, in flow order, each with
+    /// what approved it.
+    pub fn approved_automatically(&self, graph: &Graph) -> Vec<(String, String)> {
+        graph
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                let by = &self.runs.get(&n.id)?.approved_by;
+                (!by.is_empty()).then(|| (n.title.clone(), by.clone()))
+            })
+            .collect()
     }
 
     /// True once no node can make further progress.

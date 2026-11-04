@@ -40,6 +40,12 @@ pub fn NodeCard(props: NodeCardProps) -> Element {
                 }
                 if awaiting {
                     span { class: "tag tag-gate tag-gate-live", "⏸ needs you" }
+                } else if !props.run.approved_by.is_empty() {
+                    span {
+                        class: "tag tag-auto",
+                        title: "Approved by {props.run.approved_by} — you were not asked",
+                        "auto-approved"
+                    }
                 } else if spec.requires_approval {
                     span { class: "tag tag-gate", "gated" }
                 }

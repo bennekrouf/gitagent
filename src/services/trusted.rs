@@ -197,6 +197,16 @@ pub fn verdict(node: &NodeSpec, state: &RunState) -> Verdict {
     }
 }
 
+/// What approved a step nobody was asked about, in the words the window
+/// uses: the setting that did it, so it can be found and turned off.
+pub fn approver(trust_all: bool) -> &'static str {
+    if trust_all {
+        "Trust all"
+    } else {
+        "a trusted run"
+    }
+}
+
 /// What a trusted run should do with `node`, given everything the run has
 /// produced so far.
 pub fn decide(node: &NodeSpec, state: &RunState) -> Verdict {

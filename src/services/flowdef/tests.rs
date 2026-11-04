@@ -495,6 +495,52 @@ fn notes_steps_you_deleted_stay_deleted() {
 }
 
 #[test]
+fn a_release_flow_follows_its_build_after_the_script() {
+    let mut book = a_release_flow("./scripts/release.sh");
+    assert!(book.adopt_notes_steps() | book.adopt_watch_release());
+
+    let flow = &book.flows[0];
+    let published = flow
+        .nodes
+        .iter()
+        .find(|n| n.step == "watch_release")
+        .expect("added");
+    assert_eq!(published.deps, vec!["run_script"]);
+    let at = |id: &str| flow.nodes.iter().position(|n| n.id == id).unwrap();
+    assert_eq!(at(&published.id), at("run_script") + 1, "read in run order");
+    assert_eq!(validate(flow), vec![], "the result must still run");
+}
+
+#[test]
+fn a_script_that_is_not_a_release_gets_no_build_to_follow() {
+    let mut book = a_release_flow("make deploy");
+    book.adopt_watch_release();
+    assert!(!book.flows[0]
+        .nodes
+        .iter()
+        .any(|n| n.step == "watch_release"));
+}
+
+#[test]
+fn the_published_step_you_deleted_stays_deleted() {
+    let mut book = a_release_flow("./scripts/release.sh");
+    assert!(book.adopt_watch_release());
+    let id = book.flows[0]
+        .nodes
+        .iter()
+        .find(|n| n.step == "watch_release")
+        .unwrap()
+        .id
+        .clone();
+    book.flows[0].remove_node(&id);
+    assert!(!book.adopt_watch_release(), "it only ever runs once");
+    assert!(!book.flows[0]
+        .nodes
+        .iter()
+        .any(|n| n.step == "watch_release"));
+}
+
+#[test]
 fn a_test_step_you_deleted_stays_deleted() {
     // The marker is the whole point: without it, every launch would put
     // back a step you had just removed, with no way to refuse it.

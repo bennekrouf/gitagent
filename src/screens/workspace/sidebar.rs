@@ -53,7 +53,7 @@ pub(super) fn sidebar(
                 }
             },
             on_approve: move |approval: Approval| {
-                all::approve(states, approval, (selected_repo, selected_flow, selected_pr), drawer);
+                all::approve(states, approval, (selected_repo, selected_flow, selected_pr), drawer, None);
             },
             on_start: move |path: String| {
                 let Some((flow_id, _, pr)) = statuses.read().get(&path).and_then(|s| {
