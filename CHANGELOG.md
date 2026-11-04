@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Merge conflicts are now hard to miss. The resolver has a clear heading and
+  a line saying git is waiting on you, Resolve with AI sits on its own
+  highlighted strip, and the panel scrolls to the resolver when it appears.
+
 ## [0.1.167] - 2026-11-04
 
 ### Fixed
