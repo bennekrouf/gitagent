@@ -2034,8 +2034,9 @@ a.pr-failed-check:hover {
    sides, Current in blue and Incoming in green — the colours editors use
    for the same choice — with the pick on a strip above it. */
 .conflicts {
-    background: var(--bg1);
+    background: color-mix(in srgb, var(--yellow) 5%, var(--bg1));
     border: 1px solid var(--yellow);
+    border-left-width: 3px;
     border-radius: 9px;
     padding: 12px 13px;
     margin-bottom: 16px;
@@ -2043,9 +2044,10 @@ a.pr-failed-check:hover {
 .conflicts-done { border-color: var(--green); color: var(--green); font-size: 12px; }
 .conflicts-head {
     display: flex; justify-content: space-between; align-items: baseline;
-    font-size: 10px; color: var(--yellow);
-    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 9px;
+    font-size: 11px; color: var(--yellow); margin-bottom: 6px;
 }
+.conflicts-title { font-size: 14px; font-weight: 700; }
+.conflicts-lead { font-size: 12px; color: var(--text1); line-height: 1.5; margin-bottom: 11px; }
 .conflicts-count { color: var(--text3); }
 .conflicts-hint { font-size: 11px; color: var(--text2); margin-bottom: 9px; line-height: 1.5; }
 .conflicts-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
@@ -2087,10 +2089,17 @@ a.pr-failed-check:hover {
 .clash-base { background: color-mix(in srgb, var(--text3) 8%, transparent); color: var(--text2); }
 .clash-result { border-left: 2px solid var(--green); }
 .conflicts-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+/* Resolve with AI is the quickest way through, so it gets its own strip
+   rather than sitting as one more small button among the file names. */
 .conflicts-ai {
-    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-    margin-bottom: 10px; font-size: 11px; color: var(--text2);
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 12px; padding: 10px 12px; border-radius: 7px;
+    font-size: 12px; color: var(--text1);
+    background: color-mix(in srgb, var(--purple) 12%, var(--bg0));
+    border: 1px solid color-mix(in srgb, var(--purple) 45%, transparent);
 }
+.conflicts-ai .btn { font-size: 13px; padding: 7px 16px; font-weight: 600; }
+.conflicts-ai .btn-primary { background: var(--purple); border-color: var(--purple); color: #fff; }
 .conflicts-ai-note { line-height: 1.5; }
 .conflicts-ai-busy { color: var(--purple); }
 .clash-why {

@@ -72,6 +72,15 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
             let mut model = ai.model;
             model.set(store::load_settings_for(Some(&repo)).uses_model());
             if !found.is_empty() || !done.is_empty() {
+                // The first time it appears, bring it into view: it opens
+                // above the error, and a panel already scrolled down to read
+                // that error left it out of sight.
+                if !*seen.peek() && !found.is_empty() {
+                    document::eval(
+                        "setTimeout(()=>document.getElementById('conflicts')\
+                         ?.scrollIntoView({block:'start',behavior:'smooth'}),50)",
+                    );
+                }
                 seen.set(true);
             }
             on_left.call(found.iter().map(|f| f.path.clone()).collect());
@@ -151,13 +160,20 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
     let mut n = 0usize;
 
     rsx! {
-        div { class: "conflicts",
+        div { class: "conflicts", id: "conflicts",
             div { class: "conflicts-head",
-                span { "Resolve conflicts" }
+                span { class: "conflicts-title", "⚠ Resolve conflicts" }
                 span { class: "conflicts-count",
                     if list.is_empty() { "all resolved" }
                     else if list.len() == 1 { "1 file left" }
                     else { "{list.len()} files left" }
+                }
+            }
+            if !list.is_empty() {
+                div { class: "conflicts-lead",
+                    "Both sides changed the same lines, so git stopped and is waiting on \
+                     you. Settle each file here — the model can do it for you — then \
+                     finish below."
                 }
             }
             if rebase {
