@@ -118,3 +118,25 @@ fn no_fix_on_offer_says_so() {
     });
     assert!(html.contains("No automatic fix"), "{html}");
 }
+
+#[test]
+fn a_fix_output_is_folded_so_the_resolver_stays_in_sight() {
+    let html = render(|| {
+        let mut fix = remedy(false);
+        fix.failed = true;
+        fix.output = "CONFLICT (content): Merge conflict in Cargo.toml".into();
+        remedies(
+            &NodeRun {
+                remedies: vec![fix],
+                ..NodeRun::default()
+            },
+            "x".into(),
+            EventHandler::new(|_| {}),
+            use_signal(Vec::new),
+            use_signal(|| 0),
+        )
+    });
+    assert!(html.contains("<details"), "{html}");
+    assert!(!html.contains("<details open"), "{html}");
+    assert!(html.contains("That stopped before finishing"), "{html}");
+}

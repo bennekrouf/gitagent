@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A failed step's fixes no longer hide the conflicts above them. The full
+  output of a fix that stopped, such as a merge's list of conflicted files,
+  now folds behind "what it printed", and long commands fit on one line, so
+  Resolve with AI and Mark resolved stay on screen.
+
 ## [0.1.166] - 2026-11-04
 
 ### Added

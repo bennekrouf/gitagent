@@ -2005,7 +2005,7 @@ a.pr-failed-check:hover {
    bar at the bottom of the panel like every other decision on a step. Capped,
    so a long fix output cannot push the step itself off the panel. */
 .detail-foot {
-    flex-shrink: 0; max-height: 55%;
+    flex-shrink: 0; max-height: 38%;
     display: flex; flex-direction: column;
     background: var(--bg0);
     border-top: 1px solid var(--border2);
@@ -2019,6 +2019,14 @@ a.pr-failed-check:hover {
 }
 .detail-foot .remedy { margin-bottom: 6px; padding: 8px 10px; }
 .detail-foot .remedy-out { max-height: 110px; }
+/* One line per command in the footer; the whole of it is on hover. */
+.detail-foot .remedy-cmd {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal;
+}
+.remedy-fold { margin: 2px 0 6px; }
+.remedy-fold summary { cursor: pointer; }
+.remedy-fold[open] summary { margin-bottom: 4px; }
+.remedy-printed { font-size: 11px; color: var(--text3); }
 .detail-foot .detail-actions { border-top: none; box-shadow: none; }
 
 /* ── Conflict resolver ────────────────────────────────────────────────

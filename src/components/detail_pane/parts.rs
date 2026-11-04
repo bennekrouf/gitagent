@@ -121,7 +121,7 @@ pub(super) fn remedies(
                     div { key: "{remedy.display}", class: "remedy",
                         div { class: "remedy-main",
                             div { class: "remedy-label", "{remedy.label}" }
-                            code { class: "remedy-cmd", "{remedy.display}" }
+                            code { class: "remedy-cmd", title: "{remedy.display}", "{remedy.display}" }
                         }
                         {
                             let held = remedy.once_resolved && !unresolved.read().is_empty();
@@ -155,11 +155,9 @@ pub(super) fn remedies(
                             let left = unresolved.read().clone();
                             rsx! {
                                 div { class: "remedy-waiting",
-                                    "Git is still waiting on {left.join(\", \")}. Resolve with AI or \
-                                     pick a side for each conflict in Resolve conflicts above, and \
-                                     save. If you already \
-                                     fixed it in your editor, pick it in that list and click Mark \
-                                     resolved. This unlocks once nothing is left. "
+                                    "Git is still waiting on {left.join(\", \")}: settle it in \
+                                     Resolve conflicts above (Resolve with AI, or Mark resolved if \
+                                     you fixed it in your editor). "
                                     button {
                                         class: "clash-btn",
                                         onclick: move |_| *rechecks.write() += 1,
@@ -170,16 +168,23 @@ pub(super) fn remedies(
                         }
                     }
                     if !remedy.output.is_empty() {
-                        if remedy.failed {
-                            div { class: "remedy-stopped", "That stopped before finishing:" }
-                        }
                         if remedy.failed && remedy.output.contains("unmerged files") {
                             div { class: "remedy-waiting",
                                 "Git refused because a file still has conflicts in it. Resolve it \
                                  in Resolve conflicts above, then run this again."
                             }
                         }
-                        pre { class: if remedy.failed { "remedy-out remedy-out-failed" } else { "remedy-out" }, "{remedy.output}" }
+                        // Folded: this footer sits under the step, and a merge's
+                        // full output here pushed the conflict resolver — the
+                        // thing that fixes it — out of sight.
+                        details { class: "remedy-fold",
+                            summary {
+                                class: if remedy.failed { "remedy-stopped" } else { "remedy-printed" },
+                                if remedy.failed { "That stopped before finishing — what it printed" }
+                                else { "What it printed" }
+                            }
+                            pre { class: if remedy.failed { "remedy-out remedy-out-failed" } else { "remedy-out" }, "{remedy.output}" }
+                        }
                     }
                 }
             }
