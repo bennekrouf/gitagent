@@ -401,13 +401,22 @@ pub(crate) async fn catch_up(repo: &str) -> Result<Option<String>, StepFailure> 
             clashed.join("\n  ")
         )));
     }
-    let git::Upstream::Behind {
-        tracking,
-        behind,
-        ahead,
-    } = git::upstream(repo).await
-    else {
-        return Ok(None);
+    let (tracking, behind, ahead) = match git::upstream(repo).await {
+        git::Upstream::Behind {
+            tracking,
+            behind,
+            ahead,
+        } => (tracking, behind, ahead),
+        git::Upstream::Unreachable { tracking, error } => {
+            return Err(StepFailure::from(format!(
+                "Could not reach {tracking} to check for work merged there since this \
+                 copy last looked, so nothing was released: a version cut now could \
+                 leave that work out. Check the connection, or that git can still \
+                 sign in to the remote, then retry this step.\n\n{}",
+                error.trim()
+            )));
+        }
+        git::Upstream::Unknown | git::Upstream::UpToDate => return Ok(None),
     };
     let commits = plural(behind, "commit");
 
@@ -462,6 +471,20 @@ pub(crate) async fn catch_up(repo: &str) -> Result<Option<String>, StepFailure> 
     })
 }
 
+/// A failed script's message: the reason it gave for stopping first, when it
+/// gave one, then everything it printed.
+fn stopped(command: &str, output: &str) -> String {
+    let reasons = super::stop_reasons(output);
+    if reasons.is_empty() {
+        format!("`{command}` failed.\n\n{output}")
+    } else {
+        format!(
+            "`{command}` stopped:\n\n{}\n\nEverything it printed:\n\n{output}",
+            reasons.join("\n")
+        )
+    }
+}
+
 /// A script is opaque, but a release stopping is common enough, and its
 /// causes recognisable enough, that the choice belongs on screen rather than
 /// in a terminal.
@@ -471,7 +494,7 @@ pub(super) fn script_failure(
     found: &ReleaseFindings,
 ) -> StepFailure {
     if !is_release(command) {
-        return StepFailure::from(format!("`{command}` failed.\n\n{output}"));
+        return StepFailure::from(stopped(command, &output));
     }
     let behind = match &found.upstream {
         git::Upstream::Behind {
@@ -493,14 +516,14 @@ pub(super) fn script_failure(
             };
         }
         return StepFailure {
-            message: format!("`{command}` failed.\n\n{output}"),
+            message: stopped(command, &output),
             remedies: pull_remedy(&output),
         };
     }
 
     let wants_notes = output.contains("--no-notes") && !command.contains("--no-notes");
     if !wants_notes {
-        return StepFailure::from(format!("`{command}` failed.\n\n{output}"));
+        return StepFailure::from(stopped(command, &output));
     }
 
     // No notes here may only mean they have not been pulled yet. Offering a

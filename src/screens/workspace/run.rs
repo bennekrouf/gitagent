@@ -224,6 +224,8 @@ pub(super) async fn drive(
                     let mut w = states.write();
                     let entry = w.entry(key.clone()).or_default();
                     entry.decisions.entry(node.id.clone()).or_insert(true);
+                    entry.runs.entry(node.id.clone()).or_default().approved_by =
+                        trusted::approver(store::trust_all()).to_string();
                     continue;
                 }
 
@@ -373,7 +375,15 @@ pub(super) async fn drive(
         };
 
         if let Err(failure) = &result {
-            announce(NodeStatus::Failed, &key.0, &node.title, &failure.message);
+            // The script's own reason, when it gave one, says more than the
+            // first line of the message around it.
+            let reason = flow::failure_summary(&failure.message);
+            let detail = if reason == "failed" {
+                &failure.message
+            } else {
+                &reason
+            };
+            announce(NodeStatus::Failed, &key.0, &node.title, detail);
         }
         runner::settle(
             states.write().entry(key.clone()).or_default(),

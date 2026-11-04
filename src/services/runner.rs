@@ -145,7 +145,7 @@ pub fn settle(
         Err(failure) => {
             state.set_status(node, NodeStatus::Failed);
             let entry = state.runs.entry(node.into()).or_default();
-            entry.summary = "failed".into();
+            entry.summary = flow::failure_summary(&failure.message);
             entry.log = failure.message;
             entry.remedies = failure.remedies;
             // A failure stays local: only what depends on this node is blocked.
@@ -457,6 +457,11 @@ impl Run {
                                 trusted: true,
                             });
                             self.state.decisions.insert(node.id.clone(), true);
+                            self.state
+                                .runs
+                                .entry(node.id.clone())
+                                .or_default()
+                                .approved_by = trusted::approver(store::trust_all()).to_string();
                             self.approved_by_trust.push(node.title.clone());
                             (self.progress)(Progress::Trusted(&node));
                             self.publish();

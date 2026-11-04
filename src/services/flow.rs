@@ -458,10 +458,43 @@ pub async fn execute(
         // that a final log is all "streaming" would ever show anyway.
         Step::DraftNotes => super::notes::draft(repo, cfg, asker).await,
         Step::WriteNotes => super::notes::write(repo, state.artifact("release_notes")).await,
+        Step::WatchRelease => super::published::watch(repo, asker.on_line).await,
         Step::RunTests => run_tests(node, repo, asker.on_line).await,
         Step::RunScript => run_script(node, repo, asker.on_line).await,
         Step::RunRemote => run_remote(node, asker.on_line).await,
     }
+}
+
+/// The line a failed step shows on its card: the reason a script printed for
+/// stopping, when it printed one, or plain "failed".
+///
+/// Release scripts say why they refuse on a line of their own marked ❌
+/// ("Release notes: nothing under [Unreleased]", "Tag v0.1.58 already
+/// exists"). Left in the middle of the log, a refusal read as a crash, or as
+/// nothing at all when the step was not opened.
+pub fn failure_summary(message: &str) -> String {
+    match stop_reasons(message).first() {
+        Some(reason) => {
+            let reason = reason.trim_start_matches('❌').trim();
+            if reason.chars().count() > 120 {
+                format!("{}…", reason.chars().take(119).collect::<String>())
+            } else {
+                reason.to_string()
+            }
+        }
+        None => "failed".into(),
+    }
+}
+
+/// The lines a script marked as its reason for stopping, in order, each once.
+pub(crate) fn stop_reasons(output: &str) -> Vec<&str> {
+    let mut reasons: Vec<&str> = vec![];
+    for line in output.lines().map(str::trim) {
+        if line.starts_with('❌') && !reasons.contains(&line) {
+            reasons.push(line);
+        }
+    }
+    reasons
 }
 
 fn is_release(command: &str) -> bool {

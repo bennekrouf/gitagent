@@ -321,6 +321,30 @@ impl FlowDef {
         true
     }
 
+    /// Puts `watch_release` after a step that runs `release.sh`, so the run
+    /// ends when the release is published rather than when its tag is pushed.
+    /// Returns whether anything changed.
+    pub fn insert_watch_step(&mut self) -> bool {
+        if self.nodes.iter().any(|n| n.step == "watch_release") {
+            return false;
+        }
+        let Some(release) = self.nodes.iter().position(|n| {
+            n.step == "run_script"
+                && n.config
+                    .get("command")
+                    .is_some_and(|c| c.contains("release.sh"))
+        }) else {
+            return false;
+        };
+        let after = self.nodes[release].id.clone();
+        let id = self.free_id("published");
+        self.nodes.insert(
+            release + 1,
+            dep(NodeDef::from_catalogue(&id, "watch_release"), &[&after]),
+        );
+        true
+    }
+
     /// Removes a node and every reference to it, so deleting can never leave a
     /// dangling dependency behind.
     pub fn remove_node(&mut self, id: &str) {
@@ -382,6 +406,9 @@ pub fn id_from_label(label: &str) -> String {
 
 /// Names the one-time adoption that adds the release-notes steps.
 pub const ADOPTED_NOTES_STEPS: &str = "release_notes";
+
+/// Names the one-time adoption that adds the step following the release build.
+pub const ADOPTED_WATCH_RELEASE: &str = "watch_release";
 
 /// Names the one-time adoption that adds the second-opinion step.
 pub const ADOPTED_SECOND_OPINION: &str = "second_opinion";

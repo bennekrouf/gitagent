@@ -353,6 +353,25 @@ pub const CATALOGUE: &[StepInfo] = &[
         testable: false,
     },
     StepInfo {
+        step: Step::WatchRelease,
+        key: "watch_release",
+        title: "Published",
+        subtitle: "Follow the release build on GitHub",
+        about: "After a release script has pushed its tag, follows the GitHub \
+                Actions run that tag started, job by job, until it finishes — so \
+                a build that fails or gets stuck shows here, with a button to re-run \
+                it, instead of on the Actions page nobody was looking at. Says so \
+                and stops quietly for a repository that does not build there.",
+        kind: NodeKind::Deterministic,
+        reads: &[],
+        writes: &[],
+        // It only looks; the one thing it can do, re-running a failed build,
+        // is a button the person presses.
+        gate_by_default: false,
+        config: &[],
+        testable: false,
+    },
+    StepInfo {
         step: Step::RunTests,
         key: "run_tests",
         title: "Run tests",
@@ -517,6 +536,7 @@ mod tests {
             Step::Sync,
             Step::DraftNotes,
             Step::WriteNotes,
+            Step::WatchRelease,
             Step::RunTests,
             Step::RunScript,
             Step::RunRemote,

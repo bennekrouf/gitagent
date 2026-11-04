@@ -818,3 +818,17 @@ fn nothing_is_offered_for_a_run_that_is_not_waiting_or_not_answerable_here() {
     old.steps.iter_mut().for_each(|s| s.id.clear());
     assert!(rows::waiting_blocker("/no/such/repo", &none, &[old]).is_none());
 }
+
+#[test]
+fn the_run_says_what_was_approved_without_asking() {
+    let approved = vec![
+        ("Commit".to_string(), "Trust all".to_string()),
+        ("Merge".to_string(), "All".to_string()),
+        ("Release".to_string(), "Trust all".to_string()),
+    ];
+    assert_eq!(
+        middle::unasked_note(&approved).as_deref(),
+        Some("Approved without asking you, by Trust all: Commit, Release; by All: Merge")
+    );
+    assert_eq!(middle::unasked_note(&[]), None);
+}

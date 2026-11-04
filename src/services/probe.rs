@@ -222,8 +222,14 @@ pub async fn probe_recent(repo: &str) -> RepoStatus {
 /// limiter. Only two things are genuine dependencies: the forge has to be
 /// known before the pull requests can be listed, and the base branch before
 /// the release and unmerged-commit counts. Everything else goes at once.
+///
+/// Between the two, the base branch is fetched. Every count below reads
+/// `origin/<base>`, and without a fetch that is only as fresh as whatever last
+/// fetched: a pull request merged on the forge left a repository reading
+/// "clean" with a release due, and the Release flow then found nothing to
+/// release.
 async fn probe_now(repo: &str) -> RepoStatus {
-    let (branch, (changes, tracked_changes), url, (ahead, behind), (base, _), in_progress) = tokio::join!(
+    let (branch, (changes, tracked_changes), url, (base, _), in_progress) = tokio::join!(
         async { git::current_branch(repo).await.unwrap_or_default() },
         async {
             let files = git::status(repo).await.unwrap_or_default();
@@ -233,18 +239,22 @@ async fn probe_now(repo: &str) -> RepoStatus {
             )
         },
         git::remote_url(repo),
-        ahead_behind(repo),
         stored_base_branch(repo),
         git::in_progress(repo),
     );
     let forge = url.map(|url| forge::detect(&url)).unwrap_or(Forge::None);
 
-    let (pr, listed, release, unmerged) = tokio::join!(
-        open_pr(repo, &forge),
-        list_open_prs(repo, &forge),
-        release::status(repo, &base),
-        unmerged_commits(repo, &base),
-    );
+    let (pr, listed, (release, unmerged, (ahead, behind))) =
+        tokio::join!(open_pr(repo, &forge), list_open_prs(repo, &forge), async {
+            if forge != Forge::None {
+                fetch_base(repo, &base).await;
+            }
+            tokio::join!(
+                release::status(repo, &base),
+                unmerged_commits(repo, &base),
+                ahead_behind(repo),
+            )
+        },);
     let (prs, prs_error) = match listed {
         Ok(list) => (list, None),
         Err(e) => (vec![], Some(e)),
@@ -264,6 +274,18 @@ async fn probe_now(repo: &str) -> RepoStatus {
         release,
         in_progress,
     }
+}
+
+/// Brings `origin/<base>` up to date, for the counts that read it. Bounded,
+/// so a remote that hangs costs a refresh a few seconds rather than the
+/// sidebar its answer; a fetch that fails or times out leaves the counts on
+/// what was already known, as they were before this existed.
+async fn fetch_base(repo: &str, base: &str) {
+    if base.is_empty() {
+        return;
+    }
+    let args = ["--quiet", "origin", base];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), git::fetch(repo, &args)).await;
 }
 
 /// Commits the checked-out branch has that the base branch does not.

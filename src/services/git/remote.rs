@@ -43,15 +43,19 @@ pub enum Upstream {
         behind: usize,
         ahead: usize,
     },
+    /// Origin could not be asked: offline, or credentials it refused. What is
+    /// already known locally may be days old, so it says nothing about what
+    /// has been merged there since.
+    Unreachable { tracking: String, error: String },
 }
 
 /// Fetches the branch this one tracks, then compares the two.
 ///
 /// The fetch is the point: the remote-tracking ref is only as fresh as the
 /// last fetch, and a pull request merged on the forge's website leaves it
-/// stale until something fetches. A failed fetch (offline, say) is not fatal
-/// — the comparison then runs on what is already known, which is still the
-/// best answer available.
+/// stale until something fetches. A failed fetch is `Unreachable`, never a
+/// comparison against the stale ref: that read as "up to date" and let a
+/// release go out without what had just been merged.
 pub async fn upstream(repo: &str) -> Upstream {
     let Ok(tracking) = run(
         repo,
@@ -64,7 +68,9 @@ pub async fn upstream(repo: &str) -> Upstream {
     };
     let tracking = tracking.trim().to_string();
     if let Some((remote, branch)) = tracking.split_once('/') {
-        let _ = fetch(repo, &["--quiet", remote, branch]).await;
+        if let Err(error) = fetch(repo, &["--quiet", remote, branch]).await {
+            return Upstream::Unreachable { tracking, error };
+        }
     }
     let Ok(counts) = run(
         repo,

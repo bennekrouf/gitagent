@@ -124,6 +124,12 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 span { class: "detail-status status-{run.status.css()}", "{run.status.label()}" }
             }
 
+            if !run.approved_by.is_empty() {
+                div { class: "approval-auto",
+                    "Approved automatically by {run.approved_by}: you were not asked before this ran."
+                }
+            }
+
             {parts::contract(&spec)}
 
             // A failure over files git is still waiting on is settled here,

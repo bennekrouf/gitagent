@@ -99,6 +99,8 @@ pub(super) fn press_all(
                             approval,
                             (selected_repo, selected_flow, selected_pr),
                             drawer,
+                            // Pressed by All, not by a click on this step.
+                            Some("All"),
                         );
                     }
                     return;
@@ -191,6 +193,8 @@ pub(super) fn approve(
     approval: Approval,
     shown: (Signal<Option<String>>, Signal<String>, Signal<String>),
     mut drawer: Signal<Option<String>>,
+    // What approved it when no person did; `None` for a click.
+    by: Option<&str>,
 ) {
     let mut w = states.write();
     let Some(state) = w.get_mut(&approval.run) else {
@@ -208,6 +212,13 @@ pub(super) fn approve(
     );
     if on_screen == approval.run && drawer.peek().as_deref() == Some(approval.node.as_str()) {
         drawer.set(None);
+    }
+    if let Some(by) = by {
+        state
+            .runs
+            .entry(approval.node.clone())
+            .or_default()
+            .approved_by = by.to_string();
     }
     state.decisions.insert(approval.node, true);
     approvals().notify_waiters();
