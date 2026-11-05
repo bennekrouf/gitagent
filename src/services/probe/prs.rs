@@ -26,6 +26,43 @@ pub(super) fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> 
     })
 }
 
+/// Once GitHub says the hourly GraphQL budget is spent, every further query
+/// fails the same way and keeps the budget at zero — for this app and every
+/// other `gh` use on the account. So the first such answer stops the checks
+/// for a while, and each repository gets that answer back without asking.
+const HOLD_OFF: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn held() -> &'static std::sync::Mutex<Option<(std::time::Instant, String)>> {
+    static HELD: std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, String)>>> =
+        std::sync::OnceLock::new();
+    HELD.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+pub(super) fn is_rate_limit(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("rate limit") || err.contains("secondary rate")
+}
+
+fn hold_off(err: &str) {
+    if let Ok(mut held) = held().lock() {
+        *held = Some((std::time::Instant::now() + HOLD_OFF, err.to_string()));
+    }
+}
+
+fn rate_limited() -> Option<String> {
+    let mut held = held().lock().ok()?;
+    match held.as_ref() {
+        Some((until, err)) if std::time::Instant::now() < *until => Some(format!(
+            "{err} (paused GitHub checks for a few minutes to let the budget recover)"
+        )),
+        Some(_) => {
+            *held = None;
+            None
+        }
+        None => None,
+    }
+}
+
 /// Every open pull request on the repository — not scoped to the checked-out
 /// branch, unlike `open_pr` below. What lets the sidebar offer a choice of
 /// which PR to review instead of only ever "whichever one HEAD happens to
@@ -37,12 +74,21 @@ pub(super) fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> 
 pub(super) async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBrief>, String> {
     match forge {
         Forge::GitHub => {
+            if let Some(err) = rate_limited() {
+                return Err(err);
+            }
             let out = git::run(
                 repo,
                 "gh",
                 &["pr", "list", "--state", "open", "--json", PR_FIELDS],
             )
-            .await?;
+            .await
+            .map_err(|e| {
+                if is_rate_limit(&e) {
+                    hold_off(&e);
+                }
+                e
+            })?;
             let value: serde_json::Value =
                 serde_json::from_str(&out).map_err(|e| format!("could not read gh output: {e}"))?;
             Ok(value

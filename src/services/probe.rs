@@ -244,8 +244,18 @@ async fn probe_now(repo: &str) -> RepoStatus {
     );
     let forge = url.map(|url| forge::detect(&url)).unwrap_or(Forge::None);
 
+    // On GitHub the checked-out branch's pull request is picked out of the
+    // list rather than asked for with its own `gh pr view`: each is a GraphQL
+    // query priced against the same hourly budget, and the list already holds
+    // it. Two queries per repository per refresh was what ran the budget dry.
+    let own_pr = async {
+        match forge {
+            Forge::GitHub => None,
+            _ => open_pr(repo, &forge).await,
+        }
+    };
     let (pr, listed, (release, unmerged, (ahead, behind))) =
-        tokio::join!(open_pr(repo, &forge), list_open_prs(repo, &forge), async {
+        tokio::join!(own_pr, list_open_prs(repo, &forge), async {
             if forge != Forge::None {
                 fetch_base(repo, &base).await;
             }
@@ -255,6 +265,10 @@ async fn probe_now(repo: &str) -> RepoStatus {
                 ahead_behind(repo),
             )
         },);
+    let pr = match (&forge, &listed) {
+        (Forge::GitHub, Ok(list)) => list.iter().find(|p| p.head == branch).cloned(),
+        _ => pr,
+    };
     let (prs, prs_error) = match listed {
         Ok(list) => (list, None),
         Err(e) => (vec![], Some(e)),

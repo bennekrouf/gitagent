@@ -79,7 +79,9 @@ pub(super) async fn list_repos(folder: &str) -> Result<Value, String> {
     let hidden = store::load_repo_flows();
     let mut out = vec![];
     for repo in store::discover_repos(folder) {
-        let status = probe::probe(&repo.path).await;
+        // Agents call this often; a check from the last two minutes is news
+        // enough, and each fresh one costs GitHub API budget per repository.
+        let status = probe::probe_recent(&repo.path).await;
         let suggested = trusted::next_flow(&book, &status, &hidden.hidden_for(&repo.path));
         out.push(json!({
             "repo": repo.path,
