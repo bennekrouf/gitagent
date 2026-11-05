@@ -83,11 +83,10 @@ pub(super) async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBri
                 &["pr", "list", "--state", "open", "--json", PR_FIELDS],
             )
             .await
-            .map_err(|e| {
-                if is_rate_limit(&e) {
-                    hold_off(&e);
+            .inspect_err(|e| {
+                if is_rate_limit(e) {
+                    hold_off(e);
                 }
-                e
             })?;
             let value: serde_json::Value =
                 serde_json::from_str(&out).map_err(|e| format!("could not read gh output: {e}"))?;
