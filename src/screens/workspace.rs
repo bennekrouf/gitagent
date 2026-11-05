@@ -359,7 +359,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         .unwrap_or(Graph { nodes: vec![] });
     let flow_first_node = current.as_ref().map(|f| f.first_node()).unwrap_or_default();
 
-    let entries = rows::repo_entries(
+    let mut entries = rows::repo_entries(
         &repo_list,
         &status_map,
         &states_snapshot,
@@ -367,6 +367,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         &repo_flows.read(),
         &settling.read(),
     );
+    rows::mark_live_runs(&mut entries, &live_runs.read());
 
     let active = selected_repo.read().clone();
     let cfg = props.llm_config.read().clone();

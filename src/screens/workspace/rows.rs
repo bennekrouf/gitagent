@@ -56,6 +56,28 @@ pub(super) fn repo_entries(
         .collect()
 }
 
+/// A run Claude or a terminal is driving here shows on the row the same as
+/// one started in this window: "running" (or "needs you") in place of the ▶
+/// that would start the same work a second time.
+pub(super) fn mark_live_runs(entries: &mut [RepoEntry], live_runs: &[LiveRun]) {
+    for entry in entries.iter_mut() {
+        let live = live_runs
+            .iter()
+            .filter(|run| run.repo == entry.path && !run.finished)
+            .map(|run| {
+                if run.waiting.is_some() {
+                    Phase::NeedsApproval
+                } else {
+                    Phase::Running
+                }
+            })
+            .min_by_key(|p| p.priority());
+        if let Some(phase) = live.filter(|p| p.priority() < entry.phase.priority()) {
+            entry.phase = phase;
+        }
+    }
+}
+
 /// The title of the step a failed run here stopped on, when that run is still
 /// the answer to what the repository needs — its commit failed and the files
 /// are still uncommitted, say.

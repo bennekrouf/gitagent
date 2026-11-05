@@ -108,7 +108,15 @@ pub fn phase_of(state: &RunState) -> Phase {
     let statuses: Vec<NodeStatus> = state.runs.values().map(|r| r.status).collect();
     if statuses.contains(&NodeStatus::AwaitingApproval) {
         Phase::NeedsApproval
-    } else if statuses.contains(&NodeStatus::Running) {
+    } else if statuses.contains(&NodeStatus::Running)
+        || state
+            .runs
+            .values()
+            .any(|r| r.remedies.iter().any(|m| m.running))
+    {
+        // A fix offered on a failed step and running now — waiting for
+        // checks, then merging — is the run carrying on, not a failure
+        // waiting on a person.
         Phase::Running
     } else if statuses.contains(&NodeStatus::Failed) {
         Phase::Failed
@@ -707,6 +715,20 @@ mod tests {
         s.set_status("preflight", NodeStatus::Failed);
         s.propagate_block(&commit_and_pr_flow());
         assert_eq!(phase_of(&s), Phase::Failed);
+    }
+
+    #[test]
+    fn a_fix_running_on_a_failed_step_reads_as_running() {
+        // "Wait for the checks, then merge": the step failed, and the fix
+        // offered on it is now carrying the run on. The row must say
+        // running, not offer to start the merge a second time.
+        let mut s = started();
+        s.set_status("preflight", NodeStatus::Failed);
+        s.propagate_block(&commit_and_pr_flow());
+        let mut fix = crate::services::graph::Remedy::new("Wait", "sh", &["-c", "true"]);
+        fix.running = true;
+        s.runs.get_mut("preflight").unwrap().remedies.push(fix);
+        assert_eq!(phase_of(&s), Phase::Running);
     }
 
     #[test]
