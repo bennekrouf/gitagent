@@ -86,9 +86,14 @@ git commit --no-edit && git push || exit 1
 /// still running or a review still missing. It used to be read as a
 /// conflict, which offered to merge the base in — a push that restarts the
 /// very checks being waited on — or to close the pull request.
-pub(super) fn merge_failure(number: &str, base: &str, message: String) -> StepFailure {
-    if message.contains("base branch policy prohibits") {
-        return policy_guide(number, &message);
+pub(super) fn merge_failure(
+    number: &str,
+    base: &str,
+    message: String,
+    auto_merge: bool,
+) -> StepFailure {
+    if is_policy_hold(&message) {
+        return policy_guide(number, &message, auto_merge);
     }
     if !message.contains("not mergeable") {
         return StepFailure {
@@ -99,9 +104,34 @@ pub(super) fn merge_failure(number: &str, base: &str, message: String) -> StepFa
     conflict_guide(number, base, &message)
 }
 
+pub(super) fn is_policy_hold(message: &str) -> bool {
+    message.contains("base branch policy prohibits")
+}
+
+/// Whether the repository lets a pull request be set to merge itself once its
+/// rules are met. Off by default on GitHub; offering `--auto` where it is off
+/// only trades one refusal for another.
+async fn auto_merge_allowed(repo: &str) -> bool {
+    git::run(
+        repo,
+        "gh",
+        &[
+            "repo",
+            "view",
+            "--json",
+            "autoMergeAllowed",
+            "-q",
+            ".autoMergeAllowed",
+        ],
+    )
+    .await
+    .map(|out| out.trim() == "true")
+    .unwrap_or(false)
+}
+
 /// A pull request GitHub will not merge yet because the branch's rules are
 /// not met — required checks still running or red, or a required review.
-pub(super) fn policy_guide(number: &str, message: &str) -> StepFailure {
+pub(super) fn policy_guide(number: &str, message: &str, auto_merge: bool) -> StepFailure {
     let guide = format!(
         "GitHub is holding #{number}: the rules on its base branch are not met yet. \
          It has no conflicts, and nothing has been merged or changed.\n\n\
@@ -109,8 +139,16 @@ pub(super) fn policy_guide(number: &str, message: &str) -> StepFailure {
          watches them and merges as soon as they pass. If one fails, it stops there \
          and says which; fix it in a commit on the branch and run Review \u{2192} Merge \
          again.\n\n\
-         Or let GitHub merge it by itself once everything passes, and move on. If it \
-         is waiting on a review instead, that review is the way forward.\n\n{message}"
+         {auto_line}If it is waiting on a review instead, that review is the way \
+         forward.\n\n\
+         Not expecting this? The base branch has a protection rule or ruleset that \
+         requires checks (GitHub \u{2192} Settings \u{2192} Branches / Rules). Remove that \
+         requirement there to merge without waiting.\n\n{message}",
+        auto_line = if auto_merge {
+            "Or let GitHub merge it by itself once everything passes, and move on. "
+        } else {
+            ""
+        }
     );
     // Positional argument rather than text spliced into the script.
     let watch = Remedy::new(
@@ -140,9 +178,13 @@ pub(super) fn policy_guide(number: &str, message: &str) -> StepFailure {
             "--delete-branch",
         ],
     );
+    let mut remedies = vec![watch];
+    if auto_merge {
+        remedies.push(auto);
+    }
     StepFailure {
         message: guide,
-        remedies: vec![watch, auto],
+        remedies,
     }
 }
 
@@ -220,7 +262,10 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
             Ok(out) => out,
             Err(e) => match merged_anyway(repo, &number, state.artifact("pr_head"), &e).await {
                 Some(out) => out,
-                None => return Err(merge_failure(&number, state.artifact("pr_base"), e)),
+                None => {
+                    let auto = is_policy_hold(&e) && auto_merge_allowed(repo).await;
+                    return Err(merge_failure(&number, state.artifact("pr_base"), e, auto));
+                }
             },
         },
         Forge::AzureDevOps => {

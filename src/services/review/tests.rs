@@ -259,6 +259,7 @@ fn a_merge_conflict_offers_resolving_before_abandoning() {
             "8",
             "master",
             "X Pull request bennekrouf/gitagent#8 is not mergeable: the merge commit cannot be cleanly created.".to_string(),
+            true,
         );
     assert_eq!(failure.remedies.len(), 2);
 
@@ -307,6 +308,7 @@ fn checks_still_running_are_not_read_as_a_conflict() {
          prohibits the merge. To have the pull request merged after all the requirements \
          have been met, add the `--auto` flag."
             .to_string(),
+        true,
     );
     assert!(
         failure.message.contains("no conflicts"),
@@ -342,7 +344,7 @@ fn checks_still_running_are_not_read_as_a_conflict() {
 
 #[test]
 fn the_update_remedy_targets_the_pull_requests_own_base() {
-    let failure = merge_failure("1", "develop", "not mergeable".to_string());
+    let failure = merge_failure("1", "develop", "not mergeable".to_string(), true);
     assert_eq!(failure.remedies[0].args[4], "develop");
 }
 
@@ -427,7 +429,12 @@ fn a_quote_matches_the_code_whatever_the_diff_markers_and_spacing() {
 
 #[test]
 fn a_merge_failure_for_any_other_reason_offers_nothing() {
-    let failure = merge_failure("8", "master", "gh: authentication required".to_string());
+    let failure = merge_failure(
+        "8",
+        "master",
+        "gh: authentication required".to_string(),
+        true,
+    );
     assert!(failure.remedies.is_empty());
 }
 
@@ -566,4 +573,18 @@ fn finishing_a_merge_refuses_when_the_pull_requests_change_was_dropped() {
 
     let (ok, said) = finish_guard_after("--ours");
     assert!(ok, "keeping the branch's side is fine: {said}");
+}
+
+#[test]
+fn auto_merge_is_only_offered_where_the_repository_allows_it() {
+    let failure = merge_failure(
+        "7",
+        "main",
+        "X Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge."
+            .to_string(),
+        false,
+    );
+    assert_eq!(failure.remedies.len(), 1);
+    assert!(!failure.remedies[0].args.iter().any(|a| a == "--auto"));
+    assert!(!failure.message.contains("merge it by itself"));
 }
