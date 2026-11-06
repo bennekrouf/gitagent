@@ -454,6 +454,12 @@ pub fn api_key(env: &str) -> Option<String> {
 /// extra token is time.
 const ANSWER_TOKENS: u32 = 3072;
 
+/// The same ceiling for a hosted model (api0 and the other presets): a
+/// review of a large diff, or a model that thinks before it answers, needs
+/// more than a local model is given, and the bill follows the tokens used,
+/// never this cap. 8192 is what every preset accepts.
+const REMOTE_ANSWER_TOKENS: u32 = 8192;
+
 /// Instructions and the JSON schema appended to them, in tokens, give or take.
 const INSTRUCTION_TOKENS: u32 = 2000;
 
@@ -484,12 +490,12 @@ fn client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
         .map_err(|e| format!("http client: {e}"))
 }
 
-/// A reply stopped at `ANSWER_TOKENS` is half an object, and the raw text
+/// A reply stopped at its ceiling (`limit`) is half an object, and the raw text
 /// that a parse error would show is mostly the loop that ran it out — the
 /// same token over and over. Say what happened instead.
-fn cut_off(model: &str) -> String {
+fn cut_off(model: &str, limit: u32) -> String {
     format!(
-        "{model} ran out of room before it finished its answer ({ANSWER_TOKENS} tokens), \
+        "{model} ran out of room before it finished its answer ({limit} tokens), \
          so the reply was cut off and cannot be read. Small models do this when they \
          start repeating themselves. Run the step again, or pick a larger model in Settings."
     )

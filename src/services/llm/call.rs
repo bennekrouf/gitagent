@@ -141,7 +141,7 @@ pub(super) async fn call_ollama(
     let value: Value =
         serde_json::from_str(&text).map_err(|e| format!("ollama sent invalid JSON: {e}"))?;
     if value["done_reason"] == "length" {
-        return Err(cut_off(&cfg.ollama_model));
+        return Err(cut_off(&cfg.ollama_model, ANSWER_TOKENS));
     }
     value["message"]["content"]
         .as_str()
@@ -176,7 +176,7 @@ pub(super) async fn call_openai_compatible(
         "model": cfg.remote_model_name(),
         "stream": false,
         "temperature": 0,
-        "max_tokens": ANSWER_TOKENS,
+        "max_tokens": REMOTE_ANSWER_TOKENS,
         "response_format": { "type": "json_object" },
         "messages": [
             { "role": "system", "content": system },
@@ -214,7 +214,7 @@ pub(super) async fn call_openai_compatible(
     let value: Value = serde_json::from_str(&text)
         .map_err(|e| format!("{} sent invalid JSON: {e}", preset.label))?;
     if value["choices"][0]["finish_reason"] == "length" {
-        return Err(cut_off(cfg.remote_model_name()));
+        return Err(cut_off(cfg.remote_model_name(), REMOTE_ANSWER_TOKENS));
     }
     value["choices"][0]["message"]["content"]
         .as_str()
