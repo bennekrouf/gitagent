@@ -13,6 +13,15 @@ pub fn conflict_followup(number: &str, base: &str, output: &str) -> Option<StepF
         .lines()
         .filter_map(|l| l.split_once("Merge conflict in ").map(|(_, f)| f.trim()))
         .collect();
+    merge_stopped(number, base, &files)
+}
+
+/// The same, for a merge git is known to be in the middle of, whatever the
+/// last command printed: running "Bring the base in" again during it, or
+/// coming back to it after a restart, prints no "Merge conflict in" lines,
+/// and left the step offering to start the merge it is already in. `files`
+/// are the ones it stopped on, settled or not.
+pub fn merge_stopped(number: &str, base: &str, files: &[&str]) -> Option<StepFailure> {
     if files.is_empty() {
         return None;
     }
