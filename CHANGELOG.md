@@ -21,11 +21,11 @@ were never released.
 
 ### Fixed
 
-- **Run tests** on a Python project now uses the project's own environment:
-  `uv run pytest` when it has a `uv.lock`, `poetry run pytest` with a
-  `poetry.lock`, or the `.venv` in the repository. It used to run whichever
-  `pytest` came first on your PATH, often the system's, which failed with
-  "No module named …" for every package the project installs.
+- **Run tests** on a Python project now uses the project's own environment: `uv run pytest` when it has a `uv.lock`, `poetry run pytest` with a `poetry.lock`, or the `.venv` in the repository. It used to run whichever `pytest` came first on your PATH, often the system's, which failed with "No module named …" for every package the project installs.
+
+### Changed
+
+- Build and packaging only — no user-visible change.
 
 ## [0.1.168] - 2026-11-04
 
