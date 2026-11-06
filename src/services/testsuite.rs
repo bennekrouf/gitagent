@@ -59,6 +59,18 @@ fn from_files(
     }
     for marker in ["pyproject.toml", "pytest.ini", "tox.ini"] {
         if exists(marker) {
+            // A bare `pytest` is whichever one is first on PATH, usually the
+            // system's, which has none of the project's packages. Run it in
+            // the project's own environment when there is one to find.
+            if exists("uv.lock") {
+                return found("uv run pytest", &format!("{marker} and uv.lock"));
+            }
+            if exists("poetry.lock") {
+                return found("poetry run pytest", &format!("{marker} and poetry.lock"));
+            }
+            if exists(".venv/bin/python") {
+                return found(".venv/bin/python -m pytest", &format!("{marker} and .venv"));
+            }
             return found("pytest", marker);
         }
     }
@@ -184,6 +196,25 @@ mod tests {
     fn a_package_json_with_no_scripts_at_all_is_not_a_test_suite() {
         assert_eq!(repo(&[("package.json", r#"{"name":"x"}"#)]), None);
         assert_eq!(repo(&[("package.json", "not json")]), None);
+    }
+
+    #[test]
+    fn python_tests_run_in_the_projects_own_environment() {
+        let uv = repo(&[("pyproject.toml", ""), ("uv.lock", "")]).unwrap();
+        assert_eq!(uv.command, "uv run pytest");
+        assert_eq!(uv.why, "pyproject.toml and uv.lock");
+        assert_eq!(
+            repo(&[("pyproject.toml", ""), ("poetry.lock", "")])
+                .unwrap()
+                .command,
+            "poetry run pytest"
+        );
+        assert_eq!(
+            repo(&[("pytest.ini", ""), (".venv/bin/python", "")])
+                .unwrap()
+                .command,
+            ".venv/bin/python -m pytest"
+        );
     }
 
     #[test]

@@ -17,7 +17,11 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
-## [0.1.170] - 2026-11-05
+## [Unreleased]
+
+### Fixed
+
+- **Run tests** on a Python project now uses the project's own environment: `uv run pytest` when it has a `uv.lock`, `poetry run pytest` with a `poetry.lock`, or the `.venv` in the repository. It used to run whichever `pytest` came first on your PATH, often the system's, which failed with "No module named …" for every package the project installs.
 
 ### Changed
 
