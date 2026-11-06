@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent now provides hints for failed pull request checks, including
+  information about being behind the base branch and detailed error messages.
+  This helps users quickly understand and resolve check failures.
+- GitAgent now offers to rerun failed checks instead of just waiting when a pull
+  request has failed checks. This allows users to quickly retry failing checks
+  and proceed with the merge process.
+
 ## [0.1.173] - 2026-11-06
 
 ### Changed
