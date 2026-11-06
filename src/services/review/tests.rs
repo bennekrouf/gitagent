@@ -644,3 +644,15 @@ fn skipping_the_checks_is_only_offered_to_an_admin() {
         .iter()
         .any(|r| r.args.iter().any(|a| a == "--admin")));
 }
+
+#[test]
+fn a_merge_already_stopped_offers_finish_whatever_was_printed() {
+    // #73: every file resolved, yet the step still offered "Bring main in"
+    // again: running it mid-merge prints no "Merge conflict in" lines.
+    assert!(conflict_followup("73", "main", "error: You have not concluded your merge").is_none());
+    let next = merge_stopped("73", "main", &["CHANGELOG.md", "Cargo.lock", "Cargo.toml"]).unwrap();
+    assert!(next.remedies[0].label.starts_with("Finish the merge"));
+    assert!(next.remedies.iter().all(|r| !r.label.starts_with("Bring")));
+    assert!(next.message.contains("Cargo.lock"));
+    assert!(merge_stopped("73", "main", &[]).is_none());
+}

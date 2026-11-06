@@ -168,12 +168,32 @@ pub(super) fn step_detail(
                         // dead end but the next step: the step says so, and
                         // offers to finish or abandon the merge it started.
                         let merging = retry_graph.get(&node).is_some_and(|n| n.step == Step::Merge);
+                        // Git mid-merge is the truth here, not the output: run
+                        // again during the merge, it prints no conflict lines.
+                        let stopped = if !ok && merging
+                            && git::in_progress(&key.0).await == Some(git::InProgress::Merge)
+                        {
+                            let mut files: Vec<String> = crate::services::conflicts::list(&key.0)
+                                .await
+                                .into_iter()
+                                .map(|c| c.path)
+                                .collect();
+                            files.extend(crate::services::conflicts::resolved(&key.0).await);
+                            files.sort();
+                            files.dedup();
+                            files
+                        } else {
+                            vec![]
+                        };
                         if !ok && merging {
                             let mut w = states.write();
                             if let Some(entry) = w.get_mut(&key) {
                                 let number = entry.artifact("pr_number").to_string();
                                 let base = entry.artifact("pr_base").to_string();
-                                if let Some(next) = crate::services::review::conflict_followup(&number, &base, &output) {
+                                let files: Vec<&str> = stopped.iter().map(String::as_str).collect();
+                                let next = crate::services::review::conflict_followup(&number, &base, &output)
+                                    .or_else(|| crate::services::review::merge_stopped(&number, &base, &files));
+                                if let Some(next) = next {
                                     if let Some(run) = entry.runs.get_mut(&node) {
                                         run.log = next.message;
                                         run.remedies = next.remedies;
