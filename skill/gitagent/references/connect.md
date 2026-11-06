@@ -14,10 +14,12 @@ they change the agent's configuration.
 
 ## Claude Desktop
 
-Settings → Developer → Edit Config opens `claude_desktop_config.json`
-(`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on
-Windows, `~/.config/Claude/` on Linux). Add the entry, save, then quit Claude
-and open it again:
+For the Chat side of Claude Desktop, open `claude_desktop_config.json` in a
+text editor: `~/Library/Application Support/Claude/` on macOS,
+`%APPDATA%\Claude\` on Windows, `~/.config/Claude/` on Linux. Claude's
+Settings no longer has a Developer → Edit Config item; the app's MCP window has
+an Open config file button instead. Add the entry, save, then quit Claude
+completely and open it again. The server then shows under Connectors:
 
 ```json
 {
@@ -31,6 +33,9 @@ If the file already has an `mcpServers` section, add only the `"gitagent"` entry
 to it.
 
 ## Claude Code
+
+This connects the `claude` command and the Code tab of Claude Desktop, not
+its Chat side. "Already exists" means it is already connected there.
 
 ```bash
 claude mcp add gitagent --scope user -- "<app>" mcp
