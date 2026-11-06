@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The merge failure handling now considers whether the repository allows
+  auto-merge. If auto-merge is allowed, it offers this as a remedy when the base
+  branch policy prohibits the merge. This helps users resolve merge conflicts
+  more efficiently by providing an additional option.
+
 ## [0.1.171] - 2026-11-06
 
 ### Fixed
