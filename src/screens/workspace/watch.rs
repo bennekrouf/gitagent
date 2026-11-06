@@ -107,7 +107,7 @@ pub(super) fn use_repo_changes(
                     .insert(path.clone(), now)
                     .is_some_and(|before| before != now)
                 {
-                    reprobe(path, statuses);
+                    reprobe_local(path, statuses);
                 }
             }
         }
