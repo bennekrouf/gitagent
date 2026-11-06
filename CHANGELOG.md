@@ -17,6 +17,13 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent now handles merge conflicts during ongoing merges, allowing users to
+  resolve conflicts and continue the merge process more efficiently.
+
 ## [0.1.174] - 2026-11-06
 
 ### Added
