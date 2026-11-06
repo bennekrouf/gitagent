@@ -1331,6 +1331,14 @@ a.pr-failed-check:hover {
     border-color: var(--red);
 }
 .pr-failed-more { color: var(--text3); }
+.pr-hint {
+    margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text2);
+}
+.pr-hint-text code { font-size: 10.5px; color: var(--red); word-break: break-word; }
+.pr-hint-btn { font-size: 11px; padding: 2px 8px; text-decoration: none; }
+.pr-hint-done { margin-top: 4px; font-size: 11px; color: var(--green); }
+.pr-hint-err { margin-top: 4px; font-size: 11px; color: var(--red); white-space: pre-wrap; }
 .pr-failed-more:hover { color: var(--text1); text-decoration: underline; }
 
 /* ── Deselecting a file against its own diff ──────────────────────── */

@@ -158,7 +158,7 @@ pub(super) async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
 /// cargo colours its output, and GitHub Actions keeps the escapes in the
 /// stored log. Rendered as text they show up as `^[[1m^[[92m` in front of
 /// every interesting line, which is worse than no colour at all.
-pub(super) fn strip_ansi(line: &str) -> String {
+pub(crate) fn strip_ansi(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
@@ -194,7 +194,7 @@ pub(super) fn distil_log(raw: &str, context: usize) -> String {
                 _ => text.to_string(),
             }
         })
-        .map(|line| strip_ansi(line.trim_start_matches('\u{feff}')))
+        .map(|line| strip_ansi(&line.trim_start_matches('\u{feff}').replace("^[", "\u{1b}")))
         .filter(|line| {
             let l = line.trim();
             !l.is_empty()
