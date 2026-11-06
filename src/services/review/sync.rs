@@ -93,7 +93,11 @@ pub(super) fn merge_failure(
     auto_merge: bool,
 ) -> StepFailure {
     if is_policy_hold(&message) {
-        return policy_guide(number, &message, auto_merge);
+        let hold = Hold {
+            auto_merge,
+            ..Hold::default()
+        };
+        return policy_guide(number, &message, &hold);
     }
     if !message.contains("not mergeable") {
         return StepFailure {
@@ -129,9 +133,96 @@ async fn auto_merge_allowed(repo: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// A required check that already came back red.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct FailedCheck {
+    pub name: String,
+    pub link: String,
+}
+
+impl FailedCheck {
+    /// The Actions run it belongs to, for `gh run rerun`: `…/actions/runs/<id>/job/…`.
+    fn run_id(&self) -> Option<&str> {
+        let rest = self.link.split("/actions/runs/").nth(1)?;
+        let id = rest.split('/').next()?;
+        (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+    }
+}
+
+/// What is known about a pull request GitHub is holding, read once so the
+/// fixes offered fit it: watching checks that already failed only ends at
+/// once, with gh's table and nothing that moves the merge on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Hold {
+    /// The repository lets GitHub merge it by itself once the rules are met.
+    pub auto_merge: bool,
+    /// The person may merge past the rules (`--admin`).
+    pub admin: bool,
+    /// Checks that already failed. Empty while they are still running.
+    pub failed: Vec<FailedCheck>,
+}
+
+impl Hold {
+    pub(super) async fn read(repo: &str, number: &str) -> Self {
+        let admin = git::run(
+            repo,
+            "gh",
+            &[
+                "repo",
+                "view",
+                "--json",
+                "viewerPermission",
+                "-q",
+                ".viewerPermission",
+            ],
+        )
+        .await
+        .map(|out| out.trim() == "ADMIN")
+        .unwrap_or(false);
+        // `gh pr checks` exits non-zero when one failed, and git::run keeps
+        // only stderr then: `; true` keeps its JSON on stdout.
+        let checks = git::run(
+            repo,
+            "sh",
+            &[
+                "-c",
+                r#"gh pr checks "$1" --required --json name,bucket,link; true"#,
+                "sh",
+                number,
+            ],
+        )
+        .await
+        .unwrap_or_default();
+        Hold {
+            auto_merge: auto_merge_allowed(repo).await,
+            admin,
+            failed: failed_checks(&checks),
+        }
+    }
+}
+
+/// The checks `gh pr checks --json name,bucket,link` reports as failed or cancelled.
+pub(super) fn failed_checks(json: &str) -> Vec<FailedCheck> {
+    let start = json.find('[').unwrap_or(json.len());
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str(&json[start..]) else {
+        return vec![];
+    };
+    items
+        .iter()
+        .filter(|c| matches!(c["bucket"].as_str(), Some("fail" | "cancel")))
+        .map(|c| FailedCheck {
+            name: c["name"].as_str().unwrap_or("").to_string(),
+            link: c["link"].as_str().unwrap_or("").to_string(),
+        })
+        .collect()
+}
+
 /// A pull request GitHub will not merge yet because the branch's rules are
 /// not met — required checks still running or red, or a required review.
-pub(super) fn policy_guide(number: &str, message: &str, auto_merge: bool) -> StepFailure {
+pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFailure {
+    if !hold.failed.is_empty() {
+        return failed_checks_guide(number, message, hold);
+    }
     let guide = format!(
         "GitHub is holding #{number}: the rules on its base branch are not met yet. \
          It has no conflicts, and nothing has been merged or changed.\n\n\
@@ -144,7 +235,7 @@ pub(super) fn policy_guide(number: &str, message: &str, auto_merge: bool) -> Ste
          Not expecting this? The base branch has a protection rule or ruleset that \
          requires checks (GitHub \u{2192} Settings \u{2192} Branches / Rules). Remove that \
          requirement there to merge without waiting.\n\n{message}",
-        auto_line = if auto_merge {
+        auto_line = if hold.auto_merge {
             "Or let GitHub merge it by itself once everything passes, and move on. "
         } else {
             ""
@@ -154,19 +245,100 @@ pub(super) fn policy_guide(number: &str, message: &str, auto_merge: bool) -> Ste
     let watch = Remedy::new(
         &format!("Wait for the checks, then merge #{number}"),
         "sh",
-        &[
-            "-c",
-            r#"gh pr checks "$1" --watch --interval 15"#,
-            "sh",
-            number,
-        ],
+        &["-c", WATCH, "sh", number],
     );
     let watch = Remedy {
         display: format!("gh pr checks {number} --watch   (then merges again)"),
         ..watch
     };
-    // The merge, done another way: GitHub finishes it once the rules are met.
-    let auto = Remedy::completes(
+    let mut remedies = vec![watch];
+    if hold.auto_merge {
+        remedies.push(auto_merge(number));
+    }
+    if hold.admin {
+        remedies.push(admin_merge(number));
+    }
+    StepFailure {
+        message: guide,
+        remedies,
+    }
+}
+
+/// Watches the checks; a red one ends it with a sentence, not only gh's table.
+const WATCH: &str = r#"gh pr checks "$1" --watch --interval 15 || {
+  echo
+  echo "A required check failed, so #$1 was not merged. Its name is marked fail above."
+  exit 1
+}"#;
+
+/// Required checks already failed: waiting would end at once and change nothing.
+fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure {
+    let names: Vec<&str> = hold.failed.iter().map(|c| c.name.as_str()).collect();
+    let links: Vec<String> = hold
+        .failed
+        .iter()
+        .filter(|c| !c.link.is_empty())
+        .map(|c| format!("- {}: {}", c.name, c.link))
+        .collect();
+    let guide = format!(
+        "#{number} can\u{2019}t merge: {} required check{} failed ({}). It has no conflicts, \
+         and nothing has been merged or changed.\n\n\
+         If the failure looks unrelated to this change (a timeout, a flaky test, a runner \
+         problem), Run the failed checks again (below): it reruns only those, waits, and \
+         merges if they pass.\n\n\
+         If the change broke them, fix it in a commit on the branch and run Review \u{2192} \
+         Merge again.{}\n\n{}\n\n{message}",
+        names.len(),
+        if names.len() == 1 { "" } else { "s" },
+        names.join(", "),
+        if hold.admin {
+            " Or, if you are sure, merge it anyway: as an admin you can skip the checks."
+        } else {
+            ""
+        },
+        links.join("\n"),
+    );
+    let mut runs: Vec<&str> = hold.failed.iter().filter_map(FailedCheck::run_id).collect();
+    runs.sort_unstable();
+    runs.dedup();
+    let mut remedies = vec![];
+    if !runs.is_empty() {
+        // Run ids and the number travel as arguments, never spliced in.
+        let script = format!(
+            r#"pr="$1"; shift
+for run in "$@"; do gh run rerun "$run" --failed || exit 1; done
+echo "Rerunning the failed checks of #$pr; waiting for them..."
+sleep 20
+{WATCH_BODY}"#,
+            WATCH_BODY = WATCH.replace("\"$1\"", "\"$pr\"").replace("#$1", "#$pr"),
+        );
+        let mut args = vec!["-c", script.as_str(), "sh", number];
+        args.extend(runs.iter().copied());
+        let rerun = Remedy::new(
+            &format!("Run the failed checks again, then merge #{number}"),
+            "sh",
+            &args,
+        );
+        remedies.push(Remedy {
+            display: format!(
+                "gh run rerun {} --failed   (then waits for the checks and merges)",
+                runs.join(" ")
+            ),
+            ..rerun
+        });
+    }
+    if hold.admin {
+        remedies.push(admin_merge(number));
+    }
+    StepFailure {
+        message: guide,
+        remedies,
+    }
+}
+
+/// The merge, done another way: GitHub finishes it once the rules are met.
+fn auto_merge(number: &str) -> Remedy {
+    Remedy::completes(
         &format!("Merge #{number} automatically once it passes"),
         "gh",
         &[
@@ -177,15 +349,23 @@ pub(super) fn policy_guide(number: &str, message: &str, auto_merge: bool) -> Ste
             "--squash",
             "--delete-branch",
         ],
-    );
-    let mut remedies = vec![watch];
-    if auto_merge {
-        remedies.push(auto);
-    }
-    StepFailure {
-        message: guide,
-        remedies,
-    }
+    )
+}
+
+/// The merge past the branch's rules, for someone allowed to.
+fn admin_merge(number: &str) -> Remedy {
+    Remedy::completes(
+        &format!("Merge #{number} anyway, skipping the required checks"),
+        "gh",
+        &[
+            "pr",
+            "merge",
+            number,
+            "--admin",
+            "--squash",
+            "--delete-branch",
+        ],
+    )
 }
 
 /// A pull request that conflicts with its base, and the ways out of it.
@@ -263,8 +443,11 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
             Err(e) => match merged_anyway(repo, &number, state.artifact("pr_head"), &e).await {
                 Some(out) => out,
                 None => {
-                    let auto = is_policy_hold(&e) && auto_merge_allowed(repo).await;
-                    return Err(merge_failure(&number, state.artifact("pr_base"), e, auto));
+                    if is_policy_hold(&e) {
+                        let hold = Hold::read(repo, &number).await;
+                        return Err(policy_guide(&number, &e, &hold));
+                    }
+                    return Err(merge_failure(&number, state.artifact("pr_base"), e, false));
                 }
             },
         },

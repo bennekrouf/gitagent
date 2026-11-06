@@ -588,3 +588,59 @@ fn auto_merge_is_only_offered_where_the_repository_allows_it() {
     assert!(!failure.remedies[0].args.iter().any(|a| a == "--auto"));
     assert!(!failure.message.contains("merge it by itself"));
 }
+
+#[test]
+fn checks_that_already_failed_offer_a_rerun_not_a_wait() {
+    // publishkit#67: three required checks red. "Wait for the checks" ended
+    // at once with gh's table, and nothing moved the merge on.
+    let json = r#"[{"bucket":"fail","link":"https://github.com/o/r/actions/runs/41919067445/job/1","name":"ci / test (macos-latest)"},
+{"bucket":"fail","link":"https://github.com/o/r/actions/runs/41919067445/job/2","name":"ci / test (windows-latest)"},
+{"bucket":"pass","link":"https://github.com/o/r/actions/runs/41919067445/job/3","name":"ci / fmt"}]"#;
+    let failed = failed_checks(json);
+    assert_eq!(failed.len(), 2);
+    let hold = Hold {
+        auto_merge: false,
+        admin: true,
+        failed,
+    };
+    let failure = policy_guide(
+        "67",
+        "X Pull request o/r#67 is not mergeable: the base branch policy prohibits the merge.",
+        &hold,
+    );
+    assert!(
+        failure.message.contains("2 required checks failed"),
+        "{}",
+        failure.message
+    );
+    assert!(failure.message.contains("ci / test (macos-latest)"));
+    assert!(!failure.remedies.iter().any(|r| r.label.starts_with("Wait")));
+
+    let rerun = &failure.remedies[0];
+    assert!(rerun.label.starts_with("Run the failed checks again"));
+    assert_eq!(
+        rerun.args[3..],
+        ["67", "41919067445"],
+        "one rerun per run, as arguments"
+    );
+    assert!(rerun.args[1].contains("gh run rerun \"$run\" --failed"));
+    assert!(rerun.args[1].contains("gh pr checks \"$pr\" --watch"));
+    assert!(rerun.retry_after, "once they pass, the merge is next");
+
+    let admin = &failure.remedies[1];
+    assert_eq!(admin.args[0..4], ["pr", "merge", "67", "--admin"]);
+    assert!(!admin.retry_after);
+}
+
+#[test]
+fn skipping_the_checks_is_only_offered_to_an_admin() {
+    let hold = Hold {
+        failed: failed_checks(r#"[{"bucket":"fail","link":"","name":"ci"}]"#),
+        ..Default::default()
+    };
+    let failure = policy_guide("1", "policy", &hold);
+    assert!(!failure
+        .remedies
+        .iter()
+        .any(|r| r.args.iter().any(|a| a == "--admin")));
+}
