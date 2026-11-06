@@ -532,6 +532,15 @@ pub(super) fn reprobe(path: String, mut statuses: Signal<BTreeMap<String, RepoSt
     });
 }
 
+/// `reprobe` for a file change: git is read again, the pull requests from a
+/// check in the last few minutes are kept rather than asked of GitHub again.
+pub(super) fn reprobe_local(path: String, mut statuses: Signal<BTreeMap<String, RepoStatus>>) {
+    spawn(async move {
+        let status = probe::probe_local(&path).await;
+        statuses.write().insert(path, status);
+    });
+}
+
 /// Re-reads the workspace folder, re-probes every repository in it
 /// concurrently, and opens on whichever one wants a person if nothing has been
 /// chosen yet.

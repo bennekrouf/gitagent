@@ -229,6 +229,40 @@ pub async fn probe_recent(repo: &str) -> RepoStatus {
 /// "clean" with a release due, and the Release flow then found nothing to
 /// release.
 async fn probe_now(repo: &str) -> RepoStatus {
+    probe_with(repo, None).await
+}
+
+/// How long the pull requests read by one check are reused by the checks a
+/// file change sets off. Edits land every few seconds while someone — or
+/// Claude — is writing code, and each check used to ask GitHub again: a
+/// GraphQL query every two seconds per busy repository, which emptied the
+/// hourly budget in well under an hour.
+pub const PRS_REUSED_FOR: Duration = Duration::from_secs(5 * 60);
+
+/// Re-reads what a file change can alter — branch, changes, counts — and
+/// keeps the pull requests from a check in the last five minutes rather than
+/// asking GitHub again. Older than that, or never checked, it is a full check.
+pub async fn probe_local(repo: &str) -> RepoStatus {
+    let kept = recent().lock().ok().and_then(|map| {
+        map.get(repo)
+            .filter(|(at, _)| Instant::now().saturating_duration_since(*at) < PRS_REUSED_FOR)
+            .cloned()
+    });
+    let Some((at, old)) = kept else {
+        return probe(repo).await;
+    };
+    let status = probe_with(repo, Some(&old)).await;
+    if let Ok(mut map) = recent().lock() {
+        // The time of the forge answer it carries, so it is asked again once
+        // that answer is five minutes old.
+        map.insert(repo.to_string(), (at, status.clone()));
+    }
+    status
+}
+
+/// `reuse`: a previous check whose pull requests stand in for asking the
+/// forge — and whose fetch of the base branch stands too.
+async fn probe_with(repo: &str, reuse: Option<&RepoStatus>) -> RepoStatus {
     let (branch, (changes, tracked_changes), url, (base, _), in_progress) = tokio::join!(
         async { git::current_branch(repo).await.unwrap_or_default() },
         async {
@@ -249,22 +283,31 @@ async fn probe_now(repo: &str) -> RepoStatus {
     // query priced against the same hourly budget, and the list already holds
     // it. Two queries per repository per refresh was what ran the budget dry.
     let own_pr = async {
-        match forge {
-            Forge::GitHub => None,
+        match (&forge, reuse) {
+            (Forge::GitHub, _) => None,
+            (_, Some(old)) => old.pr.clone().filter(|p| p.head == branch),
             _ => open_pr(repo, &forge).await,
         }
     };
-    let (pr, listed, (release, unmerged, (ahead, behind))) =
-        tokio::join!(own_pr, list_open_prs(repo, &forge), async {
-            if forge != Forge::None {
-                fetch_base(repo, &base).await;
-            }
-            tokio::join!(
-                release::status(repo, &base),
-                unmerged_commits(repo, &base),
-                ahead_behind(repo),
-            )
-        },);
+    let listed = async {
+        match reuse {
+            Some(old) => match &old.prs_error {
+                Some(e) => Err(e.clone()),
+                None => Ok(old.prs.clone()),
+            },
+            None => list_open_prs(repo, &forge).await,
+        }
+    };
+    let (pr, listed, (release, unmerged, (ahead, behind))) = tokio::join!(own_pr, listed, async {
+        if forge != Forge::None && reuse.is_none() {
+            fetch_base(repo, &base).await;
+        }
+        tokio::join!(
+            release::status(repo, &base),
+            unmerged_commits(repo, &base),
+            ahead_behind(repo),
+        )
+    },);
     let pr = match (&forge, &listed) {
         (Forge::GitHub, Ok(list)) => list.iter().find(|p| p.head == branch).cloned(),
         _ => pr,
