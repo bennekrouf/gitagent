@@ -2,6 +2,7 @@ pub mod awake;
 pub mod branches;
 pub mod busy;
 pub mod catalogue;
+pub mod checkhint;
 pub mod conflicts;
 pub mod diffview;
 pub mod env;

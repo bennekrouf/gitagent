@@ -258,7 +258,7 @@ pub(super) fn flow_context(
                                                         diff_panel.set(None);
                                                     }
                                                 },
-                                                PrCard { pr: pr.clone() }
+                                                PrCard { pr: pr.clone(), repo: repo.clone() }
                                                 // The one being reviewed can be read in
                                                 // full beside the map, in the run view.
                                                 if pr.number == pr_id && *run_view.read() {
@@ -286,7 +286,7 @@ pub(super) fn flow_context(
                 }
             } else if let Some(pr) = status_map.get(&repo).and_then(|s| s.pr.clone()) {
                 div { class: "pr-solo",
-                    PrCard { pr: pr.clone() }
+                    PrCard { pr: pr.clone(), repo: repo.clone() }
                     if *run_view.read() {
                         button {
                             class: "btn pr-diff-btn",

@@ -8,11 +8,15 @@
 
 use dioxus::prelude::*;
 
+use crate::services::checkhint::{self, Hint};
 use crate::services::probe::{Checks, PrBrief};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct PrCardProps {
     pub pr: PrBrief,
+    /// Where the pull request's repository is checked out: what working out
+    /// why its checks failed, and updating it from its base, run in.
+    pub repo: String,
 }
 
 fn checks_label(checks: Checks) -> (&'static str, &'static str) {
@@ -28,6 +32,24 @@ fn checks_label(checks: Checks) -> (&'static str, &'static str) {
 pub fn PrCard(props: PrCardProps) -> Element {
     let pr = props.pr.clone();
     let (label, css) = checks_label(pr.checks);
+
+    // Why the checks failed, worked out once per failure (see `checkhint`).
+    let mut hint = use_signal(|| None::<Hint>);
+    let mut update = use_signal(|| None::<Result<String, String>>);
+    let mut updating = use_signal(|| false);
+    let repo = props.repo.clone();
+    let watched = pr.clone();
+    use_effect(use_reactive!(|repo, watched| {
+        hint.set(None);
+        update.set(None);
+        if watched.checks != Checks::Failing || repo.is_empty() {
+            return;
+        }
+        let (repo, watched) = (repo.clone(), watched.clone());
+        spawn(async move {
+            hint.set(Some(checkhint::why_failed(&repo, &watched).await));
+        });
+    }));
 
     rsx! {
         div { class: "pr-card",
@@ -67,6 +89,59 @@ pub fn PrCard(props: PrCardProps) -> Element {
                         "open ↗"
                     }
                 }
+            }
+            // What failed, in a sentence, and the one thing to do about it.
+            match hint.read().clone() {
+                Some(Hint::Behind { base, count }) => rsx! {
+                    div { class: "pr-hint",
+                        span { class: "pr-hint-text",
+                            "Checks failed. {base} has {count} newer commit"
+                            if count != 1 { "s" }
+                            " that may already fix this."
+                        }
+                        button {
+                            class: "btn pr-hint-btn",
+                            disabled: *updating.read(),
+                            title: "Merge the latest {base} into this pull request's branch and push it, so its checks run again. Done aside: your checked-out branch and files are not touched.",
+                            onclick: {
+                                let repo = props.repo.clone();
+                                let pr = pr.clone();
+                                move |evt: Event<MouseData>| {
+                                    evt.stop_propagation();
+                                    let (repo, pr) = (repo.clone(), pr.clone());
+                                    updating.set(true);
+                                    spawn(async move {
+                                        let done = checkhint::update_from_base(&repo, &pr).await;
+                                        checkhint::forget(&repo, &pr);
+                                        update.set(Some(done));
+                                        updating.set(false);
+                                    });
+                                }
+                            },
+                            if *updating.read() { "Updating\u{2026}" } else { "Update from {base}" }
+                        }
+                    }
+                },
+                Some(Hint::Error(line)) => rsx! {
+                    div { class: "pr-hint",
+                        span { class: "pr-hint-text", "Checks failed: " code { "{line}" } }
+                        if let Some(first) = pr.failed.iter().find(|f| !f.url.is_empty()) {
+                            a {
+                                class: "btn pr-hint-btn",
+                                href: "{first.url}",
+                                target: "_blank",
+                                onclick: |evt: Event<MouseData>| evt.stop_propagation(),
+                                "See the error \u{2197}"
+                            }
+                        }
+                    }
+                },
+                _ => rsx! {},
+            }
+            match update.read().clone() {
+                Some(Ok(msg)) => rsx! { div { class: "pr-hint-done", "{msg}" } },
+                Some(Err(msg)) => rsx! { div { class: "pr-hint-err", "{msg}" } },
+                None => rsx! {},
             }
             // Which checks, each straight to its own log. Without this the
             // card can only say that something is red, and finding what means
