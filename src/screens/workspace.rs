@@ -368,6 +368,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         &settling.read(),
     );
     rows::mark_live_runs(&mut entries, &live_runs.read());
+    rows::mark_held(&mut entries, crate::services::busy::held);
 
     let active = selected_repo.read().clone();
     let cfg = props.llm_config.read().clone();

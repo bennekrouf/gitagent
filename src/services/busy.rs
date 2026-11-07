@@ -286,6 +286,14 @@ fn refusal(holder: &Holder) -> String {
     )
 }
 
+/// Whether any run holds `repo` right now, in this process or another: the
+/// one fact every flow sets before it starts and clears when it ends, so the
+/// list can say "running" even where it has no run state of its own to read.
+pub fn held(repo: &str) -> bool {
+    let key = key(repo);
+    read(&file_for(&key)).is_some_and(|h| still_held(&h, &key))
+}
+
 /// Whether another process holds `repo` right now — what a take-over waits
 /// out, after asking that process's run to end, before starting its own.
 pub fn held_elsewhere(repo: &str) -> bool {
