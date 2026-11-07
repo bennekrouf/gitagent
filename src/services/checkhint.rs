@@ -80,8 +80,7 @@ async fn work_out(repo: &str, pr: &PrBrief) -> Hint {
         let Some(job) = job_id(&check.url) else {
             continue;
         };
-        if let Ok(log) = git::run(repo, "gh", &["run", "view", "--job", &job, "--log-failed"]).await
-        {
+        if let Ok(log) = git::job_log(repo, &job).await {
             if let Some(line) = first_error(&log) {
                 return Hint::Error(line);
             }

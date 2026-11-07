@@ -20,9 +20,6 @@ use super::graph::Remedy;
 
 /// How long the run is given to appear after the tag was pushed.
 const APPEAR: Duration = Duration::from_secs(120);
-/// How often the run is asked about. A release build takes tens of minutes,
-/// and every look costs a call against the hourly GitHub budget.
-const POLL: Duration = Duration::from_secs(30);
 /// A job running this long is stuck, not slow: release builds finish well
 /// inside it. Past it the step stops and offers to cancel.
 const STUCK: Duration = Duration::from_secs(60 * 60);
@@ -146,6 +143,9 @@ pub async fn watch(repo: &str, on_line: &mut dyn FnMut(&str)) -> Result<StepOutc
     let mut running_since: BTreeMap<String, Instant> = BTreeMap::new();
     let mut misses = 0;
     let mut said = Instant::now();
+    // A release build takes tens of minutes, and every look costs a call
+    // against the hourly GitHub budget: looks start at 30 s and stretch to 3 min.
+    let mut backoff = super::poll::Backoff::build();
     loop {
         let view = match look(repo, &run.id).await {
             Some(view) => {
@@ -162,7 +162,7 @@ pub async fn watch(repo: &str, on_line: &mut dyn FnMut(&str)) -> Result<StepOutc
                         run.workflow, run.url
                     )));
                 }
-                tokio::time::sleep(POLL).await;
+                backoff.sleep().await;
                 continue;
             }
         };
@@ -219,7 +219,7 @@ pub async fn watch(repo: &str, on_line: &mut dyn FnMut(&str)) -> Result<StepOutc
             });
         }
 
-        tokio::time::sleep(POLL).await;
+        backoff.sleep().await;
     }
 }
 
@@ -303,6 +303,7 @@ fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
 /// The run the push of `tag` started. It can take a few seconds to show up.
 async fn find_run(repo: &str, tag: &str) -> Option<RunRef> {
     let started = Instant::now();
+    let mut backoff = super::poll::Backoff::new(Duration::from_secs(10), Duration::from_secs(30));
     loop {
         let listed = git::run(
             repo,
@@ -328,7 +329,7 @@ async fn find_run(repo: &str, tag: &str) -> Option<RunRef> {
         if started.elapsed() > APPEAR {
             return None;
         }
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        backoff.sleep().await;
     }
 }
 

@@ -121,27 +121,6 @@ pub(super) fn is_policy_hold(message: &str) -> bool {
     message.contains("base branch policy prohibits")
 }
 
-/// Whether the repository lets a pull request be set to merge itself once its
-/// rules are met. Off by default on GitHub; offering `--auto` where it is off
-/// only trades one refusal for another.
-async fn auto_merge_allowed(repo: &str) -> bool {
-    git::run(
-        repo,
-        "gh",
-        &[
-            "repo",
-            "view",
-            "--json",
-            "autoMergeAllowed",
-            "-q",
-            ".autoMergeAllowed",
-        ],
-    )
-    .await
-    .map(|out| out.trim() == "true")
-    .unwrap_or(false)
-}
-
 /// A required check that already came back red.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct FailedCheck {
@@ -173,21 +152,21 @@ pub(super) struct Hold {
 
 impl Hold {
     pub(super) async fn read(repo: &str, number: &str) -> Self {
-        let admin = git::run(
+        // One look at the repository for both: its settings and your role.
+        let about = git::run(
             repo,
             "gh",
             &[
                 "repo",
                 "view",
                 "--json",
-                "viewerPermission",
-                "-q",
-                ".viewerPermission",
+                "autoMergeAllowed,viewerPermission",
             ],
         )
         .await
-        .map(|out| out.trim() == "ADMIN")
-        .unwrap_or(false);
+        .ok()
+        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
+        .unwrap_or_default();
         // `gh pr checks` exits non-zero when one failed, and git::run keeps
         // only stderr then: `; true` keeps its JSON on stdout.
         let checks = git::run(
@@ -203,8 +182,8 @@ impl Hold {
         .await
         .unwrap_or_default();
         Hold {
-            auto_merge: auto_merge_allowed(repo).await,
-            admin,
+            auto_merge: about["autoMergeAllowed"] == true,
+            admin: about["viewerPermission"] == "ADMIN",
             failed: failed_checks(&checks),
         }
     }
@@ -257,7 +236,7 @@ pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFail
         &["-c", WATCH, "sh", number],
     );
     let watch = Remedy {
-        display: format!("gh pr checks {number} --watch   (then merges again)"),
+        display: format!("gh pr checks {number}   (waits, longer each time, then merges again)"),
         ..watch
     };
     let mut remedies = vec![watch];
@@ -273,12 +252,8 @@ pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFail
     }
 }
 
-/// Watches the checks; a red one ends it with a sentence, not only gh's table.
-const WATCH: &str = r#"gh pr checks "$1" --watch --interval 15 || {
-  echo
-  echo "A required check failed, so #$1 was not merged. Its name is marked fail above."
-  exit 1
-}"#;
+/// Watches the checks with backoff; a red one ends it with a sentence, not only gh's table.
+const WATCH: &str = crate::services::poll::WAIT_FOR_CHECKS;
 
 /// Required checks already failed: waiting would end at once and change nothing.
 fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure {
@@ -317,9 +292,8 @@ fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure 
             r#"pr="$1"; shift
 for run in "$@"; do gh run rerun "$run" --failed || exit 1; done
 echo "Rerunning the failed checks of #$pr; waiting for them..."
-sleep 20
-{WATCH_BODY}"#,
-            WATCH_BODY = WATCH.replace("\"$1\"", "\"$pr\"").replace("#$1", "#$pr"),
+set -- "$pr"
+{WATCH}"#
         );
         let mut args = vec!["-c", script.as_str(), "sh", number];
         args.extend(runs.iter().copied());
@@ -447,6 +421,7 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
             &["pr", "merge", &number, "--squash", "--delete-branch"],
         )
         .await
+        .inspect(|_| git::forget_prs(repo))
         {
             Ok(out) => out,
             Err(e) => match merged_anyway(repo, &number, state.artifact("pr_head"), &e).await {

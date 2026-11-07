@@ -253,6 +253,7 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
     // stopped at it. So the step waits for them, up to `CI_WAIT`, rather
     // than reporting a pending state that only a person could act on.
     let waiting_since = std::time::Instant::now();
+    let mut backoff = crate::services::poll::Backoff::checks();
     let (value, lines, failing, pass, fail, pending) = loop {
         let out = git::run(
             repo,
@@ -274,7 +275,7 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
             && crate::services::store::trust_all()
             && waiting_since.elapsed() < CI_WAIT
         {
-            tokio::time::sleep(CI_POLL).await;
+            backoff.sleep().await;
             continue;
         }
         break (value, lines, failing, pass, fail, pending);
@@ -306,24 +307,15 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         )
     };
 
-    // Only for checks that actually failed, and only the first few: each one is
-    // a separate round-trip that downloads the whole job log.
+    // The log of the first failed check only: each is a whole log downloaded
+    // against the hourly budget, and the jobs of one matrix nearly always fail
+    // for the same reason. The others are listed with their links.
     let mut detail = String::new();
-    for (name, url) in failing.iter().take(3) {
+    for (shown, (name, url)) in failing.iter().enumerate() {
         detail.push_str(&format!("\n── {name} ──\n"));
-        match job_id(url) {
+        match job_id(url).filter(|_| shown == 0) {
             Some(id) => {
-                let (_, raw) = git::run_command(
-                    "gh",
-                    &[
-                        "run".into(),
-                        "view".into(),
-                        "--job".into(),
-                        id.to_string(),
-                        "--log-failed".into(),
-                    ],
-                )
-                .await;
+                let raw = git::job_log(repo, id).await.unwrap_or_else(|e| e);
                 let boiled = distil_log(&raw, 30);
                 detail.push_str(if boiled.trim().is_empty() {
                     "(could not read the log)"
@@ -332,6 +324,9 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
                 });
                 detail.push('\n');
             }
+            None if shown > 0 => detail.push_str(
+                "(log not downloaded: usually the same failure as above; the link has it)\n",
+            ),
             None => detail.push_str("(no job log for this check)\n"),
         }
         if !url.is_empty() {
@@ -370,9 +365,6 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
 
 /// How long a Trust all run waits for a pull request's checks to finish.
 const CI_WAIT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
-
-/// How often it asks again while it waits.
-const CI_POLL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Each check on the pull request as a line, the failing ones with their
 /// links, and the passing, failing and pending counts.
@@ -426,28 +418,12 @@ pub(super) async fn squashed_before(
     if head.is_empty() {
         return None;
     }
-    let out = git::run(
-        repo,
-        "gh",
-        &[
-            "pr",
-            "list",
-            "--head",
-            head,
-            "--state",
-            "merged",
-            "--json",
-            "number,headRefOid",
-            "--limit",
-            "5",
-        ],
-    )
-    .await
-    .ok()?;
+    let out = git::prs_with_head(repo, head).await.ok()?;
     let list: serde_json::Value = serde_json::from_str(&out).ok()?;
     let earlier = list
         .as_array()?
         .iter()
+        .filter(|pr| pr["state"] == "MERGED")
         .find(|pr| pr["number"].as_i64().map(|n| n.to_string()).as_deref() != Some(number))?;
     let tip = earlier["headRefOid"].as_str()?.to_string();
     let _ = git::fetch(repo, &["origin", head]).await;

@@ -402,7 +402,32 @@ fn azure_access_steps(org: &str) -> String {
 }
 
 /// Everything that must be true before a run can reach `open_pr`.
+///
+/// On GitHub, `gh auth status` asks GitHub about the token, and every flow's
+/// preflight asked again. A pass is kept for half an hour; a failure never
+/// is, so fixing it shows at once.
 pub async fn check_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
+    type Kept = Option<(std::time::Instant, Vec<Check>)>;
+    static PASSED: std::sync::Mutex<Kept> = std::sync::Mutex::new(None);
+    const KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    if *forge != Forge::GitHub {
+        return checked_credentials(forge, repo).await;
+    }
+    if let Some((at, checks)) = PASSED.lock().ok().and_then(|g| g.clone()) {
+        if at.elapsed() < KEEP {
+            return checks;
+        }
+    }
+    let checks = checked_credentials(forge, repo).await;
+    if checks.iter().all(|c| c.ok) {
+        if let Ok(mut g) = PASSED.lock() {
+            *g = Some((std::time::Instant::now(), checks.clone()));
+        }
+    }
+    checks
+}
+
+async fn checked_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
     match forge {
         Forge::GitHub => {
             if !git::has_gh().await {
@@ -560,7 +585,10 @@ pub async fn create_pr(
     body: &str,
 ) -> Result<String, String> {
     match forge {
-        Forge::GitHub => match git::gh_pr_create(repo, base, head, title, body).await {
+        Forge::GitHub => match git::gh_pr_create(repo, base, head, title, body)
+            .await
+            .inspect(|_| git::forget_prs(repo))
+        {
             Ok(url) => Ok(url),
             // Re-running a flow whose pull request already landed is not a
             // failure; adopt the existing one and carry on.
