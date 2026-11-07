@@ -133,24 +133,7 @@ pub(super) async fn merged_branch(
     {
         return None;
     }
-    let out = git::run(
-        repo,
-        "gh",
-        &[
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--state",
-            "all",
-            "--json",
-            "number,state,headRefOid",
-            "--limit",
-            "5",
-        ],
-    )
-    .await
-    .ok()?;
+    let out = git::prs_with_head(repo, branch).await.ok()?;
     let (number, head) = merged_from_list(&out)?;
     // A tip this copy does not have, or one the branch has moved off since
     // (amended, reset), says nothing reliable about what is on it now.

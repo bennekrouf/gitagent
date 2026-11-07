@@ -501,13 +501,6 @@ pub async fn push(repo: &str, branch: &str) -> Result<String, String> {
     run(repo, "git", &["push", "-u", "origin", branch]).await
 }
 
-/// Runs a remedy command anywhere on the machine, returning success plus the
-/// combined output. Unlike `run`, the output is wanted either way — a failed
-/// `brew install` explains itself in stdout as often as in stderr.
-pub async fn run_command(program: &str, args: &[String]) -> (bool, String) {
-    run_streaming(program, args, None, "", &mut |_| {}).await
-}
-
 pub async fn has_gh() -> bool {
     Command::new(super::env::resolve_program("gh"))
         .arg("--version")
@@ -520,3 +513,79 @@ pub async fn has_gh() -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Every pull request whose head is `branch`, as
+/// `gh pr list --head <branch> --state all --json number,state,headRefOid`.
+/// Three steps ask this in one run (merged already? left over on origin?
+/// squashed before?), each its own GraphQL query against the hourly budget:
+/// one answer is kept for a minute and shared, and dropped as soon as a pull
+/// request is opened or merged here.
+pub async fn prs_with_head(repo: &str, branch: &str) -> Result<String, String> {
+    const KEEP: std::time::Duration = std::time::Duration::from_secs(60);
+    let key = (repo.to_string(), branch.to_string());
+    if let Some((at, out)) = head_lists().lock().ok().and_then(|m| m.get(&key).cloned()) {
+        if at.elapsed() < KEEP {
+            return Ok(out);
+        }
+    }
+    let out = run(
+        repo,
+        "gh",
+        &[
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--json",
+            "number,state,headRefOid",
+            "--limit",
+            "10",
+        ],
+    )
+    .await?;
+    if let Ok(mut m) = head_lists().lock() {
+        m.insert(key, (std::time::Instant::now(), out.clone()));
+    }
+    Ok(out)
+}
+
+/// Drops what [`prs_with_head`] kept for `repo`: a pull request was opened,
+/// merged or closed.
+pub fn forget_prs(repo: &str) {
+    if let Ok(mut m) = head_lists().lock() {
+        m.retain(|(r, _), _| r != repo);
+    }
+}
+
+type HeadLists =
+    std::sync::Mutex<std::collections::HashMap<(String, String), (std::time::Instant, String)>>;
+
+fn head_lists() -> &'static HeadLists {
+    static LISTS: std::sync::OnceLock<HeadLists> = std::sync::OnceLock::new();
+    LISTS.get_or_init(Default::default)
+}
+
+/// The failed steps' log of one Actions job (`gh run view --job <id> --log-failed`).
+/// Each is a whole log downloaded against the hourly budget, and a finished
+/// job's log never changes: one download per job, shared by the CI status
+/// step and the pull request card.
+pub async fn job_log(repo: &str, job: &str) -> Result<String, String> {
+    type Logs = std::sync::Mutex<std::collections::HashMap<String, String>>;
+    static LOGS: std::sync::OnceLock<Logs> = std::sync::OnceLock::new();
+    let logs = LOGS.get_or_init(Default::default);
+    if let Some(log) = logs.lock().ok().and_then(|m| m.get(job).cloned()) {
+        return Ok(log);
+    }
+    let log = run(repo, "gh", &["run", "view", "--job", job, "--log-failed"]).await?;
+    if !log.trim().is_empty() {
+        if let Ok(mut m) = logs.lock() {
+            if m.len() > 50 {
+                m.clear();
+            }
+            m.insert(job.to_string(), log.clone());
+        }
+    }
+    Ok(log)
+}

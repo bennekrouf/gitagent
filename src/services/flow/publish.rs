@@ -94,22 +94,7 @@ pub(super) async fn leftover_on_origin(
         return None;
     }
     if Forge::from_key(state.artifact("forge")) == Forge::GitHub {
-        let out = git::run(
-            repo,
-            "gh",
-            &[
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--state",
-                "all",
-                "--json",
-                "number,state",
-            ],
-        )
-        .await
-        .ok()?;
+        let out = git::prs_with_head(repo, branch).await.ok()?;
         let prs: serde_json::Value = serde_json::from_str(&out).ok()?;
         let prs = prs.as_array()?;
         if prs.iter().any(|p| p["state"] == "OPEN") {

@@ -320,7 +320,7 @@ fn checks_still_running_are_not_read_as_a_conflict() {
 
     let watch = &failure.remedies[0];
     assert_eq!(watch.program, "sh");
-    assert!(watch.args[1].contains("gh pr checks \"$1\" --watch"));
+    assert!(watch.args[1].contains("gh pr checks \"$1\" --required"));
     assert_eq!(watch.args[3], "199", "the number travels as an argument");
     assert!(watch.retry_after, "once the checks pass, the merge is next");
     assert!(!watch.abandons);
@@ -624,7 +624,10 @@ fn checks_that_already_failed_offer_a_rerun_not_a_wait() {
         "one rerun per run, as arguments"
     );
     assert!(rerun.args[1].contains("gh run rerun \"$run\" --failed"));
-    assert!(rerun.args[1].contains("gh pr checks \"$pr\" --watch"));
+    assert!(
+        rerun.args[1].contains("set -- \"$pr\"")
+            && rerun.args[1].contains("gh pr checks \"$1\" --required")
+    );
     assert!(rerun.retry_after, "once they pass, the merge is next");
 
     let admin = &failure.remedies[1];

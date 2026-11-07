@@ -16,6 +16,7 @@ pub mod live;
 pub mod llm;
 pub mod notes;
 pub mod notify;
+pub mod poll;
 pub mod probe;
 pub mod published;
 pub mod quiet;
