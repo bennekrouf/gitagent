@@ -78,6 +78,17 @@ pub(super) fn mark_live_runs(entries: &mut [RepoEntry], live_runs: &[LiveRun]) {
     }
 }
 
+/// A repository a flow holds right now reads as running, whatever run state
+/// the window has for it: a Release left on its "Published" step still
+/// offered ▶ Release beside it, as if nothing were running.
+pub(super) fn mark_held(entries: &mut [RepoEntry], held: impl Fn(&str) -> bool) {
+    for entry in entries.iter_mut() {
+        if !entry.phase.is_live() && held(&entry.path) {
+            entry.phase = Phase::Running;
+        }
+    }
+}
+
 /// The title of the step a failed run here stopped on, when that run is still
 /// the answer to what the repository needs — its commit failed and the files
 /// are still uncommitted, say.

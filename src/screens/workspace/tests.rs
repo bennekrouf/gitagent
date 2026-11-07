@@ -832,3 +832,22 @@ fn the_run_says_what_was_approved_without_asking() {
     );
     assert_eq!(middle::unasked_note(&[]), None);
 }
+
+#[test]
+fn a_repository_a_flow_holds_reads_as_running_and_offers_no_start() {
+    use crate::components::repo_sidebar::Phase;
+    let book = FlowBook::defaults();
+    let repos = [repo("/r")];
+    let mut rows = rows::repo_entries(
+        &repos,
+        &BTreeMap::new(),
+        &States::new(),
+        &book,
+        &store::RepoFlows::default(),
+        &BTreeMap::new(),
+    );
+    rows[0].start = Some("Release".into());
+    rows::mark_held(&mut rows, |p| p == "/r");
+    assert_eq!(rows[0].phase, Phase::Running);
+    assert!(rows[0].phase.is_live(), "the row's ▶ is hidden while live");
+}
