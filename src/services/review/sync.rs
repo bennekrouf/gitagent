@@ -234,35 +234,27 @@ pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFail
     if !hold.failed.is_empty() {
         return failed_checks_guide(number, message, hold);
     }
+    // GitAgent never sits waiting for checks: GitHub merges it by itself
+    // when the repository allows that, otherwise the merge is run again
+    // once they are green.
     let guide = format!(
-        "GitHub is holding #{number}: the rules on its base branch are not met yet. \
-         It has no conflicts, and nothing has been merged or changed.\n\n\
-         Usually its required checks are still running. Wait for the checks (below) \
-         watches them and merges as soon as they pass. If one fails, it stops there \
-         and says which; fix it in a commit on the branch and run Review \u{2192} Merge \
-         again.\n\n\
-         {auto_line}If it is waiting on a review instead, that review is the way \
-         forward.\n\n\
+        "#{number} can\u{2019}t merge yet: its required checks are still running. It has \
+         no conflicts, and nothing has been merged or changed.\n\n\
+         {next}\n\n\
+         If it is waiting on a review instead, that review is the way forward.\n\n\
          Not expecting this? The base branch has a protection rule or ruleset that \
          requires checks (GitHub \u{2192} Settings \u{2192} Branches / Rules). Remove that \
-         requirement there to merge without waiting.\n\n{message}",
-        auto_line = if hold.auto_merge {
-            "Or let GitHub merge it by itself once everything passes, and move on. "
+         requirement there to merge without them.\n\n{message}",
+        next = if hold.auto_merge {
+            "Merge automatically (below) hands it to GitHub, which merges it the moment \
+             the checks pass. Nothing here waits for it."
         } else {
-            ""
-        }
+            "Run Review \u{2192} Merge again once the checks are green. To have GitHub \
+             merge it by itself instead, turn on Allow auto-merge in the repository\u{2019}s \
+             Settings \u{2192} General."
+        },
     );
-    // Positional argument rather than text spliced into the script.
-    let watch = Remedy::new(
-        &format!("Wait for the checks, then merge #{number}"),
-        "sh",
-        &["-c", WATCH, "sh", number],
-    );
-    let watch = Remedy {
-        display: format!("gh pr checks {number}   (waits, longer each time, then merges again)"),
-        ..watch
-    };
-    let mut remedies = vec![watch];
+    let mut remedies = vec![];
     if hold.auto_merge {
         remedies.push(auto_merge(number));
     }
@@ -274,9 +266,6 @@ pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFail
         remedies,
     }
 }
-
-/// Watches the checks with backoff; a red one ends it with a sentence, not only gh's table.
-const WATCH: &str = crate::services::poll::WAIT_FOR_CHECKS;
 
 /// Required checks already failed: waiting would end at once and change nothing.
 fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure {
@@ -314,8 +303,8 @@ fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure 
              merged or changed.\n\n\
              The logs show no error in the code, so it looks like CI itself (a timeout, a \
              runner problem, a flaky test). Run the failed checks again (below): it reruns \
-             only those, waits, and merges if they pass.\n\n\
-             If they fail again, open the link to see why.{admin_line}\n\n{}\n\n{message}",
+             only those and returns at once; nothing here waits. Merge again once \
+             they are green. If they fail again, open the link to see why.{admin_line}\n\n{}\n\n{message}",
             links.join("\n"),
         ),
     };
@@ -324,26 +313,28 @@ fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure 
     runs.dedup();
     let mut remedies = vec![];
     if !runs.is_empty() && hold.error.is_none() {
+        // Reruns, and nothing waits on them: GitHub merges once they pass
+        // where auto-merge is allowed; otherwise the merge is run again.
         // Run ids and the number travel as arguments, never spliced in.
+        let auto = if hold.auto_merge {
+            "\ngh pr merge \"$pr\" --auto --squash --delete-branch || exit 1"
+        } else {
+            ""
+        };
         let script = format!(
             r#"pr="$1"; shift
-for run in "$@"; do gh run rerun "$run" --failed || exit 1; done
-echo "Rerunning the failed checks of #$pr; waiting for them..."
-set -- "$pr"
-{WATCH}"#
+for run in "$@"; do gh run rerun "$run" --failed || exit 1; done{auto}"#
         );
         let mut args = vec!["-c", script.as_str(), "sh", number];
         args.extend(runs.iter().copied());
-        let rerun = Remedy::new(
-            &format!("Run the failed checks again, then merge #{number}"),
-            "sh",
-            &args,
-        );
+        let label = if hold.auto_merge {
+            format!("Run the failed checks again; GitHub merges #{number} once they pass")
+        } else {
+            "Run the failed checks again".to_string()
+        };
+        let rerun = Remedy::completes(&label, "sh", &args);
         remedies.push(Remedy {
-            display: format!(
-                "gh run rerun {} --failed   (then waits for the checks and merges)",
-                runs.join(" ")
-            ),
+            display: format!("gh run rerun {} --failed", runs.join(" ")),
             ..rerun
         });
     }

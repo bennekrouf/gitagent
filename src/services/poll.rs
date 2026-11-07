@@ -39,29 +39,6 @@ impl Backoff {
     }
 }
 
-/// The same backoff for a shell remedy: waits for the pull request's checks
-/// (`$1`) from 15 s up to 2 min, for at most an hour, with one `gh pr checks`
-/// per look. Exits 0 once every required check passed, 1 when one failed or
-/// the hour ran out, saying which in a plain line.
-pub const WAIT_FOR_CHECKS: &str = r#"wait=15; spent=0
-while :; do
-  out=$(gh pr checks "$1" --required 2>&1); code=$?
-  [ $code -eq 0 ] && { printf '%s\n' "$out"; echo "Every required check passed."; break; }
-  if [ $code -ne 8 ]; then
-    printf '%s\n' "$out"
-    echo
-    echo "A required check failed, so #$1 was not merged. Its name is marked fail above."
-    exit 1
-  fi
-  if [ $spent -ge 3600 ]; then
-    printf '%s\n' "$out"
-    echo "Still running after an hour; stopped waiting. Run this again to keep waiting."
-    exit 1
-  fi
-  sleep $wait; spent=$((spent + wait))
-  wait=$((wait + wait / 2)); [ $wait -gt 120 ] && wait=120
-done"#;
-
 #[cfg(test)]
 mod tests {
     use super::*;
