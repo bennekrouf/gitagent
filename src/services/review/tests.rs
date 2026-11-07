@@ -316,16 +316,14 @@ fn checks_still_running_are_not_read_as_a_conflict() {
         failure.message
     );
     assert!(!failure.message.contains("<<<<<<<"));
-    assert_eq!(failure.remedies.len(), 2);
+    // Nothing waits on the checks: GitHub is handed the merge instead.
+    assert_eq!(failure.remedies.len(), 1);
+    assert!(failure
+        .remedies
+        .iter()
+        .all(|r| !r.args.iter().any(|a| a.contains("gh pr checks"))));
 
-    let watch = &failure.remedies[0];
-    assert_eq!(watch.program, "sh");
-    assert!(watch.args[1].contains("gh pr checks \"$1\" --required"));
-    assert_eq!(watch.args[3], "199", "the number travels as an argument");
-    assert!(watch.retry_after, "once the checks pass, the merge is next");
-    assert!(!watch.abandons);
-
-    let auto = &failure.remedies[1];
+    let auto = &failure.remedies[0];
     assert_eq!(auto.args[0..4], ["pr", "merge", "199", "--auto"]);
     assert!(
         !auto.retry_after,
@@ -584,9 +582,13 @@ fn auto_merge_is_only_offered_where_the_repository_allows_it() {
             .to_string(),
         false,
     );
-    assert_eq!(failure.remedies.len(), 1);
-    assert!(!failure.remedies[0].args.iter().any(|a| a == "--auto"));
-    assert!(!failure.message.contains("merge it by itself"));
+    assert!(
+        failure.remedies.is_empty(),
+        "no auto-merge, no admin: nothing to wait on"
+    );
+    assert!(failure
+        .message
+        .contains("Merge again once the checks are green"));
 }
 
 #[test]
@@ -602,6 +604,7 @@ fn checks_that_already_failed_offer_a_rerun_not_a_wait() {
         auto_merge: false,
         admin: true,
         failed,
+        error: None,
     };
     let failure = policy_guide(
         "67",
@@ -625,10 +628,13 @@ fn checks_that_already_failed_offer_a_rerun_not_a_wait() {
     );
     assert!(rerun.args[1].contains("gh run rerun \"$run\" --failed"));
     assert!(
-        rerun.args[1].contains("set -- \"$pr\"")
-            && rerun.args[1].contains("gh pr checks \"$1\" --required")
+        !rerun.args[1].contains("gh pr checks"),
+        "it reruns and returns, it never waits"
     );
-    assert!(rerun.retry_after, "once they pass, the merge is next");
+    assert!(
+        !rerun.retry_after,
+        "merging straight after a rerun would only fail"
+    );
 
     let admin = &failure.remedies[1];
     assert_eq!(admin.args[0..4], ["pr", "merge", "67", "--admin"]);
@@ -658,4 +664,41 @@ fn a_merge_already_stopped_offers_finish_whatever_was_printed() {
     assert!(next.remedies.iter().all(|r| !r.label.starts_with("Bring")));
     assert!(next.message.contains("Cargo.lock"));
     assert!(merge_stopped("73", "main", &[]).is_none());
+}
+
+#[test]
+fn an_error_in_the_code_is_shown_and_no_rerun_is_offered() {
+    // polishcast#72: clippy stopped both test jobs on the same line, three
+    // attempts running, and "Run again" was all the step offered.
+    let hold = Hold {
+        admin: false,
+        failed: failed_checks(
+            r#"[{"bucket":"fail","link":"https://github.com/o/r/actions/runs/42103719826/job/128199168175","name":"ci / test (windows-latest)"}]"#,
+        ),
+        error: Some(
+            "crates/app/src/takes.rs:92:16 \u{2014} error: used `expect()` on an `Option` value"
+                .into(),
+        ),
+        ..Default::default()
+    };
+    let failure = policy_guide("72", "policy", &hold);
+    assert!(
+        failure.message.contains("takes.rs:92:16"),
+        "{}",
+        failure.message
+    );
+    assert!(failure.message.contains("won\u{2019}t help"));
+    assert!(failure
+        .remedies
+        .iter()
+        .all(|r| !r.label.starts_with("Run the failed checks")));
+}
+
+#[test]
+fn a_runner_failure_without_a_code_error_still_offers_the_rerun() {
+    use crate::services::checkhint::code_error;
+    assert!(code_error("##[error]The runner has received a shutdown signal.").is_none());
+    assert!(
+        code_error("error: used `expect()` on an `Option` value\n  --> src/a.rs:1:1").is_some()
+    );
 }

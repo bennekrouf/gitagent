@@ -129,6 +129,17 @@ pub(super) struct FailedCheck {
 }
 
 impl FailedCheck {
+    /// The job, for its log: `…/job/<id>`.
+    fn job_id(&self) -> Option<&str> {
+        let id = self
+            .link
+            .split("/job/")
+            .nth(1)?
+            .split(['/', '?', '#'])
+            .next()?;
+        (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+    }
+
     /// The Actions run it belongs to, for `gh run rerun`: `…/actions/runs/<id>/job/…`.
     fn run_id(&self) -> Option<&str> {
         let rest = self.link.split("/actions/runs/").nth(1)?;
@@ -148,6 +159,10 @@ pub(super) struct Hold {
     pub admin: bool,
     /// Checks that already failed. Empty while they are still running.
     pub failed: Vec<FailedCheck>,
+    /// The error in the code the first failed check stopped on (a compiler
+    /// or lint error, a failed test), from its log. Running it again cannot
+    /// pass, so no rerun is offered then.
+    pub error: Option<String>,
 }
 
 impl Hold {
@@ -181,10 +196,18 @@ impl Hold {
         )
         .await
         .unwrap_or_default();
+        let failed = failed_checks(&checks);
+        let mut error = None;
+        if let Some(job) = failed.iter().find_map(FailedCheck::job_id) {
+            if let Ok(log) = git::job_log(repo, job).await {
+                error = crate::services::checkhint::code_error(&log);
+            }
+        }
         Hold {
             auto_merge: about["autoMergeAllowed"] == true,
             admin: about["viewerPermission"] == "ADMIN",
-            failed: failed_checks(&checks),
+            failed,
+            error,
         }
     }
 }
@@ -211,35 +234,27 @@ pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFail
     if !hold.failed.is_empty() {
         return failed_checks_guide(number, message, hold);
     }
+    // GitAgent never sits waiting for checks: GitHub merges it by itself
+    // when the repository allows that, otherwise the merge is run again
+    // once they are green.
     let guide = format!(
-        "GitHub is holding #{number}: the rules on its base branch are not met yet. \
-         It has no conflicts, and nothing has been merged or changed.\n\n\
-         Usually its required checks are still running. Wait for the checks (below) \
-         watches them and merges as soon as they pass. If one fails, it stops there \
-         and says which; fix it in a commit on the branch and run Review \u{2192} Merge \
-         again.\n\n\
-         {auto_line}If it is waiting on a review instead, that review is the way \
-         forward.\n\n\
+        "#{number} can\u{2019}t merge yet: its required checks are still running. It has \
+         no conflicts, and nothing has been merged or changed.\n\n\
+         {next}\n\n\
+         If it is waiting on a review instead, that review is the way forward.\n\n\
          Not expecting this? The base branch has a protection rule or ruleset that \
          requires checks (GitHub \u{2192} Settings \u{2192} Branches / Rules). Remove that \
-         requirement there to merge without waiting.\n\n{message}",
-        auto_line = if hold.auto_merge {
-            "Or let GitHub merge it by itself once everything passes, and move on. "
+         requirement there to merge without them.\n\n{message}",
+        next = if hold.auto_merge {
+            "Merge automatically (below) hands it to GitHub, which merges it the moment \
+             the checks pass. Nothing here waits for it."
         } else {
-            ""
-        }
+            "Run Review \u{2192} Merge again once the checks are green. To have GitHub \
+             merge it by itself instead, turn on Allow auto-merge in the repository\u{2019}s \
+             Settings \u{2192} General."
+        },
     );
-    // Positional argument rather than text spliced into the script.
-    let watch = Remedy::new(
-        &format!("Wait for the checks, then merge #{number}"),
-        "sh",
-        &["-c", WATCH, "sh", number],
-    );
-    let watch = Remedy {
-        display: format!("gh pr checks {number}   (waits, longer each time, then merges again)"),
-        ..watch
-    };
-    let mut remedies = vec![watch];
+    let mut remedies = vec![];
     if hold.auto_merge {
         remedies.push(auto_merge(number));
     }
@@ -252,9 +267,6 @@ pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFail
     }
 }
 
-/// Watches the checks with backoff; a red one ends it with a sentence, not only gh's table.
-const WATCH: &str = crate::services::poll::WAIT_FOR_CHECKS;
-
 /// Required checks already failed: waiting would end at once and change nothing.
 fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure {
     let names: Vec<&str> = hold.failed.iter().map(|c| c.name.as_str()).collect();
@@ -264,49 +276,65 @@ fn failed_checks_guide(number: &str, message: &str, hold: &Hold) -> StepFailure 
         .filter(|c| !c.link.is_empty())
         .map(|c| format!("- {}: {}", c.name, c.link))
         .collect();
-    let guide = format!(
-        "#{number} can\u{2019}t merge: {} required check{} failed ({}). It has no conflicts, \
-         and nothing has been merged or changed.\n\n\
-         If the failure looks unrelated to this change (a timeout, a flaky test, a runner \
-         problem), Run the failed checks again (below): it reruns only those, waits, and \
-         merges if they pass.\n\n\
-         If the change broke them, fix it in a commit on the branch and run Review \u{2192} \
-         Merge again.{}\n\n{}\n\n{message}",
+    let what = format!(
+        "{} required check{} failed ({})",
         names.len(),
         if names.len() == 1 { "" } else { "s" },
         names.join(", "),
-        if hold.admin {
-            " Or, if you are sure, merge it anyway: as an admin you can skip the checks."
-        } else {
-            ""
-        },
-        links.join("\n"),
     );
+    let admin_line = if hold.admin {
+        " Or, if you are sure, merge it anyway: as an admin you can skip the checks."
+    } else {
+        ""
+    };
+    let guide = match &hold.error {
+        // The code is at fault: a rerun gives the same answer every time.
+        Some(error) => format!(
+            "#{number} can\u{2019}t merge: {what}, because of an error in the code:\n\n  \
+             {error}\n\n\
+             Running the checks again won\u{2019}t help: they will stop on the same line. \
+             Fix it in a commit on #{number}\u{2019}s branch (asking Claude to fix it works), \
+             push, then run Review \u{2192} Merge again. Nothing has been merged or \
+             changed.{admin_line}\n\n{}\n\n{message}",
+            links.join("\n"),
+        ),
+        None => format!(
+            "#{number} can\u{2019}t merge: {what}. It has no conflicts, and nothing has been \
+             merged or changed.\n\n\
+             The logs show no error in the code, so it looks like CI itself (a timeout, a \
+             runner problem, a flaky test). Run the failed checks again (below): it reruns \
+             only those and returns at once; nothing here waits. Merge again once \
+             they are green. If they fail again, open the link to see why.{admin_line}\n\n{}\n\n{message}",
+            links.join("\n"),
+        ),
+    };
     let mut runs: Vec<&str> = hold.failed.iter().filter_map(FailedCheck::run_id).collect();
     runs.sort_unstable();
     runs.dedup();
     let mut remedies = vec![];
-    if !runs.is_empty() {
+    if !runs.is_empty() && hold.error.is_none() {
+        // Reruns, and nothing waits on them: GitHub merges once they pass
+        // where auto-merge is allowed; otherwise the merge is run again.
         // Run ids and the number travel as arguments, never spliced in.
+        let auto = if hold.auto_merge {
+            "\ngh pr merge \"$pr\" --auto --squash --delete-branch || exit 1"
+        } else {
+            ""
+        };
         let script = format!(
             r#"pr="$1"; shift
-for run in "$@"; do gh run rerun "$run" --failed || exit 1; done
-echo "Rerunning the failed checks of #$pr; waiting for them..."
-set -- "$pr"
-{WATCH}"#
+for run in "$@"; do gh run rerun "$run" --failed || exit 1; done{auto}"#
         );
         let mut args = vec!["-c", script.as_str(), "sh", number];
         args.extend(runs.iter().copied());
-        let rerun = Remedy::new(
-            &format!("Run the failed checks again, then merge #{number}"),
-            "sh",
-            &args,
-        );
+        let label = if hold.auto_merge {
+            format!("Run the failed checks again; GitHub merges #{number} once they pass")
+        } else {
+            "Run the failed checks again".to_string()
+        };
+        let rerun = Remedy::completes(&label, "sh", &args);
         remedies.push(Remedy {
-            display: format!(
-                "gh run rerun {} --failed   (then waits for the checks and merges)",
-                runs.join(" ")
-            ),
+            display: format!("gh run rerun {} --failed", runs.join(" ")),
             ..rerun
         });
     }
