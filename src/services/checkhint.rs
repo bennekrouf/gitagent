@@ -99,6 +99,18 @@ fn job_id(url: &str) -> Option<String> {
 /// The first line of a job log that says what broke, with where when the
 /// compiler gave a place: `src/x.rs:86:14 — error: using map_err over inspect_err`.
 pub fn first_error(raw: &str) -> Option<String> {
+    code_error(raw).or_else(|| {
+        raw.lines()
+            .map(text_of)
+            .find(|t| t.trim().starts_with("##[error]"))
+            .map(|t| t.trim().trim_start_matches("##[error]").trim().to_string())
+    })
+}
+
+/// What [`first_error`] finds when the code itself is at fault: a compiler or
+/// lint error, a failed test, a formatting diff. Running the check again
+/// cannot change any of these; a runner that died or timed out leaves none.
+pub fn code_error(raw: &str) -> Option<String> {
     let lines: Vec<String> = raw.lines().map(text_of).collect();
     for (i, line) in lines.iter().enumerate() {
         let t = line.trim();
@@ -122,13 +134,7 @@ pub fn first_error(raw: &str) -> Option<String> {
         .iter()
         .map(|l| l.trim())
         .find(|t| t.contains("panicked at") || t.starts_with("Diff in "))
-        .or_else(|| {
-            lines
-                .iter()
-                .map(|l| l.trim())
-                .find(|t| t.starts_with("##[error]"))
-        })
-        .map(|t| t.trim_start_matches("##[error]").trim().to_string())
+        .map(str::to_string)
 }
 
 /// A row of `gh run view --log-failed`: `job\tstep\t<timestamp> text`.

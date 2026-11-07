@@ -602,6 +602,7 @@ fn checks_that_already_failed_offer_a_rerun_not_a_wait() {
         auto_merge: false,
         admin: true,
         failed,
+        error: None,
     };
     let failure = policy_guide(
         "67",
@@ -658,4 +659,41 @@ fn a_merge_already_stopped_offers_finish_whatever_was_printed() {
     assert!(next.remedies.iter().all(|r| !r.label.starts_with("Bring")));
     assert!(next.message.contains("Cargo.lock"));
     assert!(merge_stopped("73", "main", &[]).is_none());
+}
+
+#[test]
+fn an_error_in_the_code_is_shown_and_no_rerun_is_offered() {
+    // polishcast#72: clippy stopped both test jobs on the same line, three
+    // attempts running, and "Run again" was all the step offered.
+    let hold = Hold {
+        admin: false,
+        failed: failed_checks(
+            r#"[{"bucket":"fail","link":"https://github.com/o/r/actions/runs/42103719826/job/128199168175","name":"ci / test (windows-latest)"}]"#,
+        ),
+        error: Some(
+            "crates/app/src/takes.rs:92:16 \u{2014} error: used `expect()` on an `Option` value"
+                .into(),
+        ),
+        ..Default::default()
+    };
+    let failure = policy_guide("72", "policy", &hold);
+    assert!(
+        failure.message.contains("takes.rs:92:16"),
+        "{}",
+        failure.message
+    );
+    assert!(failure.message.contains("won\u{2019}t help"));
+    assert!(failure
+        .remedies
+        .iter()
+        .all(|r| !r.label.starts_with("Run the failed checks")));
+}
+
+#[test]
+fn a_runner_failure_without_a_code_error_still_offers_the_rerun() {
+    use crate::services::checkhint::code_error;
+    assert!(code_error("##[error]The runner has received a shutdown signal.").is_none());
+    assert!(
+        code_error("error: used `expect()` on an `Option` value\n  --> src/a.rs:1:1").is_some()
+    );
 }
