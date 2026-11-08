@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Clicking a repository in the sidebar opens where you are needed: the flow
+  running there, at the step it is on; otherwise Commit → PR when files wait
+  to be committed; otherwise the flow that failed last, at the failed step.
+
 ## [0.1.178] - 2026-11-07
 
 ### Added

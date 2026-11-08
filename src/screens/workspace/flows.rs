@@ -39,9 +39,10 @@ pub(super) fn busy_note(book: &FlowBook, other: &Key) -> String {
     format!("{what} is already running in this repository \u{2014} finish or cancel it first.")
 }
 
-/// Where to land when a repository is picked: the first step, in the first
-/// runnable flow, that is waiting on the person looking at the screen — or,
-/// if nothing is, the first runnable flow's first step.
+/// Where to land when a repository is picked: the run in flight (on the step
+/// waiting for a person, or the one working); otherwise Commit when files wait
+/// to be committed; otherwise the run that failed last; otherwise the flow
+/// that answers what the repository needs, on its first step.
 pub(super) fn default_selection(
     book: &FlowBook,
     states: &States,
@@ -52,40 +53,48 @@ pub(super) fn default_selection(
 ) -> (String, String, String) {
     // Landing on a flow hidden here would open a tab the strip does not show.
     let runnable = book.runnable_for(hidden);
+    let need = wants.and_then(|w| w.need());
 
-    // A person being waited on outranks everything else, same precedence as
-    // the sidebar's dot — check every flow for one before falling back.
-    // Same order the sidebar's dot uses, and it must include Failed: the
-    // status is now read across every flow, so a failure in one the user is
-    // not looking at would otherwise report "failed" with no way to reach it.
-    for status in [
-        NodeStatus::AwaitingApproval,
-        NodeStatus::Failed,
-        NodeStatus::Running,
-    ] {
-        for flow in &runnable {
-            // Any PR-scoped run for this repo+flow, not just a no-PR one — a
-            // review under a specific PR must not be missed just because it
-            // isn't the "current branch" slot.
-            let matching_run = states
-                .iter()
-                .filter(|((r, f, _), _)| r == repo && f == &flow.id)
-                .find_map(|((_, _, pr), run)| {
-                    flowdef::topological_order(flow)
-                        .into_iter()
-                        .find(|id| run.status(id) == status)
-                        .map(|node_id| (node_id, pr.clone()))
-                });
-            if let Some((node_id, pr_id)) = matching_run {
-                return (flow.id.clone(), node_id, pr_id);
-            }
+    // The newest run (runs are numbered as they start) with a step in one of
+    // these states, and that step. Any PR-scoped run counts, not only the
+    // current branch's.
+    let newest = |wanted: &[NodeStatus]| {
+        runnable
+            .iter()
+            .flat_map(|flow| {
+                states
+                    .iter()
+                    .filter(move |((r, f, _), _)| r == repo && f == &flow.id)
+                    .filter_map(move |((_, _, pr), run)| {
+                        let order = flowdef::topological_order(flow);
+                        wanted
+                            .iter()
+                            .find_map(|status| order.iter().find(|id| run.status(id) == *status))
+                            .map(|node| (run.run, (flow.id.clone(), node.clone(), pr.clone())))
+                    })
+            })
+            .max_by_key(|(run, _)| *run)
+            .map(|(_, at)| at)
+    };
+
+    // 1. A run in flight: the step waiting for a person, else the one working.
+    if let Some(at) = newest(&[NodeStatus::AwaitingApproval, NodeStatus::Running]) {
+        return at;
+    }
+    // 2. Files waiting to be committed: the commit flow.
+    if need == Some(Need::Uncommitted) {
+        if let Some(flow) = runnable.iter().find(|f| f.answers(Need::Uncommitted)) {
+            return (flow.id.clone(), flow.first_node(), String::new());
         }
+    }
+    // 3. The run that failed last, on its failed step.
+    if let Some(at) = newest(&[NodeStatus::Failed]) {
+        return at;
     }
     // Nothing in flight, so open on the flow that handles whatever the
     // repository actually needs — landing on "Commit → PR" for a repository
     // whose only outstanding work is a release is how the first task to do
     // ends up hidden.
-    let need = wants.and_then(|w| w.need());
     let hinted = need.and_then(|need| runnable.iter().find(|f| f.answers(need)));
 
     // For a review, pick the pull request too. "Which one?" is a question the
