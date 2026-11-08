@@ -523,6 +523,65 @@ fn someone_awaiting_approval_still_outranks_a_running_task() {
     assert_eq!(node_id, "commit");
 }
 
+fn failed_run(flow: &flowdef::FlowDef) -> RunState {
+    let mut run = RunState::fresh(&flow.to_graph());
+    run.started = true;
+    let first = flow.first_node();
+    run.set_status(&first, NodeStatus::Failed);
+    run
+}
+
+#[test]
+fn files_to_commit_open_commit_rather_than_an_old_failure() {
+    let book = FlowBook::defaults();
+    let review = book.get("review_and_merge").unwrap().clone();
+    let mut states = States::new();
+    states.insert(
+        ("/repo".into(), review.id.clone(), "7".into()),
+        failed_run(&review),
+    );
+
+    let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Commit), &[], &[]);
+    assert_eq!(flow_id, commit_and_pr().id);
+
+    // Nothing to commit: the failure is where it lands.
+    let (flow_id, node_id, pr_id) = default_selection(&book, &states, "/repo", None, &[], &[]);
+    assert_eq!(
+        (flow_id, node_id, pr_id),
+        (review.id.clone(), review.first_node(), "7".into())
+    );
+}
+
+#[test]
+fn a_run_in_flight_outranks_files_to_commit() {
+    let book = FlowBook::defaults();
+    let review = book.get("review_and_merge").unwrap().clone();
+    let mut run = RunState::fresh(&review.to_graph());
+    run.started = true;
+    run.set_status(&review.first_node(), NodeStatus::Running);
+    let mut states = States::new();
+    states.insert(("/repo".into(), review.id.clone(), "7".into()), run);
+
+    let (flow_id, _, _) = default_selection(&book, &states, "/repo", Some(Wants::Commit), &[], &[]);
+    assert_eq!(flow_id, review.id);
+}
+
+#[test]
+fn of_two_failures_the_last_one_is_opened() {
+    let book = FlowBook::defaults();
+    let review = book.get("review_and_merge").unwrap().clone();
+    let commit = commit_and_pr();
+    let older = failed_run(&review);
+    let newer = failed_run(&commit);
+    assert!(newer.run > older.run);
+    let mut states = States::new();
+    states.insert(("/repo".into(), review.id.clone(), String::new()), older);
+    states.insert(("/repo".into(), commit.id.clone(), String::new()), newer);
+
+    let (flow_id, _, _) = default_selection(&book, &states, "/repo", None, &[], &[]);
+    assert_eq!(flow_id, commit.id);
+}
+
 // ── What the sidebar and the run view are given ───────────────────────────
 
 fn probed(changes: usize) -> RepoStatus {
