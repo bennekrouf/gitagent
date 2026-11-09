@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Branches has a **Run check** button. On Azure DevOps it replaces "not
+  checked" with what became of each branch's pull request: open, merged,
+  closed or no PR, with the buttons that go with it. If Azure DevOps cannot be
+  reached, the panel says why and keeps your list.
+- **Copy page** in Branches copies the whole list, with each branch's state and
+  the notes above it, ready to paste elsewhere.
+
 ## [0.1.179] - 2026-11-08
 
 ### Changed

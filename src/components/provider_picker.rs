@@ -66,6 +66,8 @@ pub fn ProviderPicker(
     let current = cfg.read().clone();
     let pick = current_pick(&current, second);
     let has_licence = llm::key_for(llm::remote("api0")).is_some();
+    let closed = desktop_kit::ui::use_closed_regions();
+    let is_closed = |r: &'static Region| closed.read().iter().any(|c| c == r.id);
 
     let mut set_pick = move |p: Pick| {
         {
@@ -102,20 +104,31 @@ pub fn ProviderPicker(
         _ => None,
     };
 
-    let mut choices = vec![(Pick::Ollama, "Ollama", "on this computer, free".to_string())];
-    choices.extend(
-        llm::REGIONS
-            .iter()
-            .map(|r| (Pick::Api0(r), r.label, cost(r))),
-    );
+    let mut choices = vec![(
+        Pick::Ollama,
+        "Ollama",
+        "on this computer, free".to_string(),
+        false,
+    )];
+    choices.extend(llm::REGIONS.iter().map(|r| {
+        let soon = is_closed(r);
+        let note = if soon {
+            llm::COMING_SOON.to_string()
+        } else {
+            cost(r)
+        };
+        (Pick::Api0(r), r.label, note, soon)
+    }));
 
     rsx! {
         div { class: "region-row",
-            for (p, label, note) in choices {
+            for (p, label, note, soon) in choices {
                 button {
                     key: "{p.key()}",
                     class: if pick == Some(p) { "region region-on" } else { "region" },
+                    disabled: soon,
                     title: match p {
+                        _ if soon => llm::COMING_SOON.to_string(),
                         Pick::Ollama => "A model running on this computer".to_string(),
                         Pick::Api0(r) => format!("api0, in {}", r.label),
                     },

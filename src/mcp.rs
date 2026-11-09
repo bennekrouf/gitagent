@@ -272,7 +272,7 @@ async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result
         }
         "trust_all" => Ok(trust_all(args["turn_off"].as_bool().unwrap_or(false))),
         "refresh" => refresh(&text("path")),
-        "model_region" => model_region(&text("region"), &text("folder")),
+        "model_region" => model_region(&text("region"), &text("folder")).await,
         "list_steps" => Ok(list_steps()),
         "get_flow" => get_flow(&text("flow")),
         "save_flow" => save_flow(&args["flow"], &text("repo")),

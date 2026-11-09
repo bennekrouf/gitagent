@@ -415,6 +415,7 @@ impl Ai {
             let mut on_line = |line: &str| note.set(line.to_string());
             let mut asker = Asker {
                 what: format!("Resolving conflicts in {path}"),
+                task: None,
                 on_line: &mut on_line,
             };
             let got = conflicts::ai::propose(&cfg, &path, kind, &pieces, &mut asker).await;

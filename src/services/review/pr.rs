@@ -248,38 +248,25 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
     // from the sidebar's list, not just the one the local branch happens to
     // have open.
     let number = state.artifact("pr_number");
-    // With Trust all on, nobody is there to come back once the checks are
-    // in, and a merge held on "still running" would leave every repository
-    // stopped at it. So the step waits for them, up to `CI_WAIT`, rather
-    // than reporting a pending state that only a person could act on.
-    let waiting_since = std::time::Instant::now();
-    let mut backoff = crate::services::poll::Backoff::checks();
-    let (value, lines, failing, pass, fail, pending) = loop {
-        let out = git::run(
-            repo,
-            "gh",
-            &[
-                "pr",
-                "view",
-                number,
-                "--json",
-                "statusCheckRollup,mergeable,mergeStateStatus",
-            ],
-        )
-        .await?;
-        let value: serde_json::Value = serde_json::from_str(&out)
-            .map_err(|e| format!("could not read the gh response: {e}"))?;
-        let (lines, failing, pass, fail, pending) = tally(&value);
-        if pending > 0
-            && fail == 0
-            && crate::services::store::trust_all()
-            && waiting_since.elapsed() < CI_WAIT
-        {
-            backoff.sleep().await;
-            continue;
-        }
-        break (value, lines, failing, pass, fail, pending);
-    };
+    // One look, never a wait: checks still running are reported as pending
+    // and the run goes on. Under Trust all the merge then goes ahead; if the
+    // base branch requires those checks, GitHub refuses it and the merge
+    // step offers to hand it to auto-merge.
+    let out = git::run(
+        repo,
+        "gh",
+        &[
+            "pr",
+            "view",
+            number,
+            "--json",
+            "statusCheckRollup,mergeable,mergeStateStatus",
+        ],
+    )
+    .await?;
+    let value: serde_json::Value =
+        serde_json::from_str(&out).map_err(|e| format!("could not read the gh response: {e}"))?;
+    let (lines, failing, pass, fail, pending) = tally(&value);
 
     let merge_state = value["mergeStateStatus"]
         .as_str()
@@ -362,9 +349,6 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         items: vec![],
     })
 }
-
-/// How long a Trust all run waits for a pull request's checks to finish.
-const CI_WAIT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
 /// Each check on the pull request as a line, the failing ones with their
 /// links, and the passing, failing and pending counts.

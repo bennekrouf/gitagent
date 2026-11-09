@@ -318,7 +318,7 @@ pub(super) async fn draft_commit(
     let head = format!("Diffstat:\n{}\n\nDiff:\n", state.artifact("stat"));
     let fitted = git::fit(
         state.artifact("diff"),
-        cfg.input_budget().saturating_sub(head.len()),
+        cfg.message_budget().saturating_sub(head.len()),
     );
     let user = format!("{head}{}", fitted.text);
 

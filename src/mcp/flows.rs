@@ -88,7 +88,8 @@ pub(super) fn tools() -> Value {
             "description": "Where the model behind GitAgent's model steps runs. Without \
                             region, says so. With region (europe, china or usa), switches it \
                             to api0 in that region — only when the user asks, as each region \
-                            has its own data residency and price.",
+                            has its own data residency and price. A region api0 has not \
+                            opened yet is refused, and the answer says which are open.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

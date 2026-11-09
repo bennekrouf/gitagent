@@ -613,15 +613,15 @@ fn trust_all_merges_whatever_the_analysis_thought_and_without_ci() {
 }
 
 #[test]
-fn trust_all_still_stops_at_a_merge_ci_has_not_passed() {
+fn trust_all_stops_only_at_a_merge_whose_ci_failed() {
     let red = state("looks_safe", "0", "failing");
     assert!(decide_trusting_all(&node(Step::Merge), &red)
         .reason()
         .is_some_and(|why| why.contains("failing")));
-    // The CI step waits for pending checks under Trust all; still pending
-    // here means that wait ran out.
+    // Checks still running do not hold it: nothing waits for them.
     let pending = state("looks_safe", "0", "pending");
-    assert!(decide_trusting_all(&node(Step::Merge), &pending)
-        .reason()
-        .is_some());
+    assert_eq!(
+        decide_trusting_all(&node(Step::Merge), &pending),
+        Verdict::Approve
+    );
 }

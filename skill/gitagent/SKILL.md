@@ -72,8 +72,8 @@ You can still help from the repository itself and this skill.
   at release notes, at a gated script, and at a merge that the analysis or CI
   is unhappy about. **Trust all** in the top bar goes further, for every
   repository until turned off: it approves release notes, release scripts and
-  merges too, waits for CI that is still running, and stops only at a merge
-  whose CI failed. With it on, **All** in the sidebar takes every repository
+  merges too without waiting for CI that is still running, and stops only
+  at a merge whose CI failed. With it on, **All** in the sidebar takes every repository
   as far as it can go without asking.
 - **Branches panel**: every branch with its state. Open a pull request for it,
   **Review & merge** one that has a pull request, delete merged branches, and

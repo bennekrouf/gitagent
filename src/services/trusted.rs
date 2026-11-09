@@ -168,18 +168,15 @@ pub fn may_continue(state: &RunState, graph: &Graph) -> bool {
 ///
 /// The one hold left is CI that has failed. Merging a red pull request is how
 /// a broken base branch gets released a step later, by the same run, with
-/// nobody having looked. Checks still running are not a hold either: the CI
-/// step waits for them under Trust all, so what reaches here has finished.
+/// nobody having looked. Checks still running are not a hold: the CI step
+/// does not wait for them, and the merge goes ahead. Where the base branch
+/// requires them, GitHub refuses the merge and the step offers auto-merge;
+/// where it does not, a check that fails later is handled then.
 pub fn decide_trusting_all(node: &NodeSpec, state: &RunState) -> Verdict {
     match node.step {
         Step::Merge if state.artifact("checks_state") == "failing" => Verdict::Hold(
             "CI is failing on this pull request. Trust all merges everything else, but not \
              a red pull request: the release after it would ship the breakage."
-                .into(),
-        ),
-        Step::Merge if state.artifact("checks_state") == "pending" => Verdict::Hold(
-            "CI was still running when the wait for it ran out. Approve the merge once \
-             the checks are in."
                 .into(),
         ),
         _ => Verdict::Approve,

@@ -301,7 +301,7 @@ pub(super) fn repo_actions(
                 branches_action_error.set(None);
                 spawn(async move {
                     let base = resolved_base(&repo, override_base).await;
-                    let result = crate::services::branches::list(&repo, &forge, &base).await;
+                    let result = crate::services::branches::list(&repo, &forge, &base, false).await;
                     branches_data.set(Some(result));
                 });
             }

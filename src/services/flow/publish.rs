@@ -23,7 +23,7 @@ pub(super) async fn draft_pr(
     );
     let fitted = git::fit(
         state.artifact("diff"),
-        cfg.input_budget().saturating_sub(head.len()),
+        cfg.message_budget().saturating_sub(head.len()),
     );
     let user = format!("{head}{}", fitted.text);
 

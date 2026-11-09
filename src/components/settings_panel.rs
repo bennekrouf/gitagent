@@ -71,6 +71,7 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     });
     // What each api0 region costs, asked once when the panel opens.
     let mut offers = use_signal(|| Option::<Result<Vec<llm::RegionOffer>, String>>::None);
+    let closed = desktop_kit::ui::use_closed_regions();
     use_effect(move || {
         spawn(async move {
             offers.set(Some(llm::api0_regions().await));
@@ -298,10 +299,14 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                                             // Somewhere other than the default,
                                             // since a second pair of eyes that
                                             // is the same model is not one.
-                                            let elsewhere = match w.region() {
-                                                Some(r) if r.id == llm::REGIONS[0].id => llm::REGIONS[1],
-                                                _ => llm::REGIONS[0],
-                                            };
+                                            // A closed region cannot answer, so with
+                                            // one region open it is that one.
+                                            let closed = closed.read();
+                                            let open = || llm::REGIONS.iter().filter(|r| !closed.iter().any(|c| c == r.id));
+                                            let elsewhere = open()
+                                                .find(|r| w.region() != Some(*r))
+                                                .or_else(|| open().next())
+                                                .unwrap_or(llm::DEFAULT_REGION);
                                             w.second.use_region(elsewhere.id);
                                         } else {
                                             w.second.kind = ProviderKind::Off;

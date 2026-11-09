@@ -6,7 +6,7 @@
 //! nobody needs any more. This answers, per branch, what became of its pull
 //! request, so a panel can offer to clean up the ones that are done with.
 
-use super::forge::Forge;
+use super::forge::{self, Forge, Scope};
 use super::git;
 
 /// What happened to a branch's pull request. Separate from "no pull request
@@ -102,7 +102,17 @@ impl BranchInfo {
 /// Every local branch, each paired with what became of its pull request.
 /// `Err` only for an actual failed call — an empty repository (no branches)
 /// is `Ok(vec![])`.
-pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInfo>, String> {
+///
+/// `check_azure` asks Azure DevOps too. It is a choice because `az` is slow
+/// and may not be signed in, neither of which should stand between a person
+/// and the list of their own local branches; without it those branches say
+/// "not checked".
+pub async fn list(
+    repo: &str,
+    forge: &Forge,
+    base: &str,
+    check_azure: bool,
+) -> Result<Vec<BranchInfo>, String> {
     let current = git::current_branch(repo).await.unwrap_or_default();
     let out = git::run(repo, "git", &["branch", "--format=%(refname:short)"]).await?;
     let names: Vec<String> = out
@@ -135,10 +145,12 @@ pub async fn list(repo: &str, forge: &Forge, base: &str) -> Result<Vec<BranchInf
                 .map(|prs| prs.iter().filter_map(github_pr_row).collect())
                 .unwrap_or_default()
         }
+        Forge::AzureDevOps if check_azure => azure_pr_rows(repo).await?,
         _ => vec![],
     };
 
-    let unchecked = !matches!(forge, Forge::GitHub);
+    let unchecked =
+        !matches!(forge, Forge::GitHub) && !(*forge == Forge::AzureDevOps && check_azure);
     let base_ref = resolve_ref(repo, base).await;
 
     let mut out = Vec::with_capacity(names.len());
@@ -254,6 +266,51 @@ fn github_pr_row(pr: &serde_json::Value) -> Option<PrRow> {
         title,
         state,
         head_oid,
+    })
+}
+
+/// Every pull request of the repository on Azure DevOps, newest first: a
+/// branch name used again belongs to its latest pull request, and `list`
+/// takes the first one it finds.
+async fn azure_pr_rows(repo: &str) -> Result<Vec<PrRow>, String> {
+    let scope = forge::azure_scope(repo, Scope::Repository).await;
+    let mut args = vec![
+        "repos", "pr", "list", "--status", "all", "--top", "200", "--output", "json",
+    ];
+    args.extend(scope.iter().map(String::as_str));
+    let out = git::run(repo, "az", &args).await?;
+    let value: serde_json::Value =
+        serde_json::from_str(&out).map_err(|e| format!("could not read az output: {e}"))?;
+    let mut rows: Vec<PrRow> = value
+        .as_array()
+        .map(|prs| prs.iter().filter_map(azure_pr_row).collect())
+        .unwrap_or_default();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.number.parse::<i64>().unwrap_or_default()));
+    Ok(rows)
+}
+
+/// Azure DevOps says `completed` for a merged pull request and `abandoned`
+/// for one closed without merging.
+fn azure_pr_row(pr: &serde_json::Value) -> Option<PrRow> {
+    let head = pr["sourceRefName"]
+        .as_str()?
+        .strip_prefix("refs/heads/")?
+        .to_string();
+    let state = match pr["status"].as_str().unwrap_or_default() {
+        "completed" => PrState::Merged,
+        "abandoned" => PrState::Closed,
+        "active" => PrState::Open,
+        _ => PrState::None,
+    };
+    Some(PrRow {
+        head,
+        number: pr["pullRequestId"].as_i64()?.to_string(),
+        title: pr["title"].as_str().unwrap_or_default().to_string(),
+        state,
+        head_oid: pr["lastMergeSourceCommit"]["commitId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -386,6 +443,33 @@ mod tests {
         assert_eq!(state, PrState::Merged);
     }
 
+    #[test]
+    fn an_azure_pull_request_row_says_what_became_of_it() {
+        let row = |status: &str| {
+            azure_pr_row(&serde_json::json!({
+                "pullRequestId": 42,
+                "title": "Add invoices",
+                "status": status,
+                "sourceRefName": "refs/heads/feature/invoices",
+                "lastMergeSourceCommit": { "commitId": "abc" }
+            }))
+            .unwrap()
+        };
+        assert_eq!(row("completed").state, PrState::Merged);
+        assert_eq!(row("abandoned").state, PrState::Closed);
+        assert_eq!(row("active").state, PrState::Open);
+        let row = row("active");
+        assert_eq!(row.head, "feature/invoices", "without refs/heads/");
+        assert_eq!(row.number, "42");
+        assert_eq!(row.head_oid, "abc");
+    }
+
+    #[test]
+    fn an_azure_pull_request_from_something_other_than_a_branch_is_skipped() {
+        let row = serde_json::json!({"pullRequestId": 1, "sourceRefName": "refs/pull/1/merge"});
+        assert!(azure_pr_row(&row).is_none());
+    }
+
     fn branch(ahead: usize, pr_state: PrState) -> BranchInfo {
         BranchInfo {
             name: "feat/x".into(),
@@ -497,7 +581,7 @@ mod tests {
         git(&dir, &["checkout", "-q", "trunk"]);
 
         let repo = dir.to_string_lossy().to_string();
-        let list = list(&repo, &Forge::None, "trunk").await.unwrap();
+        let list = list(&repo, &Forge::None, "trunk", false).await.unwrap();
         let get = |n: &str| list.iter().find(|b| b.name == n).unwrap().clone();
         assert!(get("stale").leftover(), "merge commits that add nothing");
         assert!(

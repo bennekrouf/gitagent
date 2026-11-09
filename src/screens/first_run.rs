@@ -77,7 +77,7 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
             // the welcome screen come up. Settings can change it any time.
             _ => {
                 let mut next = cfg.read().clone();
-                next.use_region(llm::REGIONS[0].id);
+                next.use_region(llm::DEFAULT_REGION.id);
                 store::save_settings(&next);
                 cfg.set(next);
                 detected.set(Detected::Absent);
