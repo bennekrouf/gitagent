@@ -17,11 +17,6 @@ impl Backoff {
         Self { next: first, max }
     }
 
-    /// For a pull request's checks: from 15 s up to 2 min.
-    pub fn checks() -> Self {
-        Self::new(Duration::from_secs(15), Duration::from_secs(120))
-    }
-
     /// For a release build: from 30 s up to 3 min.
     pub fn build() -> Self {
         Self::new(Duration::from_secs(30), Duration::from_secs(180))
@@ -45,21 +40,10 @@ mod tests {
 
     #[test]
     fn waits_grow_by_half_and_stop_at_the_cap() {
-        let mut b = Backoff::checks();
+        let mut b = Backoff::new(Duration::from_secs(15), Duration::from_secs(120));
         let waits: Vec<u64> = (0..8).map(|_| b.step().as_secs()).collect();
         assert_eq!(waits[0], 15);
         assert!(waits.windows(2).all(|w| w[1] >= w[0]));
         assert_eq!(*waits.last().unwrap(), 120);
-    }
-
-    #[test]
-    fn three_quarters_of_an_hour_of_checks_is_a_few_dozen_looks_not_ninety() {
-        let mut b = Backoff::checks();
-        let (mut spent, mut looks) = (0, 0);
-        while spent < 45 * 60 {
-            spent += b.step().as_secs();
-            looks += 1;
-        }
-        assert!(looks <= 28, "{looks}");
     }
 }

@@ -221,6 +221,11 @@ async fn awaiting_answer<T>(
 pub struct Asker<'a> {
     /// Names the step to any other step waiting for the model behind it.
     pub what: String,
+    /// What the call does, as api0 sorts calls (`X-Task`): `Some("chat")`
+    /// for a short piece of writing, which api0 runs on the region's cheaper
+    /// model. `None` leaves it to api0's default for GitAgent, `code`, the
+    /// stronger model reviews need. Other providers never see it.
+    pub task: Option<&'static str>,
     pub on_line: &'a mut dyn FnMut(&str),
 }
 
@@ -317,7 +322,7 @@ pub fn key_for(remote: &Remote) -> Option<String> {
     })
 }
 
-pub use desktop_kit::region::{Region, REGIONS};
+pub use desktop_kit::region::{Region, COMING_SOON, DEFAULT as DEFAULT_REGION, REGIONS};
 
 /// Tokens in a typical model step — a commit message, a pull request
 /// description, one review — as measured on api0. Only for the estimate.
@@ -366,7 +371,7 @@ pub async fn api0_regions() -> Result<Vec<RegionOffer>, String> {
     let resp = client(PROBE_TIMEOUT)?
         .get(&url)
         .bearer_auth(key)
-        .headers(client_app(api0))
+        .headers(client_app(api0, None))
         .send()
         .await
         .map_err(|e| format!("api0 is unreachable: {e}"))?;
@@ -530,13 +535,16 @@ pub async fn local_models(url: &str) -> Result<Vec<LocalModel>, String> {
 }
 
 /// api0 is told which app is calling, so its use is put down to GitAgent.
-fn client_app(remote: &Remote) -> reqwest::header::HeaderMap {
+fn client_app(remote: &Remote, task: Option<&'static str>) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     if is_api0(remote) {
         headers.insert(
             "X-Client-App",
             reqwest::header::HeaderValue::from_static(super::licence::PRODUCT),
         );
+        if let Some(task) = task {
+            headers.insert("X-Task", reqwest::header::HeaderValue::from_static(task));
+        }
     }
     headers
 }

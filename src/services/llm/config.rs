@@ -213,13 +213,13 @@ impl LlmConfig {
             && self.remote_url.trim().is_empty()
             && self.remote_model.trim().is_empty()
         {
-            self.remote_model = REGIONS[0].id.to_string();
+            self.remote_model = DEFAULT_REGION.id.to_string();
         }
         if self.second.kind == ProviderKind::Remote
             && is_api0(remote(&self.second.remote))
             && self.second.remote_model.trim().is_empty()
         {
-            self.second.remote_model = REGIONS[0].id.to_string();
+            self.second.remote_model = DEFAULT_REGION.id.to_string();
         }
         self
     }
@@ -308,6 +308,10 @@ impl LlmConfig {
     }
 }
 
+/// Characters of diff a commit message or a pull request description is
+/// written from: about 5,000 tokens, against 15,000 for a whole capped diff.
+pub const MESSAGE_DIFF_CAP: usize = 20_000;
+
 impl LlmConfig {
     /// How many characters of input a step may send this model, diff and all.
     ///
@@ -320,6 +324,15 @@ impl LlmConfig {
     /// Remote: every preset's window is far larger than a diff worth
     /// reviewing, so the ceiling is cost, not fit — the same cap a diff is
     /// stored under.
+    /// The same, for a step that writes a few lines about the change — a
+    /// commit message, a pull request description. The diffstat already
+    /// names every file; past `MESSAGE_DIFF_CAP` more diff changes the
+    /// message little and the bill a lot, as every character is sent and paid
+    /// for again by each such step.
+    pub fn message_budget(&self) -> usize {
+        self.input_budget().min(MESSAGE_DIFF_CAP)
+    }
+
     pub fn input_budget(&self) -> usize {
         match self.kind {
             ProviderKind::Ollama => {

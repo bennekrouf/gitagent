@@ -4,6 +4,7 @@
 
 use dioxus::prelude::*;
 
+use crate::components::detail_pane::CopyButton;
 use crate::services::branches::{BranchInfo, PrState};
 
 #[derive(Props, Clone, PartialEq)]
@@ -52,6 +53,92 @@ fn state_class(state: PrState) -> &'static str {
     }
 }
 
+/// What a row says about its pull request.
+fn state_text(b: &BranchInfo) -> String {
+    let state = match &b.pr_number {
+        Some(number) => format!("#{number} {}", b.pr_state.label()),
+        None => b.pr_state.label().to_string(),
+    };
+    if b.worth_a_pr() {
+        format!("{state} · {} ahead", b.ahead)
+    } else {
+        state
+    }
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "es"
+    }
+}
+
+fn merged_branches(list: &[BranchInfo]) -> Vec<&BranchInfo> {
+    list.iter()
+        .filter(|b| !b.is_current && !b.protected && b.pr_state.merged())
+        .collect()
+}
+
+/// The sentences above the list: leftovers, branches worth a pull request,
+/// merged ones. Empty for any that does not apply.
+fn notes(list: &[BranchInfo]) -> [String; 3] {
+    let leftovers = list.iter().filter(|b| b.leftover()).count();
+    let worth_a_pr = list.iter().filter(|b| b.worth_a_pr()).count();
+    let merged = merged_branches(list).len();
+    [
+        (leftovers > 0).then(|| {
+            format!(
+                "{leftovers} branch{} marked \u{201c}nothing new\u{201d} hold nothing the base \
+                 branch lacks — already merged, or commits that would change no file. Clean up \
+                 deletes the branch on GitHub and here.",
+                plural(leftovers)
+            )
+        }),
+        (worth_a_pr > 0).then(|| {
+            format!(
+                "{worth_a_pr} branch{} have commits not on the base branch and no open pull \
+                 request — decide per branch below: open a PR, or delete.",
+                plural(worth_a_pr)
+            )
+        }),
+        (merged > 0).then(|| {
+            format!(
+                "{merged} branch{} already merged — nothing here is only on these branches.",
+                plural(merged)
+            )
+        }),
+    ]
+    .map(Option::unwrap_or_default)
+}
+
+/// Everything the panel shows, as text to paste elsewhere.
+fn page_text(
+    repo_label: &str,
+    error: Option<&str>,
+    held_by: Option<&str>,
+    list: &[BranchInfo],
+) -> String {
+    let mut lines = vec![format!("Branches — {repo_label}")];
+    lines.extend(error.into_iter().chain(held_by).map(str::to_string));
+    lines.extend(notes(list).into_iter().filter(|note| !note.is_empty()));
+    lines.push(String::new());
+    lines.extend(list.iter().map(|b| {
+        let mut row = vec![
+            format!("{}{}", if b.is_current { "▸ " } else { "" }, b.name),
+            state_text(b),
+        ];
+        if b.protected {
+            row.push("protected".to_string());
+        }
+        if b.leftover() {
+            row.push("nothing new".to_string());
+        }
+        row.join("\t")
+    }));
+    lines.join("\n")
+}
+
 #[component]
 pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
     let close = move |_| props.on_close.call(());
@@ -87,47 +174,54 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                     if let Some(note) = props.held_by.clone() {
                         div { class: "branches-cleanup branches-worth-pr", "{note}" }
                     }
+                    div { class: "branches-tools",
+                        button {
+                            class: "btn",
+                            disabled: props.branches.is_none(),
+                            title: "Asks the forge what became of each branch's pull request.",
+                            onclick: move |_| props.on_refresh.call(()),
+                            if props.branches.is_none() {
+                                span { class: "btn-spinner" }
+                                "Checking…"
+                            } else {
+                                "Run check"
+                            }
+                        }
+                        if let Some(Ok(list)) = props.branches.as_ref() {
+                            CopyButton {
+                                class: "btn",
+                                label: "Copy page",
+                                text: page_text(
+                                    &props.repo_label,
+                                    props.action_error.as_deref(),
+                                    props.held_by.as_deref(),
+                                    list,
+                                ),
+                            }
+                        }
+                    }
                     match props.branches.clone() {
                         None => rsx! { div { class: "branches-loading", "Checking branches…" } },
                         Some(Err(e)) => rsx! {
                             div { class: "pr-list-error", "Couldn't read branches: {e}" }
                         },
                         Some(Ok(list)) => {
-                            let cleanup: Vec<BranchInfo> = list.iter()
-                                .filter(|b| !b.is_current && !b.protected && b.pr_state.merged())
-                                .cloned()
-                                .collect();
-                            let worth_a_pr: Vec<BranchInfo> = list.iter()
-                                .filter(|b| b.worth_a_pr())
-                                .cloned()
-                                .collect();
-                            let leftovers = list.iter().filter(|b| b.leftover()).count();
+                            let cleanup: Vec<BranchInfo> = merged_branches(&list).into_iter().cloned().collect();
+                            let [leftover_note, worth_note, merged_note] = notes(&list);
                             rsx! {
-                                if leftovers > 0 {
+                                if !leftover_note.is_empty() {
                                     div { class: "branches-cleanup branches-worth-pr",
-                                        span {
-                                            "{leftovers} branch" if leftovers != 1 { "es" }
-                                            " marked \u{201c}nothing new\u{201d} hold nothing the base branch \
-                                             lacks — already merged, or commits that would change no \
-                                             file. Clean up deletes the branch on GitHub and here."
-                                        }
+                                        span { "{leftover_note}" }
                                     }
                                 }
-                                if !worth_a_pr.is_empty() {
+                                if !worth_note.is_empty() {
                                     div { class: "branches-cleanup branches-worth-pr",
-                                        span {
-                                            "{worth_a_pr.len()} branch" if worth_a_pr.len() != 1 { "es" }
-                                            " have commits not on the base branch and no open pull \
-                                             request — decide per branch below: open a PR, or delete."
-                                        }
+                                        span { "{worth_note}" }
                                     }
                                 }
                                 if !cleanup.is_empty() {
                                     div { class: "branches-cleanup",
-                                        span {
-                                            "{cleanup.len()} branch" if cleanup.len() != 1 { "es" }
-                                            " already merged — nothing here is only on these branches."
-                                        }
+                                        span { "{merged_note}" }
                                         button {
                                             class: "btn btn-danger",
                                             disabled: held,
@@ -156,14 +250,7 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                                             span {
                                                 class: state_class(b.pr_state),
                                                 title: "{b.pr_title}",
-                                                if let Some(number) = &b.pr_number {
-                                                    "#{number} {b.pr_state.label()}"
-                                                } else {
-                                                    "{b.pr_state.label()}"
-                                                }
-                                                if b.worth_a_pr() {
-                                                    " · {b.ahead} ahead"
-                                                }
+                                                "{state_text(&b)}"
                                             }
                                             if b.leftover() {
                                                 span {
@@ -304,5 +391,94 @@ pub fn BranchesPanel(props: BranchesPanelProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch(name: &str, pr_state: PrState, pr_number: Option<&str>, ahead: usize) -> BranchInfo {
+        BranchInfo {
+            name: name.into(),
+            is_current: false,
+            protected: false,
+            pr_number: pr_number.map(str::to_string),
+            pr_title: String::new(),
+            pr_state,
+            ahead,
+            changes_nothing: false,
+            merged_as_is: false,
+            is_base: false,
+        }
+    }
+
+    #[test]
+    fn the_copied_page_has_the_title_the_notes_and_every_row() {
+        let mut main = branch("main", PrState::Unchecked, None, 0);
+        main.is_current = true;
+        main.protected = true;
+        main.is_base = true;
+        let list = [
+            main,
+            branch("feature/a", PrState::None, None, 3),
+            branch("feature/b", PrState::Open, Some("12"), 1),
+        ];
+        let text = page_text("client-repo", Some("it failed"), None, &list);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Branches — client-repo");
+        assert_eq!(lines[1], "it failed");
+        assert!(
+            lines[2].starts_with("1 branch have commits"),
+            "{}",
+            lines[2]
+        );
+        assert!(lines.contains(&"▸ main\tnot checked\tprotected"));
+        assert!(lines.contains(&"feature/a\tno PR · 3 ahead"));
+        assert!(lines.contains(&"feature/b\t#12 open"));
+    }
+
+    #[component]
+    fn Panel(branches: Option<Result<Vec<BranchInfo>, String>>) -> Element {
+        rsx! {
+            BranchesPanel {
+                repo_label: "repo",
+                branches,
+                on_close: |_| {},
+                on_refresh: |_| {},
+                on_delete: |_| {},
+                on_delete_merged: |_| {},
+                on_create_pr: |_| {},
+                on_clean_up: |_| {},
+                on_review: |_| {},
+            }
+        }
+    }
+
+    fn render(branches: Option<Result<Vec<BranchInfo>, String>>) -> String {
+        let mut dom = VirtualDom::new_with_props(Panel, PanelProps { branches });
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
+    #[test]
+    fn both_buttons_show_once_the_list_is_there() {
+        let html = render(Some(Ok(vec![branch("x", PrState::Unchecked, None, 1)])));
+        assert!(html.contains("Run check"));
+        assert!(html.contains("Copy page"));
+    }
+
+    #[test]
+    fn a_failed_read_can_be_checked_again_but_leaves_nothing_to_copy() {
+        let html = render(Some(Err("nope".into())));
+        assert!(html.contains("Run check"));
+        assert!(!html.contains("Copy page"));
+    }
+
+    #[test]
+    fn the_check_button_says_it_is_working() {
+        let html = render(None);
+        assert!(html.contains("Checking…"));
+        assert!(!html.contains("Run check"));
     }
 }

@@ -1046,6 +1046,7 @@ a.btn { text-decoration: none; }
    BRANCHES panel
 ══════════════════════════════════════════════ */
 .branches-loading { color: var(--text3); font-size: 12.5px; }
+.branches-tools { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 10px; }
 .branches-cleanup {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 10px 12px; background: var(--bg2); border-radius: 8px;
@@ -2142,7 +2143,8 @@ a.pr-failed-check:hover {
     background: var(--bg0); color: var(--text2); border: 1px solid var(--border);
     transition: border-color 0.12s, color 0.12s;
 }
-.region:hover { border-color: var(--green); color: var(--text1); }
+.region:not(:disabled):hover { border-color: var(--green); color: var(--text1); }
+.region:disabled { opacity: 0.5; cursor: default; }
 .region-on { color: var(--text1); border-color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
 .region-flag { font-size: 22px; line-height: 1; height: 22px; display: flex; align-items: center; }
 .region-flag-svg { display: block; border-radius: 2px; box-shadow: 0 0 0 1px var(--border); }

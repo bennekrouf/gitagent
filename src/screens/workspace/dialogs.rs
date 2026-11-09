@@ -190,7 +190,15 @@ pub(super) fn branches_dialog(
                         branches_data.set(None);
                         spawn(async move {
                             let base = resolved_base(&repo, override_base).await;
-                            let result = crate::services::branches::list(&repo, &forge, &base).await;
+                            let result = match crate::services::branches::list(&repo, &forge, &base, true).await {
+                                // The local list is still worth showing when
+                                // Azure DevOps cannot be asked.
+                                Err(e) if forge == Forge::AzureDevOps => {
+                                    branches_action_error.set(Some(format!("Couldn't check pull requests on Azure DevOps: {e}")));
+                                    crate::services::branches::list(&repo, &forge, &base, false).await
+                                }
+                                result => result,
+                            };
                             branches_data.set(Some(result));
                         });
                     }
@@ -225,7 +233,10 @@ pub(super) fn branches_dialog(
                         on_close: move |_| branches_open.set(None),
                         on_refresh: {
                             let mut reload = reload.clone();
-                            move |_| reload()
+                            move |_| {
+                                branches_action_error.set(None);
+                                reload()
+                            }
                         },
                         on_delete: {
                             let repo = repo.clone();

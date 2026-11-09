@@ -196,7 +196,7 @@ pub(super) fn refresh(path: &str) -> Result<Value, String> {
 /// The api0 region the model runs in: read, or switched. `folder` scopes it
 /// as Settings in the window on that folder does; without one, it is the
 /// default every folder without a choice of its own runs on.
-pub(super) fn model_region(region: &str, folder: &str) -> Result<Value, String> {
+pub(super) async fn model_region(region: &str, folder: &str) -> Result<Value, String> {
     let folder = folder.trim().trim_end_matches('/');
     let folder = (!folder.is_empty()).then_some(folder);
     if let Some(f) = folder {
@@ -214,6 +214,7 @@ pub(super) fn model_region(region: &str, folder: &str) -> Result<Value, String> 
                 .collect::<Vec<_>>()
                 .join(", ")
         ))?;
+        desktop_kit::region::ensure_open(chosen).await?;
         // The folder whose choice a run there reads — the nearest one above
         // it that chose — so the switch lands where it takes effect.
         let models = store::load_folder_models();
@@ -294,8 +295,8 @@ pub(super) fn trust_all(turn_off: bool) -> Value {
         "trust_all": store::trust_all(),
         "note": if store::trust_all() {
             "On: every run approves every step itself, release notes and release scripts \
-             included, merges whatever the analysis found and waits for CI that is still \
-             running. It stops only at a merge whose CI failed. Only the user can turn it \
+             included, merges whatever the analysis found and does not wait for CI that is \
+             still running. It stops only at a merge whose CI failed. Only the user can turn it \
              on, in the GitAgent window; pass turn_off: true to turn it off."
         } else {
             "Off: runs ask, unless started with trusted: true or approved with \

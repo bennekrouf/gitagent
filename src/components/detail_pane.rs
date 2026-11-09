@@ -311,11 +311,15 @@ fn LogBox(log: String, failed: bool) -> Element {
 /// moment. `navigator.clipboard` is not granted in every webview, so the old
 /// select-and-copy route backs it up.
 #[component]
-pub fn CopyButton(text: String) -> Element {
+pub fn CopyButton(
+    text: String,
+    #[props(default = "btn log-copy".to_string())] class: String,
+    #[props(default = "Copy".to_string())] label: String,
+) -> Element {
     let mut copied = use_signal(|| false);
     rsx! {
         button {
-            class: "btn log-copy",
+            class: "{class}",
             title: "Copy to clipboard",
             onclick: move |_| {
                 let literal = serde_json::to_string(&text).unwrap_or_default();
@@ -334,7 +338,7 @@ pub fn CopyButton(text: String) -> Element {
                     copied.set(false);
                 });
             },
-            if copied() { "Copied" } else { "Copy" }
+            if copied() { "Copied" } else { "{label}" }
         }
     }
 }

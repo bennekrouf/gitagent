@@ -432,6 +432,13 @@ pub async fn execute(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| repo.to_string())
         ),
+        // A commit message and a pull request description are a few lines
+        // of writing: the cheaper model writes them as well, for a fraction
+        // of the tokens. Reviews and release notes keep the default.
+        task: match node.step {
+            Step::DraftCommit | Step::DraftPr => Some("chat"),
+            _ => None,
+        },
         on_line,
     };
     let asker = &mut asker;

@@ -93,10 +93,10 @@ fn regions_go_by_the_names_people_use() {
     assert!(region_named("mars").is_none());
 }
 
-#[test]
-fn an_unknown_region_changes_nothing() {
+#[tokio::test]
+async fn an_unknown_region_changes_nothing() {
     let before = store::load_settings();
-    let err = model_region("mars", "").unwrap_err();
+    let err = model_region("mars", "").await.unwrap_err();
     assert!(err.contains("europe, china, usa"), "{err}");
     assert_eq!(store::load_settings(), before);
 }

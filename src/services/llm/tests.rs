@@ -351,20 +351,49 @@ fn a_remote_model_is_capped_by_cost_not_by_its_window() {
 }
 
 #[test]
-fn api0_without_a_region_comes_back_on_the_first_one() {
+fn a_commit_message_is_written_from_a_third_of_the_diff_a_review_gets() {
+    let remote = LlmConfig {
+        kind: ProviderKind::Remote,
+        ..LlmConfig::default()
+    };
+    assert_eq!(remote.message_budget(), MESSAGE_DIFF_CAP);
+    assert!(remote.message_budget() < remote.input_budget());
+    let mut local = LlmConfig::default();
+    local.ollama_num_ctx = 8192;
+    assert_eq!(
+        local.message_budget(),
+        local.input_budget(),
+        "never more than the window holds"
+    );
+}
+
+#[test]
+fn only_api0_is_told_what_a_call_does() {
+    let api0 = client_app(remote("api0"), Some("chat"));
+    assert_eq!(api0["X-Task"], "chat");
+    assert_eq!(api0["X-Client-App"], crate::services::licence::PRODUCT);
+    assert!(
+        client_app(remote("api0"), None).get("X-Task").is_none(),
+        "no task: api0 picks GitAgent's default"
+    );
+    assert!(client_app(remote("openai"), Some("chat")).is_empty());
+}
+
+#[test]
+fn api0_without_a_region_comes_back_on_the_default_one() {
     let cfg = LlmConfig {
         kind: ProviderKind::Remote,
         remote: "api0".into(),
         ..LlmConfig::default()
     }
     .with_region_filled();
-    assert_eq!(cfg.region().map(|r| r.id), Some("europe"));
+    assert_eq!(cfg.region().map(|r| r.id), Some("china"));
     assert_eq!(
         cfg.active_model(),
         if cfg!(windows) {
-            "Europe"
+            "China"
         } else {
-            "\u{1F1EA}\u{1F1FA} Europe"
+            "\u{1F1E8}\u{1F1F3} China"
         },
         "a button showing the model says where it runs, never \"default\""
     );
