@@ -358,8 +358,10 @@ fn a_commit_message_is_written_from_a_third_of_the_diff_a_review_gets() {
     };
     assert_eq!(remote.message_budget(), MESSAGE_DIFF_CAP);
     assert!(remote.message_budget() < remote.input_budget());
-    let mut local = LlmConfig::default();
-    local.ollama_num_ctx = 8192;
+    let local = LlmConfig {
+        ollama_num_ctx: 8192,
+        ..LlmConfig::default()
+    };
     assert_eq!(
         local.message_budget(),
         local.input_budget(),
