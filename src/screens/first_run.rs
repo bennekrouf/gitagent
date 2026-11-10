@@ -123,6 +123,8 @@ pub fn FirstRun(props: FirstRunProps) -> Element {
                         cfg,
                         second: false,
                         offers,
+                        // This screen only shows once ollama has answered.
+                        ollama_found: Some(true),
                         on_change: move |_| {},
                         on_licence: None,
                     }

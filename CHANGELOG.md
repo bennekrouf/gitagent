@@ -19,6 +19,17 @@ were never released.
 
 ## [0.1.181] - 2026-11-10
 
+### Changed
+
+- **Setup** is back in plain sight: a button in the bar under the header, next
+  to **Trust all**, instead of only inside Settings.
+
+### Fixed
+
+- Ollama can no longer be picked on a computer where it isn't installed or
+  running: its button is greyed out and says "not detected".
+- An open region no longer reads "unavailable" when its price couldn't be
+  fetched. It stays selectable and says "price unknown".
 ### Fixed
 
 - A merge that fails now says why, above the diff. It used to show only the

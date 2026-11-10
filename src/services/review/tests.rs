@@ -718,3 +718,53 @@ fn the_merge_approval_shows_the_command_this_forge_will_run() {
     state.artifacts.insert("forge".into(), "github".into());
     assert!(proposal(Step::Merge, &state).starts_with("gh pr merge 12"));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn running_merge_again_mid_merge_offers_finish_not_uncommitted_changes() {
+    // Every conflict resolved, then Retry: the staged merge was read as
+    // uncommitted changes, with no fix offered, while the conflict panel
+    // said "Finish the merge below".
+    let dir = std::env::temp_dir().join(format!("gitagent-midmerge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap()
+    };
+    let repo = dir.to_string_lossy().to_string();
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("CHANGELOG.md"), "one\n").unwrap();
+    git(&["add", "CHANGELOG.md"]);
+    git(&["commit", "-qm", "one"]);
+    assert!(
+        merge_in_progress(&repo, "7", "main").await.is_none(),
+        "no merge open"
+    );
+
+    git(&["checkout", "-qb", "feat"]);
+    std::fs::write(dir.join("CHANGELOG.md"), "feat\n").unwrap();
+    git(&["commit", "-qam", "feat"]);
+    git(&["checkout", "-q", "main"]);
+    std::fs::write(dir.join("CHANGELOG.md"), "main\n").unwrap();
+    git(&["commit", "-qam", "main"]);
+    git(&["checkout", "-q", "feat"]);
+    git(&["merge", "-q", "main"]);
+    std::fs::write(dir.join("CHANGELOG.md"), "feat\nmain\n").unwrap();
+    git(&["add", "CHANGELOG.md"]);
+
+    let open = merge_in_progress(&repo, "7", "main")
+        .await
+        .expect("a merge is open");
+    assert!(open.remedies[0].label.starts_with("Finish the merge"));
+    assert!(open.remedies[0].once_resolved);
+    assert!(open.message.contains("CHANGELOG.md"));
+    std::fs::remove_dir_all(&dir).ok();
+}

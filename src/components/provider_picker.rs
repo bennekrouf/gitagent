@@ -49,12 +49,28 @@ pub fn current_pick(cfg: &LlmConfig, second: bool) -> Option<Pick> {
     }
 }
 
+const OLLAMA_MISSING: &str =
+    "Ollama isn\u{2019}t answering on this computer. Install it from ollama.com \
+     or start it, then reopen this window.";
+
+/// The Ollama button's note, and whether it can't be clicked: until ollama has
+/// answered there is nothing on this computer to run a model.
+fn ollama_choice(found: Option<bool>) -> (&'static str, bool) {
+    match found {
+        Some(true) => ("on this computer, free", false),
+        Some(false) => ("not detected", true),
+        None => ("\u{2026}", true),
+    }
+}
+
 #[component]
 pub fn ProviderPicker(
     cfg: Signal<LlmConfig>,
     /// Writes to the second reviewer's choice rather than the default's.
     second: bool,
     offers: Signal<Option<Result<Vec<llm::RegionOffer>, String>>>,
+    /// Whether ollama answers on this computer; `None` until it has been asked.
+    ollama_found: Option<bool>,
     /// A choice changed, so a test result shown beside it is stale.
     on_change: EventHandler<()>,
     /// Opens the GitAgent Pro window, where a licence is activated. Without
@@ -87,7 +103,9 @@ pub fn ProviderPicker(
     let cost = |r: &'static Region| match offers.read().as_ref() {
         _ if !has_licence => "needs a licence".to_string(),
         None => "\u{2026}".to_string(),
-        Some(Err(_)) => "unavailable".to_string(),
+        // Only the price could not be read: whether the region is open is
+        // the closed list's to say, and it has already been asked above.
+        Some(Err(_)) => "price unknown".to_string(),
         Some(Ok(list)) => match list.iter().find(|o| o.id == r.id) {
             Some(o) => {
                 let n = o.credits_per_step();
@@ -104,12 +122,8 @@ pub fn ProviderPicker(
         _ => None,
     };
 
-    let mut choices = vec![(
-        Pick::Ollama,
-        "Ollama",
-        "on this computer, free".to_string(),
-        false,
-    )];
+    let (ollama_note, ollama_off) = ollama_choice(ollama_found);
+    let mut choices = vec![(Pick::Ollama, "Ollama", ollama_note.to_string(), ollama_off)];
     choices.extend(llm::REGIONS.iter().map(|r| {
         let soon = is_closed(r);
         let note = if soon {
@@ -122,13 +136,14 @@ pub fn ProviderPicker(
 
     rsx! {
         div { class: "region-row",
-            for (p, label, note, soon) in choices {
+            for (p, label, note, off) in choices {
                 button {
                     key: "{p.key()}",
                     class: if pick == Some(p) { "region region-on" } else { "region" },
-                    disabled: soon,
+                    disabled: off,
                     title: match p {
-                        _ if soon => llm::COMING_SOON.to_string(),
+                        Pick::Ollama if off => OLLAMA_MISSING.to_string(),
+                        _ if off => llm::COMING_SOON.to_string(),
                         Pick::Ollama => "A model running on this computer".to_string(),
                         Pick::Api0(r) => format!("api0, in {}", r.label),
                     },
@@ -298,6 +313,13 @@ mod tests {
             cfg.use_region(r.id);
             assert_eq!(current_pick(&cfg, false), Some(Pick::Api0(r)));
         }
+    }
+
+    #[test]
+    fn ollama_can_only_be_chosen_once_it_has_answered() {
+        assert_eq!(ollama_choice(Some(true)), ("on this computer, free", false));
+        assert_eq!(ollama_choice(Some(false)), ("not detected", true));
+        assert!(ollama_choice(None).1);
     }
 
     #[test]

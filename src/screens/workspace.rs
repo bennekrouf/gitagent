@@ -526,7 +526,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
 
     rsx! {
         div { class: "screen",
-            {topbar::topbar(running, trusted, global_trust, run_view, settings_open, mcp_open, licence_status, licence_open, cfg.clone(), props.clone())}
+            {topbar::topbar(running, trusted, global_trust, run_view, settings_open, setup_open, mcp_open, licence_status, licence_open, cfg.clone(), props.clone())}
 
             div {
                 class: if *dragging.read() > 0 { "body body-dragging" } else { "body" },
