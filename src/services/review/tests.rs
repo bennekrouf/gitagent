@@ -702,3 +702,19 @@ fn a_runner_failure_without_a_code_error_still_offers_the_rerun() {
         code_error("error: used `expect()` on an `Option` value\n  --> src/a.rs:1:1").is_some()
     );
 }
+
+#[test]
+fn the_merge_approval_shows_the_command_this_forge_will_run() {
+    let mut state = RunState::default();
+    state.artifacts.insert("pr_number".into(), "12".into());
+    state.artifacts.insert("forge".into(), "azure".into());
+    let azure = proposal(Step::Merge, &state);
+    assert!(
+        azure.starts_with("az repos pr update --id 12 --status completed"),
+        "{azure}"
+    );
+    assert!(!azure.contains("gh pr merge"), "{azure}");
+
+    state.artifacts.insert("forge".into(), "github".into());
+    assert!(proposal(Step::Merge, &state).starts_with("gh pr merge 12"));
+}

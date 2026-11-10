@@ -688,3 +688,138 @@ fn two_producers_flow() -> FlowDef {
         ],
     }
 }
+
+/// The shape `review_and_merge` was saved in before the later adoptions.
+const OLDER_FLOWS: &str = r#"
+adopted = ["run_tests"]
+
+[[flow]]
+id = "review_and_merge"
+label = "Review → Merge"
+handles = ["open_pull_request"]
+
+[[flow.node]]
+id = "preflight"
+step = "preflight"
+
+[[flow.node]]
+id = "find_pr"
+step = "find_pr"
+deps = ["preflight"]
+
+[[flow.node]]
+id = "pr_status"
+step = "pr_status"
+deps = ["find_pr"]
+
+[[flow.node]]
+id = "pr_diff"
+step = "pr_diff"
+deps = ["find_pr"]
+
+[[flow.node]]
+id = "analyse"
+step = "analyse"
+deps = ["pr_diff"]
+
+[[flow.node]]
+id = "merge"
+step = "merge"
+deps = ["pr_status", "analyse"]
+
+[[flow.node]]
+id = "sync"
+step = "sync"
+deps = ["merge"]
+"#;
+
+#[test]
+fn an_older_flows_file_still_provides_every_input_of_merge() {
+    let mut book: FlowBook = toml::from_str(OLDER_FLOWS).unwrap();
+    let before: Vec<String> = book.flows[0].nodes.iter().map(|n| n.id.clone()).collect();
+    book.adopt_missing_declarations();
+    assert!(book.adopt_steps());
+    let flow = book.get("review_and_merge").unwrap();
+    assert_eq!(validate(flow), vec![]);
+    for id in &before {
+        assert!(flow.nodes.iter().any(|n| &n.id == id), "lost {id}");
+    }
+    assert!(ancestors(flow, "merge").contains("pr_status"));
+}
+
+#[test]
+fn a_flow_that_lost_pr_status_gets_it_back_in_the_right_place() {
+    let mut book = FlowBook::defaults();
+    let flow = book.get_mut("review_and_merge").unwrap();
+    flow.remove_node("pr_status");
+    assert_eq!(
+        validate(flow)[0],
+        Problem::MissingInput {
+            node: "merge".into(),
+            key: "checks_summary".into()
+        }
+    );
+    let fixed = flow.repaired().unwrap();
+    assert_eq!(validate(&fixed), vec![]);
+    let restored = fixed.nodes.iter().find(|n| n.step == "pr_status").unwrap();
+    assert_eq!(restored.deps, ["find_pr"]);
+    assert!(ancestors(&fixed, "merge").contains(&restored.id));
+}
+
+#[test]
+fn a_producer_still_in_the_flow_is_wired_in_rather_than_duplicated() {
+    let mut flow = FlowBook::defaults()
+        .get("review_and_merge")
+        .unwrap()
+        .clone();
+    flow.nodes
+        .iter_mut()
+        .find(|n| n.id == "merge")
+        .unwrap()
+        .deps
+        .retain(|d| d != "pr_status");
+    let fixed = flow.repaired().unwrap();
+    assert_eq!(fixed.nodes.len(), flow.nodes.len());
+    assert_eq!(validate(&fixed), vec![]);
+}
+
+#[test]
+fn a_flow_with_nothing_missing_offers_no_repair() {
+    let book = FlowBook::defaults();
+    assert_eq!(book.get("review_and_merge").unwrap().repaired(), None);
+}
+
+#[test]
+fn repairing_one_flow_leaves_the_others_alone() {
+    let mut book = FlowBook::defaults();
+    let commit = book.get("commit_and_pr").unwrap().clone();
+    book.get_mut("review_and_merge")
+        .unwrap()
+        .remove_node("pr_status");
+    assert!(book.repair("review_and_merge"));
+    assert!(!book.repair("review_and_merge"));
+    assert_eq!(book.get("commit_and_pr"), Some(&commit));
+}
+
+#[test]
+fn saving_is_held_only_for_a_flow_this_edit_would_break() {
+    let on_disk = FlowBook::defaults();
+    let mut draft = on_disk.clone();
+    draft
+        .get_mut("review_and_merge")
+        .unwrap()
+        .remove_node("pr_status");
+    assert_eq!(draft.newly_broken(&on_disk), ["Review → Merge"]);
+    // Already broken when Setup opened: saving other work is still allowed.
+    assert!(draft.newly_broken(&draft).is_empty());
+    // Removing what reads it as well is a deliberate, valid flow.
+    draft
+        .get_mut("review_and_merge")
+        .unwrap()
+        .remove_node("merge");
+    draft
+        .get_mut("review_and_merge")
+        .unwrap()
+        .remove_node("sync");
+    assert!(draft.newly_broken(&on_disk).is_empty());
+}

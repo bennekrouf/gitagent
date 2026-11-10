@@ -337,7 +337,9 @@ pub async fn create_pr(
     .unwrap_or_default();
     let (title, body) = title_and_body(&log, branch);
 
-    super::forge::create_pr(forge, repo, base, branch, &title, &body).await
+    super::forge::create_pr(forge, repo, base, branch, &title, &body)
+        .await
+        .map(|opened| opened.url)
 }
 
 /// A pull request title and body straight from a branch's own commit

@@ -72,6 +72,23 @@ pub(super) fn flow_editor(
                     for problem in problems.iter() {
                         div { key: "{problem:?}", class: "problem", "{problem.message()}" }
                     }
+                    if flow.repaired().is_some() {
+                        button {
+                            class: "btn",
+                            title: "Puts back the steps this flow needs",
+                            onclick: {
+                                let mut edit_flow = edit_flow;
+                                move |_| {
+                                    edit_flow(&|f| {
+                                        if let Some(fixed) = f.repaired() {
+                                            *f = fixed;
+                                        }
+                                    })
+                                }
+                            },
+                            "Restore missing step"
+                        }
+                    }
                 }
             }
 

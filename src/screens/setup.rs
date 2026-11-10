@@ -84,6 +84,9 @@ pub fn Setup(props: SetupProps) -> Element {
     // button's state and whether Cancel has to ask before throwing anything
     // away.
     let dirty = snapshot != *on_disk.read() || *scopes.read() != *scopes_on_disk.read();
+    // Saving used to write these too, which is how a flow lost a step it
+    // needed: Remove takes the step out, and nothing stopped the save.
+    let breaking = snapshot.newly_broken(&on_disk.read());
     let shipped = FlowBook::defaults();
     let is_new = |id: &str| on_disk.read().get(id).is_none() && shipped.get(id).is_none();
     let origin = props.repo.clone();
@@ -133,11 +136,16 @@ pub fn Setup(props: SetupProps) -> Element {
                     }
                     button {
                         class: "btn btn-primary",
-                        disabled: !dirty,
-                        title: if dirty {
-                            "Write these flows to flows.toml"
+                        disabled: !dirty || !breaking.is_empty(),
+                        title: if !breaking.is_empty() {
+                            format!(
+                                "{} would stop running. Restore the missing step, or Cancel.",
+                                breaking.join(", ")
+                            )
+                        } else if dirty {
+                            "Write these flows to flows.toml".to_string()
                         } else {
-                            "No changes to save"
+                            "No changes to save".to_string()
                         },
                         onclick: {
                             let origin = props.repo.clone();
