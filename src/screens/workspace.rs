@@ -464,6 +464,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         status_map.clone(),
         flow_id.clone(),
         flow_problems.clone(),
+        book,
         flow_kind,
         graph.clone(),
         active.clone(),

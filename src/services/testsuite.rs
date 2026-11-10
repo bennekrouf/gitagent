@@ -22,10 +22,57 @@ pub struct Suite {
 
 /// The test command for `repo`, or `None` when nothing recognisable is there.
 pub fn detect(repo: &Path) -> Option<Suite> {
+    detect_in(repo).or_else(|| detect_nested(repo))
+}
+
+fn detect_in(dir: &Path) -> Option<Suite> {
     from_files(
-        |name| repo.join(name).exists(),
-        |name| std::fs::read_to_string(repo.join(name)).ok(),
+        |name| dir.join(name).exists(),
+        |name| std::fs::read_to_string(dir.join(name)).ok(),
     )
+}
+
+/// The one project directly under the root, for a repository whose root has
+/// none (`core/pyproject.toml`). Several are left alone rather than guessed
+/// between: the step then says none was found, and Setup can name a command.
+fn detect_nested(repo: &Path) -> Option<Suite> {
+    let mut found = std::fs::read_dir(repo)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if not_a_project(&name) {
+                return None;
+            }
+            detect_in(&entry.path()).map(|suite| (name, suite))
+        });
+    let (folder, suite) = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    Some(Suite {
+        command: format!("cd {} && {}", shell_quoted(&folder), suite.command),
+        why: format!("{} in {folder}/", suite.why),
+    })
+}
+
+/// Folders of tools and build output, where a marker file says nothing about
+/// the repository's own tests.
+fn not_a_project(name: &str) -> bool {
+    name.starts_with('.')
+        || ["node_modules", "target", "vendor", "venv", "dist", "build"].contains(&name)
+}
+
+fn shell_quoted(text: &str) -> String {
+    if text
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
 }
 
 /// The detection itself, with the filesystem passed in so it can be tested
@@ -124,6 +171,65 @@ mod tests {
                     .map(|(_, body)| body.to_string())
             },
         )
+    }
+
+    /// A repository on disk holding `files`, empty, for what walks folders.
+    fn on_disk(label: &str, files: &[&str]) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("gitagent-testsuite-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for file in files {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_single_project_in_a_subfolder_runs_from_that_folder() {
+        let dir = on_disk(
+            "nested",
+            &["README.md", "core/pyproject.toml", "core/uv.lock"],
+        );
+        let suite = detect(&dir).unwrap();
+        assert_eq!(suite.command, "cd core && uv run pytest");
+        assert_eq!(suite.why, "pyproject.toml and uv.lock in core/");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_project_at_the_root_is_preferred_to_one_below_it() {
+        let dir = on_disk("root-wins", &["go.mod", "core/pyproject.toml"]);
+        assert_eq!(detect(&dir).unwrap().command, "go test ./...");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn several_nested_projects_are_not_guessed_between() {
+        let dir = on_disk("several", &["api/go.mod", "core/pyproject.toml"]);
+        assert_eq!(detect(&dir), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn tool_folders_do_not_count_as_a_project() {
+        let dir = on_disk(
+            "tools",
+            &[
+                "node_modules/x/go.mod",
+                ".cache/pyproject.toml",
+                "target/go.mod",
+            ],
+        );
+        assert_eq!(detect(&dir), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_name_with_a_space_is_quoted() {
+        assert_eq!(shell_quoted("core"), "core");
+        assert_eq!(shell_quoted("my core"), "'my core'");
     }
 
     #[test]

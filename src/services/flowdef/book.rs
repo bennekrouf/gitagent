@@ -107,20 +107,50 @@ impl FlowBook {
                     }
                     crate::services::store::save_repo_flows(&shown);
                 }
-                // `|` rather than `||`: each adoption must get its turn.
-                if book.adopt_missing_test_step()
-                    | book.adopt_notes_steps()
-                    | book.adopt_watch_release()
-                    | book.adopt_second_opinion()
-                    | book.adopt_lenses()
-                    | renamed.is_some()
-                {
+                if book.adopt_steps() | renamed.is_some() {
                     book.save();
                 }
                 book
             }
             _ => Self::defaults(),
         }
+    }
+
+    /// Every step adoption, once each. These only ever add steps. Returns
+    /// whether the book now needs writing back.
+    pub fn adopt_steps(&mut self) -> bool {
+        // `|` rather than `||`: each adoption must get its turn.
+        self.adopt_missing_test_step()
+            | self.adopt_notes_steps()
+            | self.adopt_watch_release()
+            | self.adopt_second_opinion()
+            | self.adopt_lenses()
+    }
+
+    /// Puts back what flow `id` is missing. Returns whether it changed.
+    pub fn repair(&mut self, id: &str) -> bool {
+        let Some(fixed) = self.get(id).and_then(FlowDef::repaired) else {
+            return false;
+        };
+        if let Some(flow) = self.get_mut(id) {
+            *flow = fixed;
+        }
+        true
+    }
+
+    /// The names of flows that run in `before` and would not in this book.
+    /// A flow still being built, never valid yet, is not counted.
+    pub fn newly_broken(&self, before: &FlowBook) -> Vec<String> {
+        self.flows
+            .iter()
+            .filter(|f| !validate(f).is_empty())
+            .filter(|f| {
+                before
+                    .get(&f.id)
+                    .is_some_and(|old| validate(old).is_empty())
+            })
+            .map(|f| f.label.clone())
+            .collect()
     }
 
     pub fn save(&self) {

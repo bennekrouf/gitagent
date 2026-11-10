@@ -167,21 +167,30 @@ pub(super) struct Hold {
 
 impl Hold {
     pub(super) async fn read(repo: &str, number: &str) -> Self {
-        // One look at the repository for both: its settings and your role.
-        let about = git::run(
+        // Asked apart: `gh repo view` has no field for auto-merge, and one
+        // unknown field fails the whole call, which loses your role with it.
+        // `{owner}/{repo}` is for gh to fill in from the repository.
+        let auto_merge = git::run(
+            repo,
+            "gh",
+            &["api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge"],
+        )
+        .await
+        .is_ok_and(|out| out.trim() == "true");
+        let admin = git::run(
             repo,
             "gh",
             &[
                 "repo",
                 "view",
                 "--json",
-                "autoMergeAllowed,viewerPermission",
+                "viewerPermission",
+                "-q",
+                ".viewerPermission",
             ],
         )
         .await
-        .ok()
-        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
-        .unwrap_or_default();
+        .is_ok_and(|out| out.trim() == "ADMIN");
         // `gh pr checks` exits non-zero when one failed, and git::run keeps
         // only stderr then: `; true` keeps its JSON on stdout.
         let checks = git::run(
@@ -204,8 +213,8 @@ impl Hold {
             }
         }
         Hold {
-            auto_merge: about["autoMergeAllowed"] == true,
-            admin: about["viewerPermission"] == "ADMIN",
+            auto_merge,
+            admin,
             failed,
             error,
         }

@@ -276,3 +276,141 @@ async fn a_repository_without_a_remote_passes_preflight() {
         checks.iter().map(|c| &c.detail).collect::<Vec<_>>()
     );
 }
+
+const CERT_DEBUG: &str = "Bearer secret-token-value\n\
+    SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate \
+    verify failed: unable to get local issuer certificate (_ssl.c:1006)'))";
+
+fn all_text(check: &Check) -> String {
+    format!("{} {}", check.detail, check.help)
+}
+
+#[test]
+fn a_certificate_failure_with_a_token_is_not_called_a_missing_sign_in() {
+    let check = azure_sign_in_check(true, CERT_DEBUG);
+    assert!(!check.ok);
+    assert!(check.fix.is_none());
+    let text = all_text(&check);
+    assert!(text.contains("certificate"), "{text}");
+    assert!(text.contains("REQUESTS_CA_BUNDLE"), "{text}");
+    assert!(!text.contains("az login"), "{text}");
+}
+
+#[test]
+fn nothing_from_debug_output_reaches_the_screen() {
+    let text = all_text(&azure_sign_in_check(true, CERT_DEBUG));
+    assert!(!text.contains("secret-token-value"), "{text}");
+    assert!(!text.contains("_ssl.c"), "{text}");
+}
+
+#[test]
+fn the_certificate_advice_never_turns_verification_off() {
+    let text = all_text(&azure_sign_in_check(true, CERT_DEBUG)).to_lowercase();
+    assert!(!text.contains("disable"), "{text}");
+    assert!(!text.contains("--insecure"), "{text}");
+}
+
+#[test]
+fn a_proxy_failure_is_told_apart_from_a_certificate_one() {
+    let check = azure_sign_in_check(true, "ProxyError('Tunnel connection failed: 403')");
+    assert!(all_text(&check).contains("proxy"));
+    assert!(!all_text(&check).contains("REQUESTS_CA_BUNDLE"));
+    assert!(!all_text(&check).contains("az login"));
+}
+
+#[test]
+fn without_a_token_it_really_is_a_sign_in_problem() {
+    let check = azure_sign_in_check(false, CERT_DEBUG);
+    assert!(all_text(&check).contains("az login"));
+    assert_eq!(check.fix.unwrap().display, "az login");
+}
+
+#[test]
+fn a_token_with_no_network_cause_still_offers_the_sign_in() {
+    assert!(azure_sign_in_check(true, "some other failure")
+        .fix
+        .is_some());
+}
+
+#[test]
+fn a_certificate_failure_listing_pull_requests_offers_no_sign_in() {
+    let err = "CERTIFICATE_VERIFY_FAILED, please run az login";
+    assert!(pr_list_remedy(&Forge::AzureDevOps, err).is_none());
+}
+
+const MULTI_LINE: &str = "## Summary\n\n- first bullet\n  - nested\n\n---\n-flag\nlast line";
+
+/// What Rust refuses to hand a batch file on Windows.
+#[test]
+fn a_multi_line_description_reaches_az_without_a_line_break_in_any_argument() {
+    let values = azure_description_values(MULTI_LINE);
+    let scope = vec!["--organization".to_string(), "https://x".to_string()];
+    let args = azure_create_args("topic", "main", "Title", &values, &scope);
+    assert!(args.iter().all(|a| !a.contains(['\r', '\n'])), "{args:?}");
+    let at = args.iter().position(|a| *a == "--description").unwrap();
+    assert_eq!(&args[at + 1..at + 1 + values.len()], values.as_slice());
+    assert_eq!(args[at + 1 + values.len()], "--output");
+}
+
+#[test]
+fn no_line_of_a_description_is_lost() {
+    let values = azure_description_values(MULTI_LINE);
+    assert_eq!(values.len(), MULTI_LINE.lines().count());
+    assert_eq!(
+        values.iter().map(|v| v.trim_start()).collect::<Vec<_>>(),
+        MULTI_LINE.lines().map(str::trim_start).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn only_lines_az_would_read_as_options_are_changed() {
+    let values = azure_description_values("---\n-flag\n--a=b\n- bullet\n  - nested\ntext");
+    assert_eq!(
+        values,
+        [" ---", " -flag", " --a=b", "- bullet", "  - nested", "text"]
+    );
+}
+
+#[test]
+fn windows_line_endings_leave_nothing_behind() {
+    let values = azure_description_values("one\r\ntwo\r\n");
+    assert_eq!(values, ["one", "two"]);
+}
+
+#[test]
+fn an_empty_description_sends_no_flag() {
+    let values = azure_description_values("  \n");
+    assert!(values.is_empty());
+    let args = azure_create_args("a", "b", "t", &values, &[]);
+    assert!(!args.contains(&"--description"));
+}
+
+#[test]
+fn a_title_is_kept_on_one_line() {
+    assert_eq!(azure_title("Fix it\r\n\r\n  properly"), "Fix it properly");
+}
+
+#[test]
+fn an_existing_pull_request_is_linked_from_its_web_address() {
+    let pr = r#"{"pullRequestId":7,"repository":{"webUrl":"https://dev.azure.com/o/p/_git/r"}}"#;
+    assert_eq!(
+        azure_pr_url(pr).unwrap(),
+        "https://dev.azure.com/o/p/_git/r/pullrequest/7"
+    );
+}
+
+#[test]
+fn an_existing_pull_request_with_no_web_address_is_linked_from_the_remote() {
+    let pr = serde_json::json!({ "pullRequestId": 7 });
+    assert_eq!(
+        azure_pr_url_from_remote(&pr, "https://dev.azure.com/o/My%20Proj/_git/r").unwrap(),
+        "https://dev.azure.com/o/My%20Proj/_git/r/pullrequest/7"
+    );
+}
+
+#[test]
+fn azures_already_exists_error_is_recognised() {
+    assert!(already_exists(
+        "TF401179: An active pull request for the source and target branch already exists."
+    ));
+}

@@ -433,3 +433,98 @@ fn the_second_reviewer_picks_a_region_of_its_own() {
     );
     assert_eq!(cfg.second.remote, DEFAULT_REMOTE);
 }
+
+#[test]
+fn each_kind_of_network_failure_is_named() {
+    let said = |chain: &str| describe_network_failure("api0 is unreachable", chain, false);
+    assert!(
+        said("error sending request: invalid peer certificate: UnknownIssuer")
+            .contains("does not trust the certificate")
+    );
+    assert!(
+        said("schannel: The certificate chain was issued by an authority that is not trusted")
+            .contains("does not trust the certificate")
+    );
+    assert!(said("error sending request: unsuccessful tunnel").contains("the proxy refused"));
+    assert!(
+        said("client error (Connect): dns error: failed to lookup address information")
+            .contains("could not be resolved")
+    );
+    assert!(said("connection timed out").contains("time limit"));
+}
+
+#[test]
+fn a_failure_of_no_known_kind_still_gives_its_cause() {
+    assert_eq!(
+        describe_network_failure("api0 is unreachable", "connection refused", false),
+        "api0 is unreachable: connection refused"
+    );
+}
+
+#[test]
+fn a_timeout_flagged_by_the_client_counts_whatever_its_text() {
+    assert!(describe_network_failure("x", "operation failed", true).contains("time limit"));
+}
+
+/// A real refused connection: the sources reach the message, the key does not.
+#[tokio::test]
+async fn the_error_gives_the_full_cause_and_never_the_key() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/models", listener.local_addr().unwrap());
+    drop(listener);
+    let e = client(Duration::from_secs(5))
+        .unwrap()
+        .get(&url)
+        .bearer_auth("sk-very-secret")
+        .send()
+        .await
+        .unwrap_err();
+    let said = network_error("api0 is unreachable", &e);
+    assert!(said.contains("error sending request"), "{said}");
+    assert!(said.to_lowercase().contains("connect"), "{said}");
+    assert!(
+        said.len() > e.to_string().len() + "api0 is unreachable: ".len(),
+        "{said}"
+    );
+    assert!(!said.contains("sk-very-secret"), "{said}");
+}
+
+/// A real proxy turning the connection away.
+#[tokio::test]
+async fn a_proxy_that_refuses_the_tunnel_is_named() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buffer = [0u8; 1024];
+        let _ = socket.read(&mut buffer).await;
+        let _ = socket.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
+    });
+    let e = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy).unwrap())
+        .build()
+        .unwrap()
+        .get("https://gateway.api0.ai/v1/models")
+        .send()
+        .await
+        .unwrap_err();
+    let said = network_error("api0 is unreachable", &e);
+    assert!(said.contains("the proxy refused"), "{said}");
+}
+
+/// A real server that accepts and never answers.
+#[tokio::test]
+async fn a_server_that_never_answers_reads_as_a_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let e = client(Duration::from_millis(100))
+        .unwrap()
+        .get(&url)
+        .send()
+        .await
+        .unwrap_err();
+    let said = network_error("api0 is unreachable", &e);
+    assert!(said.contains("time limit"), "{said}");
+    drop(listener);
+}

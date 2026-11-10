@@ -197,7 +197,7 @@ pub(super) async fn call_openai_compatible(
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("{} unreachable at {url}: {e}", preset.label))?;
+            .map_err(|e| network_error(&format!("{} unreachable at {url}", preset.label), &e))?;
         let status = resp.status();
         Ok::<_, String>((status, resp.text().await.unwrap_or_default()))
     };
@@ -256,7 +256,7 @@ pub(super) async fn probe_api0(cfg: &LlmConfig, key: &str) -> Result<String, Str
         .headers(client_app(cfg.preset(), None))
         .send()
         .await
-        .map_err(|e| format!("unreachable: {e}"))?;
+        .map_err(|e| network_error("unreachable", &e))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -317,7 +317,7 @@ pub async fn probe(cfg: &LlmConfig) -> Result<String, String> {
                 .bearer_auth(key)
                 .send()
                 .await
-                .map_err(|e| format!("unreachable: {e}"))?;
+                .map_err(|e| network_error("unreachable", &e))?;
             if resp.status().is_success() {
                 Ok(format!(
                     "{} authenticated, using {}",

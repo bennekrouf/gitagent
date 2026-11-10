@@ -421,6 +421,7 @@ pub async fn execute(
     state: &RunState,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<StepOutcome, StepFailure> {
+    super::env::refresh_for_step().await;
     // What a model step is called to any other step waiting for the model
     // behind it — likely in another repository, so the repository is named.
     let mut asker = Asker {
