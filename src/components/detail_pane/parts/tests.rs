@@ -140,3 +140,48 @@ fn a_fix_output_is_folded_so_the_resolver_stays_in_sight() {
     assert!(!html.contains("<details open"), "{html}");
     assert!(html.contains("That stopped before finishing"), "{html}");
 }
+
+#[test]
+fn a_failed_step_with_a_diff_still_says_what_went_wrong() {
+    use crate::components::detail_pane::DetailPane;
+    use crate::services::graph::NodeStatus;
+
+    let html = render(|| {
+        rsx! {
+            DetailPane {
+                spec: NodeSpec {
+                    id: "merge".into(),
+                    title: "Merge".into(),
+                    subtitle: String::new(),
+                    step: Step::ScanChanges,
+                    kind: NodeKind::Deterministic,
+                    deps: vec![],
+                    reads: vec![],
+                    writes: vec![],
+                    requires_approval: false,
+                    config: Default::default(),
+                    bind: Default::default(),
+                },
+                run: NodeRun {
+                    status: NodeStatus::Failed,
+                    log: "#59 can\u{2019}t merge yet".into(),
+                    ..NodeRun::default()
+                },
+                repo: String::new(),
+                diff: "diff --git a/x b/x\n+y\n".to_string(),
+                is_light: false,
+                run_started: true,
+                on_approve: |_| {},
+                on_reject: |_| {},
+                on_toggle: |_| {},
+                on_remedy: |_| {},
+                on_retry: |_| {},
+                on_skip: |_| {},
+                on_cancel: |_| {},
+            }
+        }
+    });
+    assert!(html.contains("Error"), "{html}");
+    assert!(html.contains("merge yet"), "{html}");
+    assert!(html.contains("Diff"), "{html}");
+}

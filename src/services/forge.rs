@@ -174,6 +174,107 @@ fn az_login_remedy() -> Remedy {
     Remedy::new("Sign in with az login", "az", &["login"])
 }
 
+/// A connection to Azure DevOps that failed below the sign-in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AzureConnection {
+    Certificate,
+    Proxy,
+}
+
+/// Which failure `az` output shows, if any. Only ever classified: `--debug`
+/// output can carry credentials, so none of its text is kept or shown.
+fn azure_connection_failure(output: &str) -> Option<AzureConnection> {
+    let lower = output.to_lowercase();
+    let has = |markers: &[&str]| markers.iter().any(|m| lower.contains(m));
+    if has(&[
+        "certificate_verify_failed",
+        "certificate verify failed",
+        "sslcertverificationerror",
+        "unable to get local issuer certificate",
+        "self signed certificate",
+        "self-signed certificate",
+    ]) {
+        return Some(AzureConnection::Certificate);
+    }
+    if has(&[
+        "proxyerror",
+        "tunnel connection failed",
+        "proxy authentication required",
+    ]) {
+        return Some(AzureConnection::Proxy);
+    }
+    None
+}
+
+/// The preflight line for a connection that failed, with what to do about it.
+fn azure_connection_check(failure: AzureConnection) -> Check {
+    match failure {
+        AzureConnection::Certificate => Check::fail(
+            "azure devops auth",
+            "your Azure sign-in works, but the connection to Azure DevOps failed \
+             certificate verification — usually a proxy that inspects TLS",
+        )
+        .with_help(
+            "The Azure CLI uses its own list of trusted certificates, which does not\n\
+             include your proxy's root certificate.\n\
+             \n\
+             1. Get the proxy's root certificate from your IT team, in PEM format.\n\
+             2. Make a bundle: a copy of the CLI's cacert.pem with that root added.\n\
+             3. Set the user environment variable REQUESTS_CA_BUNDLE to the bundle's\n\
+             \x20  full path.\n\
+             4. Run this step again.",
+        ),
+        AzureConnection::Proxy => Check::fail(
+            "azure devops auth",
+            "your Azure sign-in works, but the proxy refused the connection to Azure DevOps",
+        )
+        .with_help(
+            "Check that HTTPS_PROXY is set to your proxy, or empty if none is needed,\n\
+             and that the proxy allows dev.azure.com. Your IT team can confirm both.\n\
+             Then run this step again.",
+        ),
+    }
+}
+
+/// What a generic "run the login command" from `az` really means. The
+/// azure-devops extension says that for a certificate failure too, so when a
+/// token is available `debug` (a `--debug` rerun) is looked at for the cause.
+fn azure_sign_in_check(token_available: bool, debug: &str) -> Check {
+    match azure_connection_failure(debug).filter(|_| token_available) {
+        Some(failure) => azure_connection_check(failure),
+        None => Check::fixable(
+            "azure devops auth",
+            "not signed in to Azure DevOps — sign in again with `az login`, \
+             or run `az devops login` with a PAT in a terminal",
+            az_login_remedy(),
+        ),
+    }
+}
+
+/// Whether Azure will issue a token for Azure DevOps. Asks only for its
+/// expiry, so the token itself never reaches this process.
+async fn azure_token_available() -> bool {
+    git::run(
+        ".",
+        "az",
+        &[
+            "account",
+            "get-access-token",
+            "--resource",
+            AZURE_DEVOPS_RESOURCE,
+            "--query",
+            "expiresOn",
+            "-o",
+            "tsv",
+        ],
+    )
+    .await
+    .is_ok()
+}
+
+/// Azure DevOps' application id in Microsoft Entra.
+const AZURE_DEVOPS_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
+
 /// A fix for why the open pull requests could not be listed, when the app
 /// has one: installing the CLI, signing in to Azure, or adding the
 /// azure-devops extension. Matched on the error text, since that is all a
@@ -188,6 +289,9 @@ pub fn pr_list_remedy(forge: &Forge, err: &str) -> Option<Remedy> {
         return install_remedy(program);
     }
     if program != "az" {
+        return None;
+    }
+    if azure_connection_failure(err).is_some() {
         return None;
     }
     let lower = err.to_lowercase();
@@ -498,14 +602,24 @@ async fn checked_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
             match git::run(repo, "az", &args).await {
                 Ok(_) => checks.push(Check::pass("azure devops auth", "can reach the project")),
                 Err(e) if e.contains("you need to run the login command") => {
-                    checks.push(Check::fixable(
-                        "azure devops auth",
-                        "not signed in to Azure DevOps — sign in again with `az login`, \
-                         or run `az devops login` with a PAT in a terminal",
-                        az_login_remedy(),
+                    let token_available = azure_token_available().await;
+                    let debug = if token_available {
+                        let mut with_debug = args.clone();
+                        with_debug.push("--debug");
+                        git::run(repo, "az", &with_debug).await.err()
+                    } else {
+                        None
+                    };
+                    checks.push(azure_sign_in_check(
+                        token_available,
+                        debug.as_deref().unwrap_or_default(),
                     ))
                 }
                 Err(e) => {
+                    if let Some(failure) = azure_connection_failure(&e) {
+                        checks.push(azure_connection_check(failure));
+                        return checks;
+                    }
                     let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
                         .await
                         .unwrap_or_default();
@@ -576,6 +690,89 @@ pub fn url_in(text: &str) -> Option<String> {
         .map(|w| w.trim_end_matches(['.', ',', ')']).to_string())
 }
 
+/// The pull request a branch has, and whether it was already there.
+#[derive(Clone, PartialEq, Debug)]
+pub struct OpenedPr {
+    pub url: String,
+    pub already_open: bool,
+}
+
+impl OpenedPr {
+    fn new(url: String) -> Self {
+        Self {
+            url,
+            already_open: false,
+        }
+    }
+
+    fn existing(url: String) -> Self {
+        Self {
+            url,
+            already_open: true,
+        }
+    }
+}
+
+/// A description as `az repos pr create --description` takes it, one value a
+/// line. On Windows `az` is a batch file, and Rust refuses to pass a line
+/// break to one, so a multi-line description cannot be a single argument.
+///
+/// A line that argparse would read as an option (`---`, `-x`, `--a=b`) gets
+/// one leading space, which markdown ignores. A bullet (`- item`) is left
+/// alone: argparse takes it as text, and indenting it could re-nest a list.
+fn azure_description_values(body: &str) -> Vec<String> {
+    if body.trim().is_empty() {
+        return vec![];
+    }
+    body.lines()
+        .map(|line| {
+            if line.starts_with('-') && !line.starts_with("- ") {
+                format!(" {line}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect()
+}
+
+/// A title on one line, whatever a model wrote: see `azure_description_values`.
+fn azure_title(title: &str) -> String {
+    title
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Everything after `az` that opens a pull request.
+fn azure_create_args<'a>(
+    head: &'a str,
+    base: &'a str,
+    title: &'a str,
+    description: &'a [String],
+    scope: &'a [String],
+) -> Vec<&'a str> {
+    let mut args = vec![
+        "repos",
+        "pr",
+        "create",
+        "--source-branch",
+        head,
+        "--target-branch",
+        base,
+        "--title",
+        title,
+    ];
+    if !description.is_empty() {
+        args.push("--description");
+        args.extend(description.iter().map(String::as_str));
+    }
+    args.extend(["--output", "json"]);
+    args.extend(scope.iter().map(String::as_str));
+    args
+}
+
 pub async fn create_pr(
     forge: &Forge,
     repo: &str,
@@ -583,46 +780,33 @@ pub async fn create_pr(
     head: &str,
     title: &str,
     body: &str,
-) -> Result<String, String> {
+) -> Result<OpenedPr, String> {
     match forge {
         Forge::GitHub => match git::gh_pr_create(repo, base, head, title, body)
             .await
             .inspect(|_| git::forget_prs(repo))
         {
-            Ok(url) => Ok(url),
+            Ok(url) => Ok(OpenedPr::new(url)),
             // Re-running a flow whose pull request already landed is not a
             // failure; adopt the existing one and carry on.
             Err(e) if already_exists(&e) => match url_in(&e) {
-                Some(url) => Ok(url),
+                Some(url) => Ok(OpenedPr::existing(url)),
                 None => git::run(
                     repo,
                     "gh",
                     &["pr", "view", head, "--json", "url", "-q", ".url"],
                 )
                 .await
-                .map(|out| out.trim().to_string())
+                .map(|out| OpenedPr::existing(out.trim().to_string()))
                 .map_err(|_| e),
             },
             Err(e) => Err(e),
         },
         Forge::AzureDevOps => {
             let scope = azure_scope(repo, Scope::Repository).await;
-            let mut args = vec![
-                "repos",
-                "pr",
-                "create",
-                "--source-branch",
-                head,
-                "--target-branch",
-                base,
-                "--title",
-                title,
-                "--description",
-                body,
-                "--output",
-                "json",
-            ];
-            args.extend(scope.iter().map(String::as_str));
+            let title = azure_title(title);
+            let description = azure_description_values(body);
+            let args = azure_create_args(head, base, &title, &description, &scope);
             let out = git::run(repo, "az", &args).await;
 
             let out = match out {
@@ -635,6 +819,8 @@ pub async fn create_pr(
                         "list",
                         "--source-branch",
                         head,
+                        "--target-branch",
+                        base,
                         "--status",
                         "active",
                         "--output",
@@ -647,12 +833,20 @@ pub async fn create_pr(
                         .ok()
                         .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
                         .ok_or(e)?;
-                    return Ok(azure_pr_url(&first.to_string())
-                        .unwrap_or_else(|| "pull request already open".into()));
+                    let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
+                        .await
+                        .unwrap_or_default();
+                    return Ok(OpenedPr::existing(
+                        azure_pr_url(&first.to_string())
+                            .or_else(|| azure_pr_url_from_remote(&first, &remote))
+                            .unwrap_or_else(|| "pull request already open".into()),
+                    ));
                 }
                 Err(e) => return Err(e),
             };
-            Ok(azure_pr_url(&out).unwrap_or_else(|| out.trim().to_string()))
+            Ok(OpenedPr::new(
+                azure_pr_url(&out).unwrap_or_else(|| out.trim().to_string()),
+            ))
         }
         Forge::Unsupported(host) => Err(format!(
             "cannot open a pull request on {host}. The branch is pushed — open it by hand."
@@ -668,6 +862,19 @@ fn azure_pr_url(json: &str) -> Option<String> {
     let id = value.get("pullRequestId")?.as_i64()?;
     let web = value.get("repository")?.get("webUrl")?.as_str()?;
     Some(format!("{web}/pullrequest/{id}"))
+}
+
+/// The link to a pull request worked out from `origin`, for a reply that has
+/// no web address in it.
+fn azure_pr_url_from_remote(pr: &serde_json::Value, remote: &str) -> Option<String> {
+    let id = pr.get("pullRequestId")?.as_i64()?;
+    let (org, project, name) = azure_coordinates(remote)?;
+    let encoded = |text: &str| text.replace(' ', "%20");
+    Some(format!(
+        "{org}/{}/_git/{}/pullrequest/{id}",
+        encoded(&project),
+        encoded(&name)
+    ))
 }
 
 #[cfg(test)]

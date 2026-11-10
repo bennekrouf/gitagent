@@ -374,7 +374,7 @@ pub async fn api0_regions() -> Result<Vec<RegionOffer>, String> {
         .headers(client_app(api0, None))
         .send()
         .await
-        .map_err(|e| format!("api0 is unreachable: {e}"))?;
+        .map_err(|e| network_error("api0 is unreachable", &e))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -493,6 +493,62 @@ fn client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
         .timeout(timeout)
         .build()
         .map_err(|e| format!("http client: {e}"))
+}
+
+/// Why a request got no answer, with every underlying cause. reqwest's own
+/// message stops at "error sending request", which hides the one part that
+/// says what to fix. Keys travel in a header, which errors never quote.
+fn network_error(what: &str, e: &reqwest::Error) -> String {
+    describe_network_failure(what, &error_chain(e), e.is_timeout())
+}
+
+/// An error and its sources, joined, without repeating what a link already said.
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut source = e.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !parts.last().is_some_and(|last| last.contains(&text)) {
+            parts.push(text);
+        }
+        source = cause.source();
+    }
+    parts.join(": ")
+}
+
+fn describe_network_failure(what: &str, chain: &str, timed_out: bool) -> String {
+    let lower = chain.to_lowercase();
+    let has = |markers: &[&str]| markers.iter().any(|m| lower.contains(m));
+    let cause = if timed_out || has(&["timed out", "timeout"]) {
+        Some("no answer within the time limit; a slow network, VPN or proxy can cause this")
+    } else if has(&[
+        "certificate",
+        "self signed",
+        "self-signed",
+        "not trusted",
+        "untrusted",
+    ]) {
+        Some(
+            "this computer does not trust the certificate it was shown; a proxy that \
+             inspects TLS usually needs its root certificate installed",
+        )
+    } else if has(&["proxy", "tunnel"]) {
+        Some("the proxy refused or could not open the connection; check the proxy settings")
+    } else if has(&[
+        "dns error",
+        "failed to lookup address",
+        "name or service not known",
+        "nodename nor servname",
+        "no such host",
+    ]) {
+        Some("the server name could not be resolved; check the network or VPN")
+    } else {
+        None
+    };
+    match cause {
+        Some(cause) => format!("{what}: {cause}. {chain}"),
+        None => format!("{what}: {chain}"),
+    }
 }
 
 /// A reply stopped at its ceiling (`limit`) is half an object, and the raw text

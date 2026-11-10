@@ -146,6 +146,13 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                 {parts::approval(&run, toggle_id.clone(), chosen, read_only, props.is_light, props.on_toggle, show_files)}
             }
 
+            // Above any diff: a failed step that also wrote one must still say
+            // what went wrong and what to do about it.
+            if run.status == NodeStatus::Failed && !run.log.is_empty() {
+                div { class: "log-head", "Error" }
+                LogBox { log: run.log.clone(), failed: true }
+            }
+
             if let Some(diff) = props.diff.clone().filter(|d| !d.trim().is_empty()) {
                 {
                     // A step that offered files (scan does) lets them be
@@ -184,9 +191,9 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                         }
                     }
                 }
-            } else if !run.log.is_empty() {
-                div { class: "log-head", if run.status == NodeStatus::Failed { "Error" } else { "Output" } }
-                LogBox { log: run.log.clone(), failed: run.status == NodeStatus::Failed }
+            } else if !run.log.is_empty() && run.status != NodeStatus::Failed {
+                div { class: "log-head", "Output" }
+                LogBox { log: run.log.clone(), failed: false }
             }
             }
 

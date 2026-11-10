@@ -76,12 +76,21 @@ fn focused(state: &RunState) -> String {
 }
 
 fn merge_proposal(state: &RunState) -> String {
+    let number = state.artifact("pr_number");
+    // What this forge will really be asked to do: the merge step's command.
+    let command = match Forge::from_key(state.artifact("forge")) {
+        Forge::AzureDevOps => {
+            format!(
+                "az repos pr update --id {number} --status completed --delete-source-branch true"
+            )
+        }
+        _ => format!("gh pr merge {number} --squash --delete-branch"),
+    };
     format!(
-        "gh pr merge {} --squash --delete-branch\n\n\
+        "{command}\n\n\
          ── CI ────────────────────────────────\n{}\n\
          merge state: {}\n{}\n\
          ── Model ─────────────────────────────\nverdict: {}\n\n{}",
-        state.artifact("pr_number"),
         state.artifact("checks_summary"),
         state.artifact("merge_state"),
         state.artifact("checks_detail"),

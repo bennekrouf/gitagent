@@ -175,7 +175,7 @@ pub(super) async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
         return Ok(StepOutcome::nothing(first_commit_note(state)));
     }
     let forge = Forge::from_key(state.artifact("forge"));
-    let url = forge::create_pr(
+    let opened = forge::create_pr(
         &forge,
         repo,
         state.artifact("base"),
@@ -184,10 +184,15 @@ pub(super) async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
         state.artifact("pr_body"),
     )
     .await?;
+    let said = if opened.already_open {
+        format!("already open: {}", opened.url)
+    } else {
+        opened.url.clone()
+    };
     Ok(StepOutcome {
-        summary: url.clone(),
-        log: url.clone(),
-        artifacts: vec![("pr_url".into(), url)],
+        summary: said.clone(),
+        log: said,
+        artifacts: vec![("pr_url".into(), opened.url)],
         nothing_to_do: false,
         items: vec![],
     })

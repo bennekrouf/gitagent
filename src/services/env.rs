@@ -141,13 +141,14 @@ pub fn resolve_program(program: &str) -> std::path::PathBuf {
     #[cfg(windows)]
     {
         let lookup = || {
-            find_program(
-                program,
-                &std::env::var("PATH").unwrap_or_default(),
-                &std::env::var("PATHEXT").unwrap_or_default(),
-                ';',
-                &|p: &std::path::Path| p.is_file(),
-            )
+            let path = std::env::var("PATH").unwrap_or_default();
+            let pathext = std::env::var("PATHEXT").unwrap_or_default();
+            let is_file = |p: &std::path::Path| p.is_file();
+            find_program(program, &path, &pathext, ';', &is_file).or_else(|| {
+                (program == "sh")
+                    .then(|| sh_beside_git(&path, &pathext, ';', &is_file))
+                    .flatten()
+            })
         };
         if let Some(found) = lookup() {
             return found;
@@ -215,6 +216,186 @@ pub fn find_program(
         .find(|candidate| is_file(candidate))
 }
 
+/// Where Git for Windows keeps `sh.exe`, for a `git.exe` in `Git\cmd`.
+fn sh_folders(git: &std::path::Path) -> Option<[std::path::PathBuf; 2]> {
+    let root = git.parent()?.parent()?;
+    Some([root.join("bin"), root.join("usr").join("bin")])
+}
+
+/// `sh.exe` from the Git for Windows that `git` on `path` belongs to. Its
+/// installer normally puts only `Git\cmd` on PATH, which has no `sh`.
+// Only called on Windows; built everywhere so the tests run everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn sh_beside_git(
+    path: &str,
+    pathext: &str,
+    sep: char,
+    is_file: &dyn Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    let git = find_program("git", path, pathext, sep, is_file)?;
+    sh_folders(&git)?
+        .into_iter()
+        .map(|folder| folder.join("sh.exe"))
+        .find(|candidate| is_file(candidate))
+}
+
+/// Why `sh` could not be found on Windows, naming the folders searched.
+pub fn missing_sh_message(git: Option<&std::path::Path>) -> String {
+    match git.and_then(sh_folders) {
+        Some([bin, usr_bin]) => format!(
+            "`sh` was not found on PATH, nor in {} or {}, beside {}. Repair or reinstall \
+             Git for Windows, then retry.",
+            bin.display(),
+            usr_bin.display(),
+            git.map(|g| g.display().to_string()).unwrap_or_default(),
+        ),
+        None => "`sh` was not found on PATH, and git.exe was not found either, so the \
+                 `bin` and `usr\\bin` folders of Git for Windows could not be searched. \
+                 Install Git for Windows, then retry."
+            .to_string(),
+    }
+}
+
+/// [`missing_sh_message`] for this computer's PATH.
+pub fn missing_sh() -> String {
+    let git = find_program(
+        "git",
+        &std::env::var("PATH").unwrap_or_default(),
+        &std::env::var("PATHEXT").unwrap_or_default(),
+        ';',
+        &|p: &std::path::Path| p.is_file(),
+    );
+    missing_sh_message(git.as_deref())
+}
+
+/// Picks up variables set in Windows since GitAgent started, before a step.
+///
+/// A process keeps the environment it was started with, so a variable set
+/// afterwards (`REQUESTS_CA_BUNDLE`, say) would otherwise need a restart of
+/// the window and of the MCP server. Nothing to do elsewhere: there the
+/// login shell was read at start, and no system-wide record exists to reread.
+pub async fn refresh_for_step() {
+    #[cfg(windows)]
+    {
+        let _ = tokio::task::spawn_blocking(refresh_windows_env).await;
+    }
+}
+
+/// The variables to change, given what the registry says now (`fresh`) and
+/// said last time (`seen`, `None` on the first look).
+///
+/// A variable this process lacks is always taken. One it has is replaced only
+/// when the registry's value has changed since the last look: a value set by
+/// whatever launched GitAgent is more deliberate than the stored one, as in
+/// `adopt_login_env`, until the stored one is edited on purpose.
+// Only called on Windows; built everywhere so the tests run everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn env_updates(
+    seen: Option<&std::collections::HashMap<String, String>>,
+    fresh: &std::collections::HashMap<String, String>,
+    current: &dyn Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    let mut updates: Vec<(String, String)> = fresh
+        .iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("PATH"))
+        .filter(
+            |(name, value)| match current(name).filter(|v| !v.is_empty()) {
+                None => true,
+                Some(now) if now == **value => false,
+                Some(_) => seen.is_some_and(|s| s.get(*name) != Some(*value)),
+            },
+        )
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    updates.sort();
+    updates
+}
+
+/// Every variable in `reg query <key>` output, as name and data.
+// Only called on Windows; built everywhere so the tests run everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn parse_reg_values(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            ["    REG_EXPAND_SZ    ", "    REG_SZ    "]
+                .iter()
+                .find_map(|kind| line.split_once(kind))
+        })
+        .map(|(name, data)| (name.trim().to_string(), data.trim().to_string()))
+        .filter(|(name, _)| !name.is_empty())
+        .collect()
+}
+
+#[cfg(windows)]
+fn registry_values(key: &str) -> Vec<(String, String)> {
+    use std::process::{Command, Stdio};
+
+    let Ok(output) = Command::new("reg")
+        .args(["query", key])
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return vec![];
+    };
+    if !output.status.success() {
+        return vec![];
+    }
+    parse_reg_values(&String::from_utf8_lossy(&output.stdout))
+        .into_iter()
+        .map(|(name, data)| {
+            let data = expand_percent_vars(&data, &|n| std::env::var(n).ok());
+            (name, data)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn refresh_windows_env() {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static SEEN: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+    let Ok(mut seen) = SEEN.lock() else {
+        return;
+    };
+
+    // Machine first: a user variable overrides a machine one, as at login.
+    let mut values = registry_values(MACHINE_ENV);
+    values.extend(registry_values(USER_ENV));
+    let paths: Vec<String> = values
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+        .map(|(_, data)| data.clone())
+        .collect();
+    let fresh: HashMap<String, String> = values.into_iter().collect();
+
+    for (name, value) in env_updates(seen.as_ref(), &fresh, &|n| std::env::var(n).ok()) {
+        std::env::set_var(name, value);
+    }
+    adopt_windows_paths(&paths);
+    *seen = Some(fresh);
+}
+
+#[cfg(windows)]
+const MACHINE_ENV: &str = r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
+#[cfg(windows)]
+const USER_ENV: &str = r"HKCU\Environment";
+
+/// Adds these `PATH` values to ours. Returns whether anything was added.
+#[cfg(windows)]
+fn adopt_windows_paths(fresh: &[String]) -> bool {
+    if fresh.is_empty() {
+        return false;
+    }
+    let current = std::env::var("PATH").unwrap_or_default();
+    let merged = merge_path_lists(';', &[current.clone(), fresh.join(";")]);
+    if merged == current {
+        return false;
+    }
+    std::env::set_var("PATH", merged);
+    true
+}
+
 /// Merges the PATH Windows currently has on record into ours. Returns
 /// whether anything was added.
 ///
@@ -239,21 +420,10 @@ fn refresh_windows_path() -> bool {
         *last = Some(Instant::now());
     }
 
-    let machine =
-        registry_path(r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment");
-    let user = registry_path(r"HKCU\Environment");
+    let machine = registry_path(MACHINE_ENV);
+    let user = registry_path(USER_ENV);
     let fresh: Vec<String> = [machine, user].into_iter().flatten().collect();
-    if fresh.is_empty() {
-        return false;
-    }
-
-    let current = std::env::var("PATH").unwrap_or_default();
-    let merged = merge_path_lists(';', &[current.clone(), fresh.join(";")]);
-    if merged == current {
-        return false;
-    }
-    std::env::set_var("PATH", merged);
-    true
+    adopt_windows_paths(&fresh)
 }
 
 #[cfg(windows)]
@@ -471,6 +641,104 @@ mod tests {
         assert_eq!(
             expand_percent_vars(r"%USERPROFILE%\bin;%NOPE%;50%", &lookup),
             r"C:\Users\mb\bin;%NOPE%;50%"
+        );
+    }
+
+    /// The reported laptop: only `Git\cmd` is on PATH.
+    #[test]
+    fn sh_is_found_in_git_bin_when_only_git_cmd_is_on_path() {
+        let found = sh_beside_git(
+            "C:/Git/cmd",
+            ".EXE",
+            ';',
+            &on_disk(&[
+                "C:/Git/cmd/git.exe",
+                "C:/Git/bin/sh.exe",
+                "C:/Git/usr/bin/sh.exe",
+            ]),
+        );
+        assert_eq!(found, Some(std::path::PathBuf::from("C:/Git/bin/sh.exe")));
+    }
+
+    #[test]
+    fn sh_falls_back_to_git_usr_bin() {
+        let found = sh_beside_git(
+            "C:/Git/cmd",
+            ".EXE",
+            ';',
+            &on_disk(&["C:/Git/cmd/git.exe", "C:/Git/usr/bin/sh.exe"]),
+        );
+        assert_eq!(
+            found,
+            Some(std::path::PathBuf::from("C:/Git/usr/bin/sh.exe"))
+        );
+    }
+
+    #[test]
+    fn without_sh_beside_git_the_folders_searched_are_named() {
+        let on = on_disk(&["C:/Git/cmd/git.exe"]);
+        assert_eq!(sh_beside_git("C:/Git/cmd", ".EXE", ';', &on), None);
+        let said = missing_sh_message(Some(std::path::Path::new("C:/Git/cmd/git.exe")));
+        assert!(said.contains("C:/Git/bin"), "{said}");
+        assert!(said.contains("C:/Git/usr"), "{said}");
+    }
+
+    #[test]
+    fn without_git_the_message_says_nothing_could_be_searched() {
+        let said = missing_sh_message(None);
+        assert!(said.contains("git.exe was not found"), "{said}");
+    }
+
+    fn vars(list: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_variable_set_after_start_is_picked_up_without_a_restart() {
+        let fresh = vars(&[("REQUESTS_CA_BUNDLE", r"C:\ca.pem")]);
+        assert_eq!(
+            env_updates(Some(&vars(&[])), &fresh, &|_| None),
+            [("REQUESTS_CA_BUNDLE".to_string(), r"C:\ca.pem".to_string())]
+        );
+    }
+
+    #[test]
+    fn what_launched_gitagent_wins_until_the_stored_value_changes() {
+        let now = |_: &str| Some("from-terminal".to_string());
+        let stored = vars(&[("A", "stored")]);
+        // First look, and a later look with nothing edited: left alone.
+        assert!(env_updates(None, &stored, &now).is_empty());
+        assert!(env_updates(Some(&stored), &stored, &now).is_empty());
+        // Edited in Windows while GitAgent runs: taken.
+        let edited = vars(&[("A", "edited")]);
+        assert_eq!(
+            env_updates(Some(&stored), &edited, &now),
+            [("A".to_string(), "edited".to_string())]
+        );
+    }
+
+    #[test]
+    fn path_is_merged_elsewhere_rather_than_replaced() {
+        let fresh = vars(&[("Path", r"C:\new")]);
+        assert!(env_updates(None, &fresh, &|_| None).is_empty());
+    }
+
+    #[test]
+    fn every_variable_is_read_out_of_reg_query_output() {
+        let out = "\r\nHKEY_CURRENT_USER\\Environment\r\n    \
+                   REQUESTS_CA_BUNDLE    REG_SZ    C:\\ca bundle.pem\r\n    \
+                   Path    REG_EXPAND_SZ    %USERPROFILE%\\bin\r\n\r\n";
+        assert_eq!(
+            parse_reg_values(out),
+            [
+                (
+                    "REQUESTS_CA_BUNDLE".to_string(),
+                    r"C:\ca bundle.pem".to_string()
+                ),
+                ("Path".to_string(), r"%USERPROFILE%\bin".to_string()),
+            ]
         );
     }
 

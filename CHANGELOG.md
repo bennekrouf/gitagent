@@ -30,6 +30,34 @@ were never released.
   running: its button is greyed out and says "not detected".
 - An open region no longer reads "unavailable" when its price couldn't be
   fetched. It stays selectable and says "price unknown".
+### Fixed
+
+- A merge that fails now says why, above the diff. It used to show only the
+  diff and "No automatic fix", even when the pull request had no conflict and
+  was simply waiting for its checks.
+- A pull request held for its checks offers **Merge automatically** where the
+  repository allows it and, for admins, **Merge anyway**. Both buttons had
+  stopped appearing.
+- On Windows, the test step and other shell commands find `sh` from your Git
+  for Windows install, even when only its `cmd` folder is on PATH. If it really
+  is missing, the error names the folders searched.
+- The Azure DevOps preflight no longer tells you to run `az login` when your
+  sign-in works and a TLS-inspecting proxy is what failed. It says so, and
+  explains how to set `REQUESTS_CA_BUNDLE`.
+- When api0 or another model provider can't be reached, the error gives the
+  full cause and says whether it was a timeout, a proxy, a certificate or a
+  name that couldn't be resolved.
+- Tests are found in a repository whose only project sits in one subfolder,
+  such as `core/`.
+- A flow that lost a step it needs now offers **Restore missing step**, on the
+  flow and in Setup. Setup also no longer saves a change that would stop a
+  working flow from running.
+- On Azure DevOps, opening a pull request works with a multi-line description
+  on Windows. If one is already open for the branch, the step says so and
+  links it.
+- On Azure DevOps, the merge approval shows the command that will really run.
+- On Windows, variables you set after opening GitAgent apply from the next
+  step, in the window and over MCP, with no restart.
 
 ## [0.1.180] - 2026-11-09
 

@@ -2,6 +2,7 @@
 //! its run, its pull request.
 
 use super::*;
+use crate::services::flowdef::FlowDef;
 use crate::services::live::{self, LiveRun};
 use crate::services::probe::FlowKind;
 
@@ -23,6 +24,7 @@ pub(super) fn flow_context(
     status_map: BTreeMap<String, RepoStatus>,
     flow_id: String,
     flow_problems: Vec<String>,
+    mut book: Signal<FlowBook>,
     flow_kind: FlowKind,
     _graph: Graph,
     active: Option<String>,
@@ -142,6 +144,25 @@ pub(super) fn flow_context(
                     ul { class: "flow-broken-list",
                         for problem in flow_problems.iter().cloned() {
                             li { key: "{problem}", "{problem}" }
+                        }
+                    }
+                    if book.read().get(&flow_id).and_then(FlowDef::repaired).is_some() {
+                        button {
+                            class: "btn btn-primary",
+                            title: "Puts back the steps this flow needs, and saves it",
+                            onclick: {
+                                let flow_id = flow_id.clone();
+                                move |_| {
+                                    // From disk: another window or the MCP
+                                    // server may have saved since this loaded.
+                                    let mut latest = FlowBook::load();
+                                    if latest.repair(&flow_id) {
+                                        latest.save();
+                                        book.set(latest);
+                                    }
+                                }
+                            },
+                            "Restore missing step"
                         }
                     }
                     button {

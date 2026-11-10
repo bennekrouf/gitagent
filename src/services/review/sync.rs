@@ -167,21 +167,30 @@ pub(super) struct Hold {
 
 impl Hold {
     pub(super) async fn read(repo: &str, number: &str) -> Self {
-        // One look at the repository for both: its settings and your role.
-        let about = git::run(
+        // Asked apart: `gh repo view` has no field for auto-merge, and one
+        // unknown field fails the whole call, which loses your role with it.
+        // `{owner}/{repo}` is for gh to fill in from the repository.
+        let auto_merge = git::run(
+            repo,
+            "gh",
+            &["api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge"],
+        )
+        .await
+        .is_ok_and(|out| out.trim() == "true");
+        let admin = git::run(
             repo,
             "gh",
             &[
                 "repo",
                 "view",
                 "--json",
-                "autoMergeAllowed,viewerPermission",
+                "viewerPermission",
+                "-q",
+                ".viewerPermission",
             ],
         )
         .await
-        .ok()
-        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
-        .unwrap_or_default();
+        .is_ok_and(|out| out.trim() == "ADMIN");
         // `gh pr checks` exits non-zero when one failed, and git::run keeps
         // only stderr then: `; true` keeps its JSON on stdout.
         let checks = git::run(
@@ -204,8 +213,8 @@ impl Hold {
             }
         }
         Hold {
-            auto_merge: about["autoMergeAllowed"] == true,
-            admin: about["viewerPermission"] == "ADMIN",
+            auto_merge,
+            admin,
             failed,
             error,
         }
@@ -438,6 +447,15 @@ pub(super) fn conflict_guide(number: &str, base: &str, message: &str) -> StepFai
 pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let forge = Forge::from_key(state.artifact("forge"));
     let number = state.artifact("pr_number").to_string();
+    // A merge of the base still open here — "Bring the base in" stopped on
+    // conflicts — is what the step is waiting on, not edits to commit: run
+    // again during it, or after a restart, it must offer to finish it, not
+    // report its staged files as uncommitted with no way forward.
+    if forge == Forge::GitHub {
+        if let Some(open) = merge_in_progress(repo, &number, state.artifact("pr_base")).await {
+            return Err(open);
+        }
+    }
     if let Some(refusal) = uncommitted_in_the_way(repo, &number).await {
         return Err(refusal);
     }
@@ -500,6 +518,25 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
         nothing_to_do: false,
         items: vec![],
     })
+}
+
+/// The Finish / Abandon failure for a merge git is in the middle of, with the
+/// files it stopped on, settled or not. `None` when no merge is open, or it
+/// stopped on nothing.
+pub(super) async fn merge_in_progress(repo: &str, number: &str, base: &str) -> Option<StepFailure> {
+    if git::in_progress(repo).await != Some(git::InProgress::Merge) {
+        return None;
+    }
+    let mut files: Vec<String> = crate::services::conflicts::list(repo)
+        .await
+        .into_iter()
+        .map(|c| c.path)
+        .collect();
+    files.extend(crate::services::conflicts::resolved(repo).await);
+    files.sort();
+    files.dedup();
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    merge_stopped(number, base, &files)
 }
 
 /// Why the merge is refused while tracked files have uncommitted changes, or

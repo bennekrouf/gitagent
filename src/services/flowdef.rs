@@ -345,6 +345,81 @@ impl FlowDef {
         true
     }
 
+    /// This flow with every step it is missing an input from put back, or
+    /// `None` when nothing is missing or what is missing cannot be restored.
+    ///
+    /// Offered rather than done on loading: a step you removed along with
+    /// whatever read it stays removed, and only a flow that cannot run has
+    /// anything here to repair.
+    pub fn repaired(&self) -> Option<FlowDef> {
+        let mut flow = self.clone();
+        let mut changed = false;
+        // Bounded by the catalogue: a restored step can need one of its own,
+        // but there are only so many steps to restore.
+        for _ in 0..=catalogue::CATALOGUE.len() {
+            let missing = validate(&flow).into_iter().find_map(|p| match p {
+                Problem::MissingInput { node, key } => Some((node, key)),
+                _ => None,
+            });
+            let Some((reader, key)) = missing else {
+                return changed.then_some(flow);
+            };
+            if !flow.restore_producer(&reader, &key) {
+                return None;
+            }
+            changed = true;
+        }
+        None
+    }
+
+    /// Makes `reader` depend on something that writes `key`: a step already
+    /// in the flow if one can be wired in, otherwise a new one from the
+    /// catalogue, itself after the steps that produce what it reads.
+    fn restore_producer(&mut self, reader: &str, key: &str) -> bool {
+        let writes = |node: &NodeDef, wanted: &str| {
+            catalogue::by_key(&node.step).is_some_and(|i| {
+                catalogue::expand(i.writes, &node.id)
+                    .iter()
+                    .any(|w| w == wanted)
+            })
+        };
+        let Some(at) = self.nodes.iter().position(|n| n.id == reader) else {
+            return false;
+        };
+        let present = self
+            .nodes
+            .iter()
+            .find(|n| writes(n, key) && can_depend_on(self, reader, &n.id))
+            .map(|n| n.id.clone());
+        if let Some(id) = present {
+            self.nodes[at].deps.push(id);
+            return true;
+        }
+        let Some(info) = catalogue::CATALOGUE
+            .iter()
+            .find(|i| i.writes.contains(&key))
+        else {
+            return false;
+        };
+        let id = self.free_id(info.key);
+        let upstream = ancestors(self, reader);
+        let mut deps: Vec<String> = vec![];
+        for read in catalogue::expand(info.reads, &id) {
+            let producer = self
+                .nodes
+                .iter()
+                .find(|n| upstream.contains(&n.id) && writes(n, &read));
+            if let Some(producer) = producer.filter(|p| !deps.contains(&p.id)) {
+                deps.push(producer.id.clone());
+            }
+        }
+        let mut node = NodeDef::from_catalogue(&id, info.key);
+        node.deps = deps;
+        self.nodes[at].deps.push(id);
+        self.nodes.insert(at, node);
+        true
+    }
+
     /// Removes a node and every reference to it, so deleting can never leave a
     /// dangling dependency behind.
     pub fn remove_node(&mut self, id: &str) {

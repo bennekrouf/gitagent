@@ -168,6 +168,9 @@ pub fn spawn_error(program: &str, e: &std::io::Error) -> String {
     if e.kind() != std::io::ErrorKind::NotFound {
         return format!("could not run `{program}`: {e}");
     }
+    if cfg!(windows) && program == "sh" {
+        return super::env::missing_sh();
+    }
     let name = match program {
         "az" => "the Azure CLI (`az`)".to_string(),
         "gh" => "the GitHub CLI (`gh`)".to_string(),
