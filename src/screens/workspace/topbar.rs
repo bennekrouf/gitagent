@@ -11,6 +11,7 @@ pub(super) fn topbar(
     mut global_trust: Signal<bool>,
     mut run_view: Signal<bool>,
     mut settings_open: Signal<bool>,
+    mut setup_open: Signal<bool>,
     mut mcp_open: Signal<bool>,
     licence_status: Signal<Status>,
     mut licence_open: Signal<bool>,
@@ -68,6 +69,12 @@ pub(super) fn topbar(
             }
             span { class: "kit-detail", "{props.workspace}" }
             span { class: "kit-spacer" }
+            button {
+                class: "kit-btn",
+                title: "The flows, and what each repository needs",
+                onclick: move |_| setup_open.set(true),
+                "Setup"
+            }
             button {
                 class: if *global_trust.read() { "kit-btn kit-on" } else { "kit-btn" },
                 title: if *global_trust.read() {

@@ -17,6 +17,20 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- **Setup** is back in plain sight: a button in the bar under the header, next
+  to **Trust all**, instead of only inside Settings.
+
+### Fixed
+
+- Ollama can no longer be picked on a computer where it isn't installed or
+  running: its button is greyed out and says "not detected".
+- An open region no longer reads "unavailable" when its price couldn't be
+  fetched. It stays selectable and says "price unknown".
+
 ## [0.1.180] - 2026-11-09
 
 ### Added

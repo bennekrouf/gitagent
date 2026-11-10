@@ -33,8 +33,9 @@ pub struct SettingsPanelProps {
     /// instead of offering a button that would go nowhere.
     #[props(default)]
     pub on_licence: Option<EventHandler<()>>,
-    /// Opens Setup, the flows and what each repository needs. The header has
-    /// no button for it: it is reached from here.
+    /// Opens Setup, the flows and what each repository needs. The shared
+    /// header has no button for it: the workspace's toolbar does, and the
+    /// welcome screen, which has no toolbar, reaches it from here.
     #[props(default)]
     pub on_setup: Option<EventHandler<()>>,
     /// The theme, chosen here since the header has only the gear and the flag.
@@ -405,11 +406,14 @@ fn ProviderFields(
         current.ollama_model.clone()
     };
 
+    let ollama_found = installed.read().as_ref().map(Result::is_ok);
+
     rsx! {
         ProviderPicker {
             cfg,
             second,
             offers,
+            ollama_found,
             on_change,
             on_licence,
         }
