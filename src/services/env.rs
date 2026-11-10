@@ -679,6 +679,8 @@ mod tests {
         let on = on_disk(&["C:/Git/cmd/git.exe"]);
         assert_eq!(sh_beside_git("C:/Git/cmd", ".EXE", ';', &on), None);
         let said = missing_sh_message(Some(std::path::Path::new("C:/Git/cmd/git.exe")));
+        // Joined with the platform's separator: `C:/Git\bin` on Windows.
+        let said = said.replace('\\', "/");
         assert!(said.contains("C:/Git/bin"), "{said}");
         assert!(said.contains("C:/Git/usr"), "{said}");
     }
