@@ -236,19 +236,85 @@ fn azure_connection_check(failure: AzureConnection) -> Check {
     }
 }
 
-/// What a generic "run the login command" from `az` really means. The
-/// azure-devops extension says that for a certificate failure too, so when a
-/// token is available `debug` (a `--debug` rerun) is looked at for the cause.
-fn azure_sign_in_check(token_available: bool, debug: &str) -> Check {
-    match azure_connection_failure(debug).filter(|_| token_available) {
-        Some(failure) => azure_connection_check(failure),
-        None => Check::fixable(
-            "azure devops auth",
-            "not signed in to Azure DevOps — sign in again with `az login`, \
-             or run `az devops login` with a PAT in a terminal",
-            az_login_remedy(),
-        ),
+/// Which organization was asked, and with what, for the message when it
+/// says no. A refusal that names neither sends the reader to `az login`,
+/// which the line above may already show as fine.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+struct AzureAsk {
+    /// `https://dev.azure.com/{org}`, from the remote. Empty when the remote
+    /// could not be read.
+    org: String,
+    /// The account `az login` signed in. Empty when there is none.
+    user: String,
+    /// `AZURE_DEVOPS_EXT_PAT` is set. az uses it before any other sign-in.
+    env_token: bool,
+}
+
+impl AzureAsk {
+    fn org_name(&self) -> &str {
+        if self.org.is_empty() {
+            "Azure DevOps"
+        } else {
+            &self.org
+        }
     }
+
+    /// The command that saves a personal access token for the organization.
+    fn token_login(&self) -> String {
+        if self.org.is_empty() {
+            "az devops login".into()
+        } else {
+            format!("az devops login --organization {}", self.org)
+        }
+    }
+}
+
+/// What a generic "run the login command" from `az` really means. The
+/// azure-devops extension says that for a certificate failure too, so when
+/// there is a credential to send `debug` (a `--debug` rerun) is looked at
+/// for the cause. It says it as well when the organization turns down a
+/// sign-in that Azure itself is happy with, which `az login` cannot fix.
+fn azure_sign_in_check(token_available: bool, debug: &str, ask: &AzureAsk) -> Check {
+    const NAME: &str = "azure devops auth";
+    let has_credential = token_available || ask.env_token;
+    if let Some(failure) = azure_connection_failure(debug).filter(|_| has_credential) {
+        return azure_connection_check(failure);
+    }
+    let org = ask.org_name();
+    let token_login = ask.token_login();
+    if ask.env_token {
+        return Check::fail(
+            NAME,
+            format!(
+                "{org} refused the token in AZURE_DEVOPS_EXT_PAT — it has expired, \
+                 was revoked, or lacks the Code (Read & write) scope"
+            ),
+        )
+        .with_help(azure_env_token_steps(org));
+    }
+    if token_available {
+        let who = if ask.user.is_empty() {
+            "your Azure sign-in".to_string()
+        } else {
+            format!("the Azure sign-in of {}", ask.user)
+        };
+        return Check::fail(
+            NAME,
+            format!(
+                "{org} does not accept {who} — sign in to its tenant, \
+                 or run `{token_login}` with a PAT in a terminal"
+            ),
+        )
+        .with_help(azure_access_steps(&ask.org));
+    }
+    Check::fixable(
+        NAME,
+        format!(
+            "not signed in to {org} — sign in again with `az login`, \
+             or run `{token_login}` with a PAT in a terminal"
+        ),
+        az_login_remedy(),
+    )
 }
 
 /// Whether Azure will issue a token for Azure DevOps. Asks only for its
@@ -472,7 +538,8 @@ fn azure_scope_for(remote: &str, scope: Scope) -> Vec<String> {
 /// to whichever `az` picked as default, often a customer's, and the
 /// organization does not know you there. The tenant that is right may
 /// demand multi-factor authentication first, which `az login` reports
-/// only as AADSTS50079.
+/// only as AADSTS50079, or refuse the Azure CLI on this computer
+/// altogether, which leaves a personal access token as the only way in.
 fn azure_access_steps(org: &str) -> String {
     let org = if org.is_empty() {
         "https://dev.azure.com/<organization>"
@@ -481,8 +548,10 @@ fn azure_access_steps(org: &str) -> String {
     };
     format!(
         "You are signed in to Azure, but Azure DevOps does not accept that sign-in\n\
-         for this organization. Usually az signed in to another tenant (directory)\n\
-         than the one the organization is connected to.\n\
+         for {org}, the organization in this repository's remote.\n\
+         GitAgent always asks that one, whatever default organization\n\
+         az devops configure has. Usually az signed in to another tenant\n\
+         (directory) than the one the organization is connected to.\n\
          \n\
          1. Open {org} in your browser with the same account. If you cannot\n\
          \x20  see the project, ask an Azure DevOps admin to add you; nothing\n\
@@ -497,11 +566,41 @@ fn azure_access_steps(org: &str) -> String {
          4. Check it from the repository folder with:  az repos list -o table\n\
          \x20  When it lists the repositories, run the flow again.\n\
          \n\
-         Or, instead: create a personal access token with the Code (Read &\n\
-         Write) scope under User settings, Personal access tokens, in\n\
-         {org}. Export AZURE_DEVOPS_EXT_PAT=<token> in your shell profile\n\
-         (~/.zshrc) and restart GitAgent so it reads it. A token does not\n\
-         depend on the tenant az signed in to."
+         Or, instead, use a personal access token. It does not depend on the\n\
+         tenant az signed in to, and it is the only way when that tenant\n\
+         refuses the Azure CLI on this computer (a work account on a device\n\
+         your company does not manage, for example).\n\
+         \n\
+         1. In {org}, open User settings, then Personal access tokens, and\n\
+         \x20  create one with the Code (Read & write) scope.\n\
+         2. In a terminal, run:\n\
+         \x20  az devops login --organization {org}\n\
+         \x20  and paste the token when it asks.\n\
+         3. Run the flow again. No restart needed.\n\
+         \n\
+         Where az cannot save the token, export AZURE_DEVOPS_EXT_PAT=<token>\n\
+         in your shell profile (~/.zshrc) instead, and restart GitAgent so it\n\
+         reads it."
+    )
+}
+
+/// What to do when the token in `AZURE_DEVOPS_EXT_PAT` is turned away. Said
+/// apart from the other sign-ins because az uses the variable before any of
+/// them: neither `az login` nor `az devops login` changes anything while it
+/// is set.
+fn azure_env_token_steps(org: &str) -> String {
+    format!(
+        "The environment variable AZURE_DEVOPS_EXT_PAT is set, and az uses it\n\
+         before any other sign-in: az login and az devops login change nothing\n\
+         while it is there.\n\
+         \n\
+         1. In {org}, open User settings, then Personal access tokens. Check\n\
+         \x20  that the token is still valid, belongs to this organization and\n\
+         \x20  has the Code (Read & write) scope, or create a new one.\n\
+         2. Put the new token where the variable is set, usually your shell\n\
+         \x20  profile (~/.zshrc), or remove the variable to go back to your\n\
+         \x20  az sign-in.\n\
+         3. Restart GitAgent so it reads the change, then run the flow again."
     )
 }
 
@@ -576,34 +675,57 @@ async fn checked_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
                     ),
                 )),
             }
-            match git::run(
+            let user = match git::run(
                 ".",
                 "az",
                 &["account", "show", "--query", "user.name", "-o", "tsv"],
             )
             .await
             {
-                Ok(user) => checks.push(Check::pass("az login", user.trim())),
-                Err(_) => checks.push(Check::fixable(
-                    "az login",
-                    "not signed in — sign in with `az login`, or set AZURE_DEVOPS_EXT_PAT",
-                    az_login_remedy(),
-                )),
-            }
+                Ok(user) => {
+                    let user = user.trim().to_string();
+                    checks.push(Check::pass("az login", user.as_str()));
+                    user
+                }
+                Err(_) => {
+                    checks.push(Check::fixable(
+                        "az login",
+                        "not signed in — sign in with `az login`, or set AZURE_DEVOPS_EXT_PAT",
+                        az_login_remedy(),
+                    ));
+                    String::new()
+                }
+            };
 
             // `az account show` only proves an AAD sign-in. Azure DevOps is a
             // separate credential, and `az repos pr create` fails on it at the
             // very end of a run — after a branch and a push. This exercises the
             // same path (including org/project detection from the remote), so
             // the failure lands here instead.
-            let scope = azure_scope(repo, Scope::Project).await;
+            let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
+                .await
+                .unwrap_or_default();
+            let ask = AzureAsk {
+                org: azure_org_url(&remote),
+                user,
+                env_token: std::env::var("AZURE_DEVOPS_EXT_PAT")
+                    .is_ok_and(|token| !token.trim().is_empty()),
+            };
+            let scope = azure_scope_for(&remote, Scope::Project);
             let mut args = vec!["repos", "list", "--output", "none"];
             args.extend(scope.iter().map(String::as_str));
             match git::run(repo, "az", &args).await {
-                Ok(_) => checks.push(Check::pass("azure devops auth", "can reach the project")),
+                Ok(_) => checks.push(Check::pass(
+                    "azure devops auth",
+                    if ask.org.is_empty() {
+                        "can reach the project".to_string()
+                    } else {
+                        format!("can reach the project in {}", ask.org)
+                    },
+                )),
                 Err(e) if e.contains("you need to run the login command") => {
                     let token_available = azure_token_available().await;
-                    let debug = if token_available {
+                    let debug = if token_available || ask.env_token {
                         let mut with_debug = args.clone();
                         with_debug.push("--debug");
                         git::run(repo, "az", &with_debug).await.err()
@@ -613,6 +735,7 @@ async fn checked_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
                     checks.push(azure_sign_in_check(
                         token_available,
                         debug.as_deref().unwrap_or_default(),
+                        &ask,
                     ))
                 }
                 Err(e) => {
@@ -620,9 +743,6 @@ async fn checked_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
                         checks.push(azure_connection_check(failure));
                         return checks;
                     }
-                    let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
-                        .await
-                        .unwrap_or_default();
                     let check = Check::fail(
                         "azure devops auth",
                         e.lines()
@@ -634,7 +754,7 @@ async fn checked_credentials(forge: &Forge, repo: &str) -> Vec<Check> {
                     // sign-in is real, but for a tenant this organization is
                     // not connected to, or one it does not know you in.
                     if e.contains("TF400813") || e.contains("not authorized") {
-                        checks.push(check.with_help(azure_access_steps(&azure_org_url(&remote))))
+                        checks.push(check.with_help(azure_access_steps(&ask.org)))
                     } else {
                         checks.push(check)
                     }

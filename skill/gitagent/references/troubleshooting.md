@@ -24,6 +24,20 @@ startup (0.1.8, 0.1.13); if a tool is still missing, it's installed somewhere
 the login shell doesn't set up either. Fix the shell profile, or start
 GitAgent from a terminal.
 
+**Azure DevOps: "azure devops auth" fails although "az login" is ok.**
+The account `az` is signed in with is not one the organization in the remote
+accepts: usually a personal account, or a work account signed in to another
+tenant. GitAgent always asks the remote's organization, never the default of
+`az devops configure`. Signing in to the right tenant fixes it
+(`az login --tenant <tenant ID> --allow-no-subscriptions`); when that tenant
+refuses the Azure CLI on this computer (conditional access, an unmanaged
+device), use a personal access token with the Code (Read & write) scope:
+`az devops login --organization https://dev.azure.com/<org>`. Newer versions
+name the organization and the account and give these steps; older ones only
+said "not signed in to Azure DevOps — sign in again with `az login`". A token
+in `AZURE_DEVOPS_EXT_PAT` wins over both sign-ins: if it has expired, replace
+or remove it and restart GitAgent.
+
 **A repository is greyed out with a 🔒 Pro tag.**
 Older versions limited the free version to 5 repositories. Current ones have
 no limit: update GitAgent.
