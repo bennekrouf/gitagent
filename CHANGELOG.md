@@ -17,6 +17,22 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Azure DevOps: when `az login` is fine but the organization in the
+  repository's remote does not accept that account, the preflight no longer
+  says "sign in again with `az login`". It names the organization and the
+  account, and gives the command that works when the organization belongs to
+  another tenant: `az devops login --organization` with a personal access
+  token that has the Code (Read & write) scope. A token in
+  `AZURE_DEVOPS_EXT_PAT` that the organization turns away is reported as
+  such.
+- The Azure DevOps preflight says which organization it reached. It has
+  always been the one in the remote, not the default set with
+  `az devops configure`; now the line shows it.
+
 ## [0.1.181] - 2026-11-10
 
 ### Changed

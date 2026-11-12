@@ -200,6 +200,7 @@ fn not_authorized_on_azure_explains_the_tenant_and_the_token() {
     assert!(help.contains("az login --tenant"));
     assert!(help.contains("AADSTS50079"));
     assert!(help.contains("AZURE_DEVOPS_EXT_PAT"));
+    assert!(help.contains("az devops login --organization https://dev.azure.com/oryx"));
 }
 
 #[test]
@@ -287,7 +288,7 @@ fn all_text(check: &Check) -> String {
 
 #[test]
 fn a_certificate_failure_with_a_token_is_not_called_a_missing_sign_in() {
-    let check = azure_sign_in_check(true, CERT_DEBUG);
+    let check = azure_sign_in_check(true, CERT_DEBUG, &ask());
     assert!(!check.ok);
     assert!(check.fix.is_none());
     let text = all_text(&check);
@@ -298,21 +299,21 @@ fn a_certificate_failure_with_a_token_is_not_called_a_missing_sign_in() {
 
 #[test]
 fn nothing_from_debug_output_reaches_the_screen() {
-    let text = all_text(&azure_sign_in_check(true, CERT_DEBUG));
+    let text = all_text(&azure_sign_in_check(true, CERT_DEBUG, &ask()));
     assert!(!text.contains("secret-token-value"), "{text}");
     assert!(!text.contains("_ssl.c"), "{text}");
 }
 
 #[test]
 fn the_certificate_advice_never_turns_verification_off() {
-    let text = all_text(&azure_sign_in_check(true, CERT_DEBUG)).to_lowercase();
+    let text = all_text(&azure_sign_in_check(true, CERT_DEBUG, &ask())).to_lowercase();
     assert!(!text.contains("disable"), "{text}");
     assert!(!text.contains("--insecure"), "{text}");
 }
 
 #[test]
 fn a_proxy_failure_is_told_apart_from_a_certificate_one() {
-    let check = azure_sign_in_check(true, "ProxyError('Tunnel connection failed: 403')");
+    let check = azure_sign_in_check(true, "ProxyError('Tunnel connection failed: 403')", &ask());
     assert!(all_text(&check).contains("proxy"));
     assert!(!all_text(&check).contains("REQUESTS_CA_BUNDLE"));
     assert!(!all_text(&check).contains("az login"));
@@ -320,16 +321,86 @@ fn a_proxy_failure_is_told_apart_from_a_certificate_one() {
 
 #[test]
 fn without_a_token_it_really_is_a_sign_in_problem() {
-    let check = azure_sign_in_check(false, CERT_DEBUG);
+    let check = azure_sign_in_check(false, CERT_DEBUG, &ask());
     assert!(all_text(&check).contains("az login"));
     assert_eq!(check.fix.unwrap().display, "az login");
 }
 
+/// Signed in to Azure with one account, asked about an organization that
+/// belongs to another tenant.
+fn ask() -> AzureAsk {
+    AzureAsk {
+        org: "https://dev.azure.com/oryx".into(),
+        user: "me@example.com".into(),
+        env_token: false,
+    }
+}
+
 #[test]
-fn a_token_with_no_network_cause_still_offers_the_sign_in() {
-    assert!(azure_sign_in_check(true, "some other failure")
-        .fix
-        .is_some());
+fn without_a_token_the_message_names_the_organization() {
+    let check = azure_sign_in_check(false, "", &ask());
+    assert!(check.detail.contains("https://dev.azure.com/oryx"));
+    assert!(check
+        .detail
+        .contains("az devops login --organization https://dev.azure.com/oryx"));
+}
+
+/// `az login` is fine and Azure hands out a token: signing in again changes
+/// nothing, so it is neither offered on a button nor put first.
+#[test]
+fn a_sign_in_the_organization_refuses_is_not_sent_back_to_az_login() {
+    let check = azure_sign_in_check(true, "some other failure", &ask());
+    assert!(!check.ok);
+    assert!(check.fix.is_none());
+    assert!(!check.detail.contains("`az login`"), "{}", check.detail);
+    assert!(check.detail.contains("https://dev.azure.com/oryx"));
+    assert!(check.detail.contains("me@example.com"));
+    assert!(check
+        .detail
+        .contains("az devops login --organization https://dev.azure.com/oryx"));
+    assert!(check.help.contains("Code (Read & write)"), "{}", check.help);
+    assert!(check.help.contains("az devops configure"), "{}", check.help);
+}
+
+#[test]
+fn a_refusal_with_no_readable_remote_still_reads_as_a_sentence() {
+    let check = azure_sign_in_check(true, "", &AzureAsk::default());
+    assert!(check
+        .detail
+        .starts_with("Azure DevOps does not accept your Azure sign-in"));
+    assert!(
+        check.detail.contains("`az devops login`"),
+        "{}",
+        check.detail
+    );
+    assert!(check.help.contains("https://dev.azure.com/<organization>"));
+}
+
+/// The variable wins over every other sign-in, so neither login command
+/// helps while it holds a token the organization turns away.
+#[test]
+fn a_refused_token_from_the_environment_is_named_as_the_cause() {
+    let ask = AzureAsk {
+        env_token: true,
+        ..ask()
+    };
+    for token_available in [true, false] {
+        let check = azure_sign_in_check(token_available, "some other failure", &ask);
+        assert!(check.fix.is_none());
+        assert!(check.detail.contains("AZURE_DEVOPS_EXT_PAT"));
+        assert!(check.detail.contains("https://dev.azure.com/oryx"));
+        assert!(check.help.contains("Restart GitAgent"), "{}", check.help);
+    }
+}
+
+#[test]
+fn a_certificate_failure_with_only_a_token_from_the_environment_is_still_found() {
+    let ask = AzureAsk {
+        env_token: true,
+        ..ask()
+    };
+    let check = azure_sign_in_check(false, CERT_DEBUG, &ask);
+    assert!(all_text(&check).contains("REQUESTS_CA_BUNDLE"));
 }
 
 #[test]
