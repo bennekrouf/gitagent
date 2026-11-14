@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- The warning a trusted run leaves when it stops now shows only on the
+  repository it is about. It used to stay on screen when you selected another
+  repository, as if it were about that one.
+- A trusted run on a repository where you hid Release, and no other flow handles
+  releases, now stops quietly once its work is merged. It used to warn that a
+  release was due and ask you to show Release again, on every run.
+
 ## [0.1.183] - 2026-11-14
 
 ### Fixed
