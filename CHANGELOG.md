@@ -17,6 +17,20 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- When a release build fails because Apple won't notarize the Mac app until
+  your developer team accepts a new or expired agreement, the Published step
+  now says so and where to accept it, instead of suggesting a second try that
+  fails the same way. An expired Mac signing certificate is recognised the same
+  way. The re-run button says when it is worth pressing.
+- The warning a trusted run leaves when it stops, such as a release flow
+  being hidden, now shows only on the repository it is about. It used to stay
+  on screen when you selected another repository, as if it were about that
+  one.
+
 ## [0.1.182] - 2026-11-12
 
 ### Fixed

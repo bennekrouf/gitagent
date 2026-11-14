@@ -910,3 +910,15 @@ fn a_repository_a_flow_holds_reads_as_running_and_offers_no_start() {
     assert_eq!(rows[0].phase, Phase::Running);
     assert!(rows[0].phase.is_live(), "the row's ▶ is hidden while live");
 }
+
+#[test]
+fn a_chain_note_shows_only_on_the_repository_it_is_about() {
+    let note = ChainNote::about("/code/other", "This repository wants release due");
+    assert_eq!(
+        note.shown_for(Some("/code/other")),
+        Some("This repository wants release due")
+    );
+    assert_eq!(note.shown_for(Some("/code/landing")), None);
+    assert_eq!(note.shown_for(None), None);
+    assert_eq!(ChainNote::default().shown_for(Some("")), None);
+}

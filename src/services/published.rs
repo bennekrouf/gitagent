@@ -182,7 +182,12 @@ pub async fn watch(repo: &str, on_line: &mut dyn FnMut(&str)) -> Result<StepOutc
         }
 
         if view.status == "completed" {
-            return finished(&run, &tag, &view);
+            let log = if view.jobs.iter().any(Job::failed) {
+                failed_log(repo, &run.id).await
+            } else {
+                None
+            };
+            return finished(&run, &tag, &view, log.as_deref());
         }
         if said.elapsed() > QUIET {
             let open: Vec<String> = view
@@ -223,8 +228,60 @@ pub async fn watch(repo: &str, on_line: &mut dyn FnMut(&str)) -> Result<StepOutc
     }
 }
 
-/// What a completed run says about the release.
-fn finished(run: &RunRef, tag: &str, view: &RunView) -> Result<StepOutcome, StepFailure> {
+/// A failure a re-run cannot fix, recognised from what the failed jobs logged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct KnownCause {
+    /// What happened and what the user does about it, in place of the hint
+    /// that a second try usually passes.
+    pub why: &'static str,
+    /// The re-run button, renamed to say when it is worth pressing.
+    pub rerun: &'static str,
+}
+
+/// Failures that come back on every re-run until someone fixes them outside
+/// the build. Each is matched on text the tool prints, which is stable.
+const KNOWN_CAUSES: &[(&str, KnownCause)] = &[
+    (
+        "A required agreement is missing or has expired",
+        KnownCause {
+            why: "Apple's notary service refused the macOS build: your Apple Developer team \
+                  has an agreement that is new or has expired, and Apple notarizes nothing \
+                  until it is accepted. Re-running fails the same way until then. The \
+                  Account Holder accepts it at https://developer.apple.com/account, and in \
+                  App Store Connect under Business if one waits there too; then re-run the \
+                  failed jobs.",
+            rerun: "Re-run once the agreement is accepted",
+        },
+    ),
+    (
+        "CSSMERR_TP_CERT_EXPIRED",
+        KnownCause {
+            why: "The macOS signing certificate has expired, so the build cannot be signed. \
+                  Re-running fails the same way. Make a new Developer ID Application \
+                  certificate at https://developer.apple.com/account, put it in the \
+                  repository's signing secrets in place of the old one, then re-run the \
+                  failed jobs.",
+            rerun: "Re-run once the certificate is replaced",
+        },
+    ),
+];
+
+/// The first known cause the failed jobs' log shows.
+pub(crate) fn known_cause(log: &str) -> Option<KnownCause> {
+    KNOWN_CAUSES
+        .iter()
+        .find(|(text, _)| log.contains(text))
+        .map(|(_, cause)| *cause)
+}
+
+/// What a completed run says about the release. `log` is what the failed
+/// jobs printed, when it could be read.
+fn finished(
+    run: &RunRef,
+    tag: &str,
+    view: &RunView,
+    log: Option<&str>,
+) -> Result<StepOutcome, StepFailure> {
     let failed: Vec<&Job> = view.jobs.iter().filter(|j| j.failed()).collect();
     if view.conclusion == "success" && failed.is_empty() {
         let built: Vec<&str> = view
@@ -248,11 +305,18 @@ fn finished(run: &RunRef, tag: &str, view: &RunView) -> Result<StepOutcome, Step
         .map(|j| format!("  {} — {}\n    {}", j.name, j.state(), j.url))
         .collect::<Vec<_>>()
         .join("\n");
+    let cause = log.and_then(known_cause);
+    let advice = match cause {
+        Some(cause) => cause.why,
+        None => {
+            "A job that never got a runner, or failed installing a tool, usually passes \
+             on a second try."
+        }
+    };
     Err(StepFailure {
         message: format!(
             "{} for {tag} did not finish: {}. What it built before that is not published. \
-             A job that never got a runner, or failed installing a tool, usually passes on \
-             a second try.\n\n{list}\n\n{}",
+             {advice}\n\n{list}\n\n{}",
             run.workflow,
             if failed.is_empty() {
                 view.conclusion.clone()
@@ -270,11 +334,18 @@ fn finished(run: &RunRef, tag: &str, view: &RunView) -> Result<StepOutcome, Step
             run.url
         ),
         remedies: vec![Remedy::new(
-            "Re-run the failed jobs",
+            cause.map_or("Re-run the failed jobs", |c| c.rerun),
             "gh",
             &["run", "rerun", &run.id, "--failed"],
         )],
     })
+}
+
+/// What the failed jobs of run `id` printed.
+async fn failed_log(repo: &str, id: &str) -> Option<String> {
+    git::run(repo, "gh", &["run", "view", id, "--log-failed"])
+        .await
+        .ok()
 }
 
 /// The `v…` tag on HEAD: what `release.sh` just pushed.
