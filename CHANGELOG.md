@@ -26,10 +26,12 @@ were never released.
   now says so and where to accept it, instead of suggesting a second try that
   fails the same way. An expired Mac signing certificate is recognised the same
   way. The re-run button says when it is worth pressing.
-- The warning a trusted run leaves when it stops, such as a release flow
-  being hidden, now shows only on the repository it is about. It used to stay
-  on screen when you selected another repository, as if it were about that
-  one.
+- The warning a trusted run leaves when it stops now shows only on the
+  repository it is about. It used to stay on screen when you selected another
+  repository, as if it were about that one.
+- A trusted run on a repository where you hid Release, and no other flow
+  handles releases, now stops quietly once its work is merged. It used to warn
+  that a release was due and ask you to show Release again, on every run.
 
 ## [0.1.182] - 2026-11-12
 

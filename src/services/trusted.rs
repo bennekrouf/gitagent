@@ -112,24 +112,17 @@ pub fn why_stopped(book: &FlowBook, status: &RepoStatus, hidden: &[String]) -> O
         return None;
     }
 
-    // A flow that answers this but is hidden *here* is a different situation
-    // from none existing at all, and the fix is somewhere else entirely — the
-    // repository's own flow list, not Setup. Saying "no flow handles that"
-    // about a flow sitting right there, hidden, is how someone concludes the
-    // chain is ignoring them.
-    let hidden_answer = book
+    // A flow that answers this but is hidden *here* is the person having
+    // already said it does not apply to this repository: a library with no
+    // releases of its own, a service deployed some other way. The chain ends
+    // there quietly. Warning about it told them to undo their own choice, on
+    // every trusted run, and on repositories that have nothing to release.
+    if book
         .runnable()
         .into_iter()
-        .find(|f| f.answers(need) && hidden.iter().any(|id| id == &f.id));
-    if let Some(flow) = hidden_answer {
-        return Some(format!(
-            "This repository wants {}, and \u{201c}{}\u{201d} handles that — but it is hidden \
-             on this repository, so a trusted run will not start it. Show it again from the \
-             flow tabs, or tick \u{201c}{}\u{201d} on whichever flow replaced it.",
-            wants.note(),
-            flow.label,
-            need.label(),
-        ));
+        .any(|f| f.answers(need) && hidden.iter().any(|id| id == &f.id))
+    {
+        return None;
     }
 
     // The flow may well exist and simply not say so. Naming the tick box is

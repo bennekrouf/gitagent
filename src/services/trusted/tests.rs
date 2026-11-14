@@ -218,22 +218,29 @@ fn hiding_one_flow_leaves_another_answering_the_same_need_available() {
 }
 
 #[test]
-fn a_hidden_answer_is_explained_as_hidden_rather_than_as_missing() {
-    // "No flow says it handles that" about a flow sitting right there,
-    // hidden, is how someone concludes the chain is ignoring them.
+fn a_release_hidden_on_purpose_ends_the_chain_quietly() {
+    // Hiding Release on a repository is saying it has no releases from here
+    // (a shared library, a service deployed another way). Telling them on
+    // every trusted run to show it again overrules that choice.
     let mut book = FlowBook::defaults();
     book.flows.push(release_flow());
     let waiting = repo(0, 0, None, true);
+    let hidden = ["release".to_string()];
 
-    let why = why_stopped(&book, &waiting, &["release".to_string()])
-        .expect("a chain that stopped for this reason has to say so");
-    assert!(why.contains("hidden"), "got {why:?}");
-    assert!(why.contains("Release"), "it should name the flow: {why:?}");
-
+    assert_eq!(
+        next_flow(&book, &waiting, &hidden),
+        None,
+        "the hidden flow is not started"
+    );
+    assert_eq!(
+        why_stopped(&book, &waiting, &hidden),
+        None,
+        "and nothing is said about it"
+    );
     assert_eq!(
         why_stopped(&book, &waiting, &[]),
         None,
-        "nothing to explain when it is not hidden"
+        "nor when it is shown and answers"
     );
 }
 
