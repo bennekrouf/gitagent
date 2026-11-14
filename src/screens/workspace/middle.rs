@@ -15,7 +15,7 @@ pub(super) struct Mid {
     pub selected_pr: Signal<String>,
     pub selected_node: Signal<String>,
     pub running: Signal<BTreeSet<Key>>,
-    pub chain_note: Signal<String>,
+    pub chain_note: Signal<ChainNote>,
     pub run_view: Signal<bool>,
     pub drawer: Signal<Option<String>>,
     pub panel_step: Signal<Option<String>>,
@@ -78,7 +78,13 @@ pub(super) fn middle_pane(
     // Built once for both views: while the run view was open this note had
     // nowhere to go, so a Play that was refused said nothing at all — which
     // is indistinguishable from a button that does not work.
-    let note = chain_banner(chain_note, setup_open, d.blocker.clone(), wiring);
+    let note = chain_banner(
+        chain_note,
+        active.as_deref(),
+        setup_open,
+        d.blocker.clone(),
+        wiring,
+    );
 
     rsx! {
         match active.clone() {
@@ -548,7 +554,8 @@ fn list_arm(
 /// session — and a run started there and forgotten keeps refusing every start
 /// for as long as the session stays open.
 fn chain_banner(
-    mut chain_note: Signal<String>,
+    mut chain_note: Signal<ChainNote>,
+    selected: Option<&str>,
     mut setup_open: Signal<bool>,
     blocker: Option<(LiveRun, String)>,
     wiring: Wiring,
@@ -559,11 +566,12 @@ fn chain_banner(
         mut selected_node,
         ..
     } = wiring;
+    let text = chain_note.read().shown_for(selected).map(str::to_string);
     rsx! {
-        if !chain_note.read().is_empty() {
+        if let Some(text) = text {
             div { class: "chain-note",
                 span { class: "chain-note-icon", "\u{26a0}" }
-                span { class: "chain-note-text", "{chain_note}" }
+                span { class: "chain-note-text", "{text}" }
                 if let Some((run, step)) = blocker {
                     button {
                         class: "chain-note-open",
@@ -574,7 +582,7 @@ fn chain_banner(
                                 selected_flow.set(flow.clone());
                                 selected_pr.set(String::new());
                                 selected_node.set(step.clone());
-                                chain_note.set(String::new());
+                                chain_note.set(ChainNote::default());
                             }
                         },
                         "Show it"
@@ -589,7 +597,7 @@ fn chain_banner(
                                 step: step.clone(),
                                 approved: false,
                             });
-                            chain_note.set(String::new());
+                            chain_note.set(ChainNote::default());
                         },
                         "Reject it"
                     }
@@ -602,7 +610,7 @@ fn chain_banner(
                 }
                 button {
                     class: "chain-note-close",
-                    onclick: move |_| chain_note.set(String::new()),
+                    onclick: move |_| chain_note.set(ChainNote::default()),
                     "\u{2715}"
                 }
             }

@@ -150,8 +150,9 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     // run's approvals the way this window would.
     let global_trust = use_signal(store::trust_all);
     // Why the last trusted run stopped, when the reason was not "there is
-    // nothing left". Cleared when the next one starts.
-    let chain_note = use_signal(String::new);
+    // nothing left", and the repository it stopped on. Cleared when the next
+    // run there starts.
+    let chain_note = use_signal(ChainNote::default);
     // The run map instead of the step list and detail pane: one switch for
     // the whole window, so it stays on while you move between repositories.
     // On by default — where a run is is the first thing worth seeing; the
@@ -620,6 +621,34 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         {dialogs::base_editor_dialog(repos, repo_bases, base_editor_open, base_editor_value)}
 
         {dialogs::confirm_hide_dialog(repos, book, confirm_hide, hide_flow)}
+    }
+}
+
+/// Why a run was refused or a trusted chain stopped, in words you can act on,
+/// and the repository that is about.
+///
+/// Kept with its repository because the window has one banner for all of
+/// them: a chain that stopped on one repository used to leave its sentence
+/// over whichever repository was selected next, naming a flow hidden there
+/// as if it were hidden on the one on screen.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub(super) struct ChainNote {
+    pub repo: String,
+    pub text: String,
+}
+
+impl ChainNote {
+    pub fn about(repo: &str, text: impl Into<String>) -> Self {
+        Self {
+            repo: repo.to_string(),
+            text: text.into(),
+        }
+    }
+
+    /// The sentence to show while `selected` is the repository on screen.
+    pub fn shown_for(&self, selected: Option<&str>) -> Option<&str> {
+        (!self.text.is_empty() && selected == Some(self.repo.as_str()))
+            .then_some(self.text.as_str())
     }
 }
 

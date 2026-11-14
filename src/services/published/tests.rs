@@ -55,7 +55,7 @@ fn a_green_run_is_published_and_names_what_it_built() {
             ("release", "completed", "success"),
         ],
     );
-    let outcome = finished(&run(), "v0.1.58", &done).expect("published");
+    let outcome = finished(&run(), "v0.1.58", &done, None).expect("published");
     assert_eq!(outcome.summary, "v0.1.58 published — build-mac, release");
     assert!(!outcome.nothing_to_do);
 }
@@ -71,7 +71,7 @@ fn a_failed_job_is_named_with_a_rerun_of_only_the_failures() {
             ("release", "completed", "success"),
         ],
     );
-    let failure = finished(&run(), "v0.1.47", &done).expect_err("not published");
+    let failure = finished(&run(), "v0.1.47", &done, None).expect_err("not published");
     assert!(
         failure.message.contains("1 job failed"),
         "{}",
@@ -101,7 +101,7 @@ fn a_job_that_never_got_a_runner_counts_as_failed() {
             ("build-linux", "completed", "success"),
         ],
     );
-    let failure = finished(&run(), "v1.0.0", &done).expect_err("cancelled");
+    let failure = finished(&run(), "v1.0.0", &done, None).expect_err("cancelled");
     assert!(
         failure.message.contains("build-mac — cancelled"),
         "{}",
@@ -116,4 +116,59 @@ fn versions_order_by_number_not_by_text() {
         std::cmp::Ordering::Greater
     );
     assert_eq!(version_order("v1.0.0", "v1.0.0"), std::cmp::Ordering::Equal);
+}
+
+#[test]
+fn an_apple_agreement_to_accept_is_said_instead_of_try_again() {
+    let done = view(
+        "completed",
+        "failure",
+        &[
+            ("build-mac", "completed", "failure"),
+            ("build-windows", "completed", "success"),
+        ],
+    );
+    let log = "build-mac\tBuild .app + .dmg\t2026-11-14T10:25:33Z Error: HTTP status code: 403. \
+               A required agreement is missing or has expired. This request requires an \
+               in-effect agreement that has not been signed or has expired.";
+    let failure = finished(&run(), "v0.1.65", &done, Some(log)).expect_err("not published");
+    assert!(
+        failure.message.contains("developer.apple.com/account"),
+        "{}",
+        failure.message
+    );
+    assert!(
+        !failure.message.contains("second try"),
+        "{}",
+        failure.message
+    );
+    assert!(failure.message.contains("build-mac"), "{}", failure.message);
+    assert_eq!(
+        failure.remedies[0].label,
+        "Re-run once the agreement is accepted"
+    );
+    assert_eq!(failure.remedies[0].args, ["run", "rerun", "41", "--failed"]);
+}
+
+#[test]
+fn an_unrecognised_failure_still_suggests_a_second_try() {
+    let done = view(
+        "completed",
+        "failure",
+        &[("build-mac", "completed", "failure")],
+    );
+    let failure = finished(
+        &run(),
+        "v0.1.65",
+        &done,
+        Some("error: linker `cc` not found"),
+    )
+    .expect_err("not published");
+    assert!(
+        failure.message.contains("second try"),
+        "{}",
+        failure.message
+    );
+    assert_eq!(failure.remedies[0].label, "Re-run the failed jobs");
+    assert!(known_cause("security: CSSMERR_TP_CERT_EXPIRED").is_some());
 }

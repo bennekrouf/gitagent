@@ -17,7 +17,7 @@ pub(super) fn begin(
     mut running: Signal<BTreeSet<Key>>,
     mut trusted: Signal<BTreeSet<Key>>,
     global_trust: Signal<bool>,
-    mut chain_note: Signal<String>,
+    mut chain_note: Signal<ChainNote>,
     repo_flows: Signal<RepoFlows>,
     branches_busy: Signal<Option<(String, String)>>,
     llm_config: Signal<LlmConfig>,
@@ -52,7 +52,9 @@ pub(super) fn begin(
     // — for the folder this repository sits in, so a window set to China
     // stays on China however the one next to it was changed.
     llm_config_mut.set(store::load_settings_for(Some(&repo)));
-    chain_note.set(String::new());
+    if chain_note.read().repo == repo {
+        chain_note.set(ChainNote::default());
+    }
 
     // An ordinary Start runs the flow on screen. A trusted run is for the
     // repository, not for one flow, so it starts on whichever flow answers
@@ -78,14 +80,12 @@ pub(super) fn begin(
         // this button feel broken, so say why.
         if trust {
             if let Some(status) = statuses.read().get(&repo) {
-                chain_note.set(
-                    trusted::why_stopped(
-                        &book.read(),
-                        status,
-                        &repo_flows.read().hidden_for(&repo),
-                    )
-                    .unwrap_or_default(),
+                let why = trusted::why_stopped(
+                    &book.read(),
+                    status,
+                    &repo_flows.read().hidden_for(&repo),
                 );
+                chain_note.set(ChainNote::about(&repo, why.unwrap_or_default()));
             }
         }
         return;
@@ -106,9 +106,12 @@ pub(super) fn begin(
                 // The flow is not in the book: removed or renamed in Setup
                 // while its tab was still on screen. Breaking quietly here
                 // is a Start that does nothing whatsoever.
-                chain_note.set(format!(
-                    "The flow \u{201c}{id}\u{201d} is not in Setup any more \u{2014} it was \
-                     removed or renamed. Pick another tab, or put it back in Setup."
+                chain_note.set(ChainNote::about(
+                    &repo,
+                    format!(
+                        "The flow \u{201c}{id}\u{201d} is not in Setup any more \u{2014} it \
+                         was removed or renamed. Pick another tab, or put it back in Setup."
+                    ),
                 ));
                 break;
             };
@@ -134,7 +137,7 @@ pub(super) fn begin(
             ) {
                 Ok(claim) => claim,
                 Err(why) => {
-                    chain_note.set(why);
+                    chain_note.set(ChainNote::about(&repo, why));
                     break;
                 }
             };
@@ -229,9 +232,10 @@ pub(super) fn begin(
                 // The commonest end of a chain, and until now the most
                 // silent: a release is due and the release flow never
                 // declared that it handles releases.
-                chain_note.set(
+                chain_note.set(ChainNote::about(
+                    &repo,
                     trusted::why_stopped(&book.read(), &status, &hidden_here).unwrap_or_default(),
-                );
+                ));
                 break;
             };
             // The same flow again means the last one did not move the
