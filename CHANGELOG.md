@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- A merge refused because the repository has uncommitted changes now offers
+  **Start** on Commit → PR, instead of saying there is no automatic fix. It
+  commits those changes, then goes straight back to Review → Merge on the same
+  pull request: on its branch they join the pull request, elsewhere they get
+  one of their own. A commit that fails or that you reject stops there, and
+  each step still asks for your approval unless **Trust all** is on.
+
 ## [0.1.184] - 2026-11-14
 
 ### Fixed

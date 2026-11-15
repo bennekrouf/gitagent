@@ -234,6 +234,11 @@ pub struct Remedy {
     /// Only runnable once git is waiting on no file: finishing a merge while
     /// one is still conflicted just fails, with git's words for why.
     pub once_resolved: bool,
+    /// A flow fixes this, not a command: pressing it ends this run and starts
+    /// the flow that answers this need on the same repository, the one a
+    /// trusted run would pick, then this run's flow again once that one
+    /// finishes cleanly. `program` and `args` are then unused.
+    pub starts: Option<crate::services::probe::Need>,
 }
 
 impl Remedy {
@@ -251,6 +256,21 @@ impl Remedy {
             sets: vec![],
             failed: false,
             once_resolved: false,
+            starts: None,
+        }
+    }
+
+    /// A remedy that is a flow of its own, `flow` being how it reads: this
+    /// run ends and the flow answering `need` starts in its place, from the
+    /// window, as if started by hand there.
+    pub fn flow(label: &str, flow: &str, need: crate::services::probe::Need) -> Self {
+        Self {
+            display: flow.into(),
+            program: String::new(),
+            args: vec![],
+            retry_after: false,
+            starts: Some(need),
+            ..Self::new(label, "", &[])
         }
     }
 

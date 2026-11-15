@@ -16,7 +16,15 @@ pub(super) struct Wiring {
     pub(super) llm_config: Signal<LlmConfig>,
     pub(super) statuses: Signal<BTreeMap<String, RepoStatus>>,
     pub(super) trusted: Signal<BTreeSet<Key>>,
+    /// Starts, on a repository, the flow that answers a need, then the flow
+    /// and pull request given: for a fix that is a flow of its own rather
+    /// than a command, after which the flow it stopped runs again.
+    pub(super) start_flow: Callback<FlowFix>,
 }
+
+/// A fix that is a flow: the repository, the need its flow answers, and the
+/// flow and pull request to go back to after it.
+pub(super) type FlowFix = (String, Need, Option<(String, String)>);
 
 /// One step of one run, with everything you can do to it: approve or reject,
 /// pick files, run a fix, retry, skip, cancel. The list view shows it in its
@@ -60,6 +68,7 @@ pub(super) fn step_detail(
         llm_config,
         statuses,
         trusted,
+        start_flow,
     } = wiring;
     rsx! {
         DetailPane {
@@ -137,6 +146,22 @@ pub(super) fn step_detail(
                         .and_then(|s| s.runs.get(&node))
                         .and_then(|r| r.remedies.get(index).cloned());
                     let Some(remedy) = found else { return };
+
+                    // A fix that is a flow: this run has nothing left to do
+                    // until that flow has, so it ends here and the flow starts
+                    // in its place, then this flow again from the top — on
+                    // the pull request it was about, which an empty key
+                    // leaves to the checked-out branch.
+                    if let Some(need) = remedy.starts {
+                        let pr = states.read().get(&key)
+                            .map(|s| s.artifact("pr_number").to_string())
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| key.2.clone());
+                        states.write().remove(&key);
+                        running.write().remove(&key);
+                        start_flow.call((key.0.clone(), need, Some((key.1.clone(), pr))));
+                        return;
+                    }
 
                     set_remedy(states, &key, &node, index, |r| {
                         r.running = true;

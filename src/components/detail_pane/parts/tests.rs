@@ -30,6 +30,7 @@ fn remedy(once_resolved: bool) -> Remedy {
         sets: vec![],
         failed: false,
         once_resolved,
+        starts: None,
     }
 }
 

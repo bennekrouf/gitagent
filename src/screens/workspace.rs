@@ -311,17 +311,6 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     );
 
     let llm_config = props.llm_config;
-    let wiring = Wiring {
-        states,
-        running,
-        selected_node,
-        selected_repo,
-        selected_flow,
-        selected_pr,
-        llm_config,
-        statuses,
-        trusted,
-    };
     let repo_list = repos.read().clone();
     let status_map = statuses.read().clone();
     let forge_map: BTreeMap<String, crate::services::forge::Forge> = status_map
@@ -375,7 +364,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
     let cfg = props.llm_config.read().clone();
 
     let llm_config_mut = props.llm_config;
-    let begin = move |trust: bool| {
+    let begin_then = move |trust: bool, then: Option<(String, String)>| {
         actions::begin(
             statuses,
             states,
@@ -393,9 +382,52 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             llm_config,
             llm_config_mut,
             trust,
+            then,
         )
     };
+    let begin = move |trust: bool| begin_then(trust, None);
     let start = move |_: Event<MouseData>| begin(false);
+
+    // A fix that is a flow of its own — Commit → PR for a merge refused over
+    // uncommitted changes — starts the flow a trusted run would pick for that
+    // need, on that repository, as Start would, then goes back to `then`: the
+    // flow and pull request it was stopped in.
+    let start_flow = use_callback(move |(repo, need, then): detail::FlowFix| {
+        let (mut chosen_repo, mut chosen_pr, mut chosen_node) =
+            (selected_repo, selected_pr, selected_node);
+        let found = book
+            .peek()
+            .runnable_for(&repo_flows.peek().hidden_for(&repo))
+            .into_iter()
+            .find(|f| f.answers(need))
+            .map(|f| f.id.clone());
+        let Some(id) = found else {
+            let mut chain_note = chain_note;
+            chain_note.set(ChainNote::about(
+                &repo,
+                "No flow here commits changes: Commit → PR is hidden for this repository \
+                 or was removed in Setup. Commit them by hand, then Review → Merge again.",
+            ));
+            return;
+        };
+        chosen_repo.set(Some(repo));
+        selected_flow.set(id);
+        chosen_pr.set(String::new());
+        chosen_node.set(String::new());
+        begin_then(false, then);
+    });
+    let wiring = Wiring {
+        states,
+        running,
+        selected_node,
+        selected_repo,
+        selected_flow,
+        selected_pr,
+        llm_config,
+        statuses,
+        trusted,
+        start_flow,
+    };
 
     // Branches, Base and Trusted run: the repository's own controls. The same
     // three in the list view's header and the run view's, built here once, so
