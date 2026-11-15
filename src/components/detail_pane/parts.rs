@@ -145,6 +145,7 @@ pub(super) fn remedies(
                             else if remedy.done { "Done" }
                             else if remedy.failed { "Run again" }
                             else if remedy.abandons { "Abandon" }
+                            else if remedy.starts.is_some() { "Start" }
                             else { "Run" }
                         }
                             }

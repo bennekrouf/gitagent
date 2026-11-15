@@ -23,6 +23,7 @@ pub(super) fn begin(
     llm_config: Signal<LlmConfig>,
     mut llm_config_mut: Signal<LlmConfig>,
     trust: bool,
+    then: Option<(String, String)>,
 ) {
     let Some(repo) = selected_repo.read().clone() else {
         return;
@@ -98,6 +99,10 @@ pub(super) fn begin(
         // like any other trusted run from that point, so this is re-read
         // from the trusted set after every leg rather than captured once.
         let mut trusting = trust;
+        // The flow and pull request to go back to once the first flow has
+        // done its part: a fix that is a flow of its own — Commit → PR for a
+        // merge refused over uncommitted changes — promises the merge after.
+        let mut then = then;
 
         // Each turn of this loop is one flow, start to finish. Only a
         // trusted run goes round twice.
@@ -224,6 +229,16 @@ pub(super) fn begin(
                 }
             }
 
+            // Trusted or not: going back to the flow the fix stopped is what
+            // the button said it would do. Not after a failure or a rejection,
+            // though — the commit it was waiting on did not happen.
+            if let Some(back) = then.take() {
+                if !trusted::may_continue(&finished, &graph) {
+                    break;
+                }
+                (id, pr) = back;
+                continue;
+            }
             if !trusting || !trusted::may_continue(&finished, &graph) {
                 break;
             }

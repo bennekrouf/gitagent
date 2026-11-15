@@ -371,7 +371,11 @@ pub(super) fn report(run: &Run) -> Value {
                     step["fixes"] = json!(entry
                         .remedies
                         .iter()
-                        .map(|r| json!({ "label": r.label, "command": r.display }))
+                        .map(|r| match r.starts {
+                            // A flow to run, with run_flow, not a command.
+                            Some(_) => json!({ "label": r.label, "flow": r.display }),
+                            None => json!({ "label": r.label, "command": r.display }),
+                        })
                         .collect::<Vec<_>>());
                 }
             }

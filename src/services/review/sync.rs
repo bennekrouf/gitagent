@@ -564,7 +564,7 @@ async fn uncommitted_in_the_way(repo: &str, number: &str) -> Option<StepFailure>
         0 => String::new(),
         n => format!("\n  … and {n} more"),
     };
-    Some(StepFailure::from(format!(
+    let message = format!(
         "This repository has uncommitted changes, so #{number} was not merged. Nothing \
          has been changed.\n\n{}{more}\n\n\
          Merging now would merge #{number} without them, and leave them stranded on a \
@@ -572,7 +572,15 @@ async fn uncommitted_in_the_way(repo: &str, number: &str) -> Option<StepFailure>
          branch it adds them to the pull request, elsewhere it opens one of their own. \
          Then Review → Merge again.",
         shown.join("\n"),
-    )))
+    );
+    Some(StepFailure {
+        message,
+        remedies: vec![Remedy::flow(
+            &format!("Commit them with Commit → PR, then review and merge #{number}"),
+            "Commit → PR",
+            crate::services::probe::Need::Uncommitted,
+        )],
+    })
 }
 
 /// `gh pr merge --delete-branch` merges on GitHub first, then tidies up here:

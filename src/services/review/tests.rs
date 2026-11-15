@@ -768,3 +768,47 @@ async fn running_merge_again_mid_merge_offers_finish_not_uncommitted_changes() {
     assert!(open.message.contains("CHANGELOG.md"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_refused_over_uncommitted_changes_offers_commit_and_pr() {
+    // The refusal used to end on "No automatic fix for this", although the
+    // fix is a flow the window can start: Commit → PR.
+    let dir = std::env::temp_dir().join(format!("gitagent-dirtymerge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap()
+    };
+    let repo = dir.to_string_lossy().to_string();
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("en.json"), "{}\n").unwrap();
+    git(&["add", "en.json"]);
+    git(&["commit", "-qm", "one"]);
+    std::fs::write(dir.join("en.json"), "{\"a\":1}\n").unwrap();
+
+    let mut state = RunState::default();
+    state.artifacts.insert("pr_number".into(), "145".into());
+    let refused = merge(&repo, &state)
+        .await
+        .expect_err("never merged with edits in the tree");
+    assert!(refused.message.contains("en.json"), "{}", refused.message);
+    assert_eq!(refused.remedies.len(), 1);
+    let fix = &refused.remedies[0];
+    assert_eq!(fix.starts, Some(crate::services::probe::Need::Uncommitted));
+    assert_eq!(fix.display, "Commit → PR");
+    assert!(
+        !fix.retry_after,
+        "the merge is run again by hand, after the commit"
+    );
+    assert!(!fix.abandons);
+    std::fs::remove_dir_all(&dir).ok();
+}
