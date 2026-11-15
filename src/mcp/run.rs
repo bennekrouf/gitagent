@@ -197,9 +197,26 @@ async fn carry_on(first: u64, runs: &mut BTreeMap<u64, Run>) -> Result<Value, St
                 // A trusted chain stays trusted; going back after a fix asks
                 // as the run it fixed did, unless trust says otherwise.
                 let trusting = run.trusting();
-                id = start_flow(&repo, &next, &next_pr, trusting, None, runs).await?;
+                match start_flow(&repo, &next, &next_pr, trusting, None, runs).await {
+                    Ok(next_id) => {
+                        went(runs, id, crate::services::graph::THEN_STARTED);
+                        id = next_id;
+                    }
+                    // The leg that just ran is real work: report it, with
+                    // why the chain ended there, rather than only the error.
+                    Err(why) => {
+                        went(runs, id, &why);
+                        if let Some(last) = legs.last_mut() {
+                            last["chain_stopped"] = json!(why);
+                        }
+                        break;
+                    }
+                }
             }
-            Next::Flow(..) => break,
+            Next::Flow(..) => {
+                went(runs, id, "too many flows ran in a row");
+                break;
+            }
             Next::Stop(why) => {
                 if let (Some(why), Some(last)) = (why, legs.last_mut()) {
                     last["chain_stopped"] = json!(why);
@@ -215,6 +232,13 @@ async fn carry_on(first: u64, runs: &mut BTreeMap<u64, Run>) -> Result<Value, St
         last["earlier_flows"] = json!(legs.iter().map(brief).collect::<Vec<_>>());
     }
     Ok(last)
+}
+
+/// Tells the window whether the flow a fix promised really started.
+fn went(runs: &mut BTreeMap<u64, Run>, id: u64, outcome: &str) {
+    if let Some(run) = runs.get_mut(&id) {
+        run.then_went(outcome);
+    }
 }
 
 /// The Refresh button of every GitAgent window open on `path`: a folder

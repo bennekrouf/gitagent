@@ -151,19 +151,9 @@ pub(super) fn then_note(
     if then.is_empty() {
         return None;
     }
-    Some(if !finished {
-        (
-            "run-then",
-            format!("then {then}"),
-            format!("Started as a fix: once this flow finishes, {then} starts on its own."),
-        )
-    } else if crate::services::trusted::may_continue(state, graph) {
-        (
-            "run-then",
-            format!("went on to {then}"),
-            format!("This flow finished, so {then} started after it."),
-        )
-    } else {
+    // Checked first: a rejection leaves the later steps unrun, so the header
+    // never calls that run finished, and the merge is off all the same.
+    Some(if !crate::services::trusted::may_continue(state, graph) {
         (
             "run-then run-then-off",
             format!("{then} will not follow"),
@@ -172,5 +162,33 @@ pub(super) fn then_note(
                  Start it yourself once this is sorted out."
             ),
         )
+    } else if !finished {
+        (
+            "run-then",
+            format!("then {then}"),
+            format!("Started as a fix: once this flow finishes, {then} starts on its own."),
+        )
+    } else {
+        match state.then_outcome() {
+            // Finished, and the next flow is a moment from starting.
+            "" => (
+                "run-then",
+                format!("then {then}"),
+                format!("This flow finished; {then} is starting."),
+            ),
+            crate::services::graph::THEN_STARTED => (
+                "run-then",
+                format!("went on to {then}"),
+                format!("This flow finished, so {then} started after it."),
+            ),
+            why => (
+                "run-then run-then-off",
+                format!("{then} did not start"),
+                format!(
+                    "This flow finished, but {then} could not start: {why}. \
+                     Start it yourself."
+                ),
+            ),
+        }
     })
 }

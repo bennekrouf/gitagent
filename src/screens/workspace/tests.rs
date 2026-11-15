@@ -774,6 +774,7 @@ fn live(repo: &str, flow: &str, terminal: bool) -> crate::services::live::LiveRu
         trusted: false,
         terminal,
         then: String::new(),
+        then_outcome: String::new(),
         updated: 0,
     }
 }
