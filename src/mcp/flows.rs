@@ -42,6 +42,11 @@ pub(super) fn tools() -> Value {
                         for a trusted run: GitAgent approves what its Trusted run would, holds \
                         at the rest (anything risky, any script or deploy, release notes), and continues into the next flow the repository needs. \
                         Already on if the user turned on Trust all in the GitAgent window." },
+                    "fixing": { "type": "integer", "description": "A failed run's id, when \
+                        this flow is the fix its failed step offers: a `fixes` entry with \
+                        `run_flow` gives all three arguments. Once this flow finishes \
+                        cleanly, that run's flow runs again on the same pull request, \
+                        asking for approval as usual." },
                 },
                 "required": ["repo", "flow"],
             },

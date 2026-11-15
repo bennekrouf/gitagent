@@ -52,6 +52,10 @@ pub struct LiveRun {
     /// approvals are answered in that terminal.
     #[serde(default)]
     pub terminal: bool,
+    /// The flow it goes on to once it finishes cleanly — "Review → Merge
+    /// #145" — for a run started as the fix for another. Empty otherwise.
+    #[serde(default)]
+    pub then: String,
     /// Seconds since the epoch.
     pub updated: u64,
 }
@@ -160,6 +164,7 @@ pub fn snapshot(
         finished: state.is_finished(graph),
         trusted,
         terminal: false,
+        then: state.then().to_string(),
         updated: now(),
     }
 }
@@ -196,6 +201,11 @@ impl LiveRun {
                 },
             );
             state.set_status(&step.id, status);
+        }
+        if !self.then.is_empty() {
+            state
+                .artifacts
+                .insert(super::graph::THEN.into(), self.then.clone());
         }
         Some(state)
     }
@@ -313,8 +323,39 @@ mod tests {
             finished,
             trusted: false,
             terminal: false,
+            then: String::new(),
             updated,
         }
+    }
+
+    #[test]
+    fn the_flow_a_fix_goes_on_to_reaches_the_window() {
+        let graph = crate::services::flowdef::FlowBook::defaults()
+            .get("commit_and_pr")
+            .unwrap()
+            .to_graph();
+        let mut state = RunState::fresh(&graph);
+        state.started = true;
+        state.artifacts.insert(
+            crate::services::graph::THEN.into(),
+            "Review → Merge #145".into(),
+        );
+        let live = snapshot(
+            1,
+            "/r",
+            "commit_and_pr",
+            "Commit → PR",
+            &graph,
+            &state,
+            false,
+        );
+        let read: LiveRun = serde_json::from_value(serde_json::to_value(&live).unwrap()).unwrap();
+        assert_eq!(read.as_state(&graph).unwrap().then(), "Review → Merge #145");
+
+        // Written by a server from before it: no field, nothing to show.
+        let mut old = serde_json::to_value(run(false, 1)).unwrap();
+        old.as_object_mut().unwrap().remove("then");
+        assert_eq!(serde_json::from_value::<LiveRun>(old).unwrap().then, "");
     }
 
     #[test]

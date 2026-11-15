@@ -27,6 +27,22 @@ were never released.
   pull request: on its branch they join the pull request, elsewhere they get
   one of their own. A commit that fails or that you reject stops there, and
   each step still asks for your approval unless **Trust all** is on.
+- Claude does the same: when it runs Review → Merge and the merge is refused
+  over uncommitted changes, it can run Commit → PR as the fix, and the merge
+  follows on its own once the commit is done, still with your approval at
+  each step.
+- The run view says where such a fix goes next: **then Review → Merge #145**
+  beside the step count while Commit → PR runs, **went on to** once the merge
+  has started, or **will not follow** when the commit stopped short. It shows
+  for a fix Claude is running as well.
+
+### Fixed
+
+- After Claude or `gitagent run` in a terminal finishes a flow, the
+  repository list now reads that repository again, as it does after a run
+  started in the window. A Release published this way used to leave
+  **Release** offered beside the repository, as if nothing had been released,
+  until you pressed Refresh.
 
 ## [0.1.184] - 2026-11-14
 

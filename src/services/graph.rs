@@ -197,6 +197,9 @@ pub struct ProposalItem {
     pub included: bool,
 }
 
+/// The artifact `RunState::then` reads.
+pub const THEN: &str = "then";
+
 /// A known fix for a specific failure, runnable from the app.
 ///
 /// Only ever populated for causes with an exact, idempotent remedy — installing
@@ -485,6 +488,13 @@ impl RunState {
             }
         }
         resolved
+    }
+
+    /// The flow this run goes on to once it finishes cleanly, as the run
+    /// view says it — "Review → Merge #145" — or empty. Set on a run started
+    /// as the fix for another; no step reads it.
+    pub fn then(&self) -> &str {
+        self.artifact(THEN)
     }
 
     pub fn artifact(&self, key: &str) -> &str {

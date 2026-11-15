@@ -20,6 +20,7 @@ pub(super) fn run_head(
     finished: bool,
     props: RunViewProps,
 ) -> Element {
+    let then = then_note(&props.state, &props.graph, finished);
     rsx! {
         div { class: "run-head",
             div { class: "run-head-main",
@@ -33,6 +34,9 @@ pub(super) fn run_head(
                     }
                     if waiting {
                         span { class: "run-needs", "\u{23f8} needs you" }
+                    }
+                    if let Some((class, text, title)) = then {
+                        span { class: "{class}", title: "{title}", "{text}" }
                     }
                     // A Play that cannot start says so here, not only in a
                     // tooltip on a dimmed button: hovering to find out why
@@ -133,4 +137,40 @@ pub(super) fn run_head(
             }
         }
     }
+}
+
+/// What the head says of the flow a fix goes on to, while there is one: the
+/// class, the words and the hover. Whether it is still to come, already
+/// under way, or not coming because this run stopped short.
+pub(super) fn then_note(
+    state: &RunState,
+    graph: &Graph,
+    finished: bool,
+) -> Option<(&'static str, String, String)> {
+    let then = state.then();
+    if then.is_empty() {
+        return None;
+    }
+    Some(if !finished {
+        (
+            "run-then",
+            format!("then {then}"),
+            format!("Started as a fix: once this flow finishes, {then} starts on its own."),
+        )
+    } else if crate::services::trusted::may_continue(state, graph) {
+        (
+            "run-then",
+            format!("went on to {then}"),
+            format!("This flow finished, so {then} started after it."),
+        )
+    } else {
+        (
+            "run-then run-then-off",
+            format!("{then} will not follow"),
+            format!(
+                "This flow stopped before finishing, so {then} was not started. \
+                 Start it yourself once this is sorted out."
+            ),
+        )
+    })
 }

@@ -88,15 +88,30 @@ pub(super) fn use_live_runs(
 /// terminal, a push, GitAgent's own MCP server running a flow — and its row
 /// and tabs should say so without a Refresh. A run of this window's own is
 /// left alone: it re-reads the repository when it settles.
+///
+/// A run Claude or a terminal drives is re-read when it ends, the way the
+/// window's own are. Its git changes alone were not enough: a release's
+/// commit and push land minutes before its build is published, and the
+/// re-reads they set off could finish out of order, leaving ▶ Release on a
+/// repository that had just been released, with nothing left to change it.
 pub(super) fn use_repo_changes(
     repos: Signal<Vec<Repo>>,
     running: Signal<BTreeSet<Key>>,
     statuses: Signal<BTreeMap<String, RepoStatus>>,
+    live_runs: Signal<Vec<LiveRun>>,
 ) {
     use_future(move || async move {
         let mut seen: BTreeMap<String, u64> = BTreeMap::new();
+        let mut outside = live_runs.peek().clone();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let now = live_runs.peek().clone();
+            for path in ended_since(&outside, &now) {
+                if !running.peek().iter().any(|k| k.0 == path) {
+                    reprobe(path, statuses);
+                }
+            }
+            outside = now;
             let paths: Vec<String> = repos.read().iter().map(|r| r.path.clone()).collect();
             for path in paths {
                 if running.peek().iter().any(|k| k.0 == path) {
@@ -112,6 +127,22 @@ pub(super) fn use_repo_changes(
             }
         }
     });
+}
+
+/// The repositories of runs driven outside this window that were going in
+/// `before` and have since ended: finished, or gone because their server
+/// stopped. Each once, in order.
+pub(super) fn ended_since(before: &[LiveRun], now: &[LiveRun]) -> Vec<String> {
+    let mut ended: Vec<String> = Vec::new();
+    for run in before.iter().filter(|r| !r.finished) {
+        let still_going = now
+            .iter()
+            .any(|r| r.pid == run.pid && r.run == run.run && !r.finished);
+        if !still_going && !ended.contains(&run.repo) {
+            ended.push(run.repo.clone());
+        }
+    }
+    ended
 }
 
 /// The signals a Refresh asked for from outside goes through: the same ones

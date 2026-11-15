@@ -635,3 +635,28 @@ fn the_line_starts_at_the_roots_and_ends_at_the_leaves() {
     assert_eq!(plan.roots, vec!["preflight".to_string()]);
     assert!(plan.leaves.contains(&"open_pr".to_string()));
 }
+
+#[test]
+fn the_head_names_the_merge_a_fix_goes_on_to() {
+    let graph = commit();
+    let mut state = RunState::fresh(&graph);
+    assert_eq!(head::then_note(&state, &graph, false), None, "not a fix");
+
+    state.artifacts.insert(
+        crate::services::graph::THEN.into(),
+        "Review → Merge #145".into(),
+    );
+    let (_, text, _) = head::then_note(&state, &graph, false).unwrap();
+    assert_eq!(text, "then Review → Merge #145");
+
+    for n in &graph.nodes {
+        state.set_status(&n.id, NodeStatus::Done);
+    }
+    let (_, text, _) = head::then_note(&state, &graph, true).unwrap();
+    assert_eq!(text, "went on to Review → Merge #145");
+
+    state.set_status(&graph.nodes[0].id, NodeStatus::Rejected);
+    let (class, text, _) = head::then_note(&state, &graph, true).unwrap();
+    assert_eq!(text, "Review → Merge #145 will not follow");
+    assert!(class.contains("run-then-off"));
+}

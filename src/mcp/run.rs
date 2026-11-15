@@ -107,11 +107,56 @@ pub(super) async fn run_flow(
     flow_id: &str,
     pr: &str,
     trusted: bool,
+    fixing: Option<u64>,
     runs: &mut BTreeMap<u64, Run>,
 ) -> Result<Value, String> {
     let trusted = trusted || store::trust_all();
-    let id = start_flow(repo, flow_id, pr, trusted, runs).await?;
+    let then = match fixing {
+        Some(failed) => Some(going_back_to(failed, repo, flow_id, runs)?),
+        None => None,
+    };
+    let id = start_flow(repo, flow_id, pr, trusted, then, runs).await?;
     carry_on(id, runs).await
+}
+
+/// The flow and pull request a fix goes back to: those of the failed run
+/// `failed`, once it is sure `flow_id` is the fix one of its failed steps
+/// offers. Refused otherwise, rather than chaining a merge onto a flow that
+/// was never what it asked for.
+pub(super) fn going_back_to(
+    failed: u64,
+    repo: &str,
+    flow_id: &str,
+    runs: &BTreeMap<u64, Run>,
+) -> Result<(String, String), String> {
+    let run = runs.get(&failed).ok_or(format!("no run {failed}"))?;
+    let repo = repo_path(repo)?;
+    if run.repo != repo {
+        return Err(format!(
+            "run {failed} is in {}, not {repo}; nothing was started",
+            run.repo
+        ));
+    }
+    let offered = run
+        .graph
+        .nodes
+        .iter()
+        .filter(|n| run.state.status(&n.id) == NodeStatus::Failed)
+        .filter_map(|n| run.state.runs.get(&n.id))
+        .flat_map(|r| r.remedies.iter())
+        .filter_map(|m| m.starts)
+        .any(|need| runner::flow_for(&repo, need).as_deref() == Some(flow_id));
+    if !offered {
+        return Err(format!(
+            "no failed step of run {failed} offers {flow_id} as its fix; nothing was \
+             started. Its `fixes` say which flow, if any"
+        ));
+    }
+    let pr = match run.state.artifact("pr_number") {
+        "" => run.state.artifact("selected_pr_number"),
+        n => n,
+    };
+    Ok((run.flow.clone(), pr.to_string()))
 }
 
 /// The person's yes to the step a run is waiting on. With `stop_asking`, as
@@ -149,7 +194,10 @@ async fn carry_on(first: u64, runs: &mut BTreeMap<u64, Run>) -> Result<Value, St
         match run.next().await {
             Next::Flow(next, next_pr) if leg < trusted::MOST_FLOWS => {
                 let repo = run.repo.clone();
-                id = start_flow(&repo, &next, &next_pr, true, runs).await?;
+                // A trusted chain stays trusted; going back after a fix asks
+                // as the run it fixed did, unless trust says otherwise.
+                let trusting = run.trusting();
+                id = start_flow(&repo, &next, &next_pr, trusting, None, runs).await?;
             }
             Next::Flow(..) => break,
             Next::Stop(why) => {
@@ -311,6 +359,7 @@ pub(super) async fn start_flow(
     flow_id: &str,
     pr: &str,
     trusted: bool,
+    then: Option<(String, String)>,
     runs: &mut BTreeMap<u64, Run>,
 ) -> Result<u64, String> {
     let repo = repo_path(repo)?;
@@ -330,6 +379,14 @@ pub(super) async fn start_flow(
         }
     })?;
     run.progress = super::report_progress;
+    if let Some((flow, pr)) = &then {
+        // For the window, which draws this run as it goes.
+        run.state.artifacts.insert(
+            crate::services::graph::THEN.into(),
+            runner::then_label(&FlowBook::load(), flow, pr),
+        );
+    }
+    run.then = then;
     run.advance().await;
     let id = run.state.run;
     runs.insert(id, run);
@@ -372,8 +429,23 @@ pub(super) fn report(run: &Run) -> Value {
                         .remedies
                         .iter()
                         .map(|r| match r.starts {
-                            // A flow to run, with run_flow, not a command.
-                            Some(_) => json!({ "label": r.label, "flow": r.display }),
+                            // A flow to run, with run_flow, not a command; it
+                            // comes back to this run's flow once done.
+                            Some(need) => match runner::flow_for(&run.repo, need) {
+                                Some(flow) => json!({
+                                    "label": r.label,
+                                    "flow": r.display,
+                                    "run_flow": { "repo": run.repo, "flow": flow, "fixing": state.run },
+                                }),
+                                None => json!({
+                                    "label": r.label,
+                                    "flow": r.display,
+                                    "unavailable": format!(
+                                        "{} is hidden for this repository or was removed in \
+                                         Setup", r.display
+                                    ),
+                                }),
+                            },
                             None => json!({ "label": r.label, "command": r.display }),
                         })
                         .collect::<Vec<_>>());
