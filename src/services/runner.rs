@@ -216,6 +216,10 @@ pub struct Run {
     /// This repository, held for as long as the run is going — see
     /// `services::busy`. Let go the moment the run ends.
     pub claim: Option<busy::Claim>,
+    /// The flow and pull request to go back to once this flow finishes
+    /// cleanly, trusted or not: set when this run is the fix a failed run
+    /// offered — Commit → PR for a merge refused over uncommitted changes.
+    pub then: Option<(String, String)>,
 }
 
 /// Where a trusted run goes after a flow it finished.
@@ -250,6 +254,30 @@ fn io_reason(e: &std::io::Error) -> &'static str {
     }
 }
 
+/// The flow in `repo` that answers `need`, as a trusted run would pick it:
+/// what a fix that is a flow of its own runs.
+pub fn flow_for(repo: &str, need: probe::Need) -> Option<String> {
+    let hidden = store::load_repo_flows().hidden_for(repo);
+    FlowBook::load()
+        .runnable_for(&hidden)
+        .into_iter()
+        .find(|f| f.answers(need))
+        .map(|f| f.id.clone())
+}
+
+/// How the run view names the flow a run goes on to: its label, and the pull
+/// request when there is one — "Review → Merge #145".
+pub fn then_label(book: &FlowBook, flow: &str, pr: &str) -> String {
+    let label = book
+        .get(flow)
+        .map(|f| f.label.clone())
+        .unwrap_or_else(|| flow.to_string());
+    match pr {
+        "" => label,
+        pr => format!("{label} #{pr}"),
+    }
+}
+
 impl Run {
     pub fn new(repo: String, flow: String, graph: Graph, state: RunState, trusted: bool) -> Self {
         Run {
@@ -263,6 +291,7 @@ impl Run {
             terminal: false,
             progress: |_| {},
             claim: None,
+            then: None,
         }
     }
 
@@ -327,6 +356,16 @@ impl Run {
 
     /// Where a trusted run that just finished this flow goes next.
     pub async fn next(&self) -> Next {
+        // A fix goes back to the run it fixed whether or not it is trusted:
+        // that is what running it as the fix asked for. Not after a failure
+        // or a rejection — what that run was waiting on did not happen.
+        if let Some((flow, pr)) = &self.then {
+            return if self.is_finished() && trusted::may_continue(&self.state, &self.graph) {
+                Next::Flow(flow.clone(), pr.clone())
+            } else {
+                Next::Stop(None)
+            };
+        }
         if !self.trusting()
             || !self.is_finished()
             || !trusted::may_continue(&self.state, &self.graph)
