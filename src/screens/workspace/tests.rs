@@ -773,6 +773,7 @@ fn live(repo: &str, flow: &str, terminal: bool) -> crate::services::live::LiveRu
         finished: false,
         trusted: false,
         terminal,
+        then: String::new(),
         updated: 0,
     }
 }
@@ -921,4 +922,53 @@ fn a_chain_note_shows_only_on_the_repository_it_is_about() {
     assert_eq!(note.shown_for(Some("/code/landing")), None);
     assert_eq!(note.shown_for(None), None);
     assert_eq!(ChainNote::default().shown_for(Some("")), None);
+}
+
+/// minicrm: Claude ran Release, and its build was published minutes after
+/// the push. The run ending is what re-reads the repository, so ▶ Release
+/// goes away rather than staying beside a release that is done.
+#[test]
+fn an_outside_run_that_ends_has_its_repository_read_again() {
+    let going = live("/w/minicrm", "release", false);
+    let mut done = going.clone();
+    done.finished = true;
+    assert_eq!(
+        watch::ended_since(std::slice::from_ref(&going), &[done]),
+        vec!["/w/minicrm".to_string()]
+    );
+    // Its server stopped before it finished: the run is gone all the same.
+    assert_eq!(
+        watch::ended_since(std::slice::from_ref(&going), &[]),
+        vec!["/w/minicrm".to_string()]
+    );
+}
+
+#[test]
+fn an_outside_run_still_going_or_long_over_is_not_read_again() {
+    let going = live("/w/minicrm", "release", false);
+    assert!(
+        watch::ended_since(std::slice::from_ref(&going), std::slice::from_ref(&going)).is_empty()
+    );
+
+    // Already finished when the window first saw it: nothing ended since.
+    let mut done = going.clone();
+    done.finished = true;
+    assert!(watch::ended_since(std::slice::from_ref(&done), &[]).is_empty());
+
+    // A new run started in its place is not the old one still going.
+    let mut next = going.clone();
+    next.run += 1;
+    assert_eq!(
+        watch::ended_since(std::slice::from_ref(&going), &[next]),
+        vec!["/w/minicrm".to_string()]
+    );
+
+    // Two runs ending in one repository read it once.
+    let mut other = going.clone();
+    other.flow = "commit_and_pr".into();
+    other.run += 7;
+    assert_eq!(
+        watch::ended_since(&[going, other], &[]),
+        vec!["/w/minicrm".to_string()]
+    );
 }

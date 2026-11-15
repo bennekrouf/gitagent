@@ -1426,6 +1426,9 @@ a.pr-failed-check:hover {
 .run-sub { display: flex; gap: 12px; font-size: 11px; color: var(--text2); margin-top: 2px; }
 .run-count { color: var(--text3); }
 .run-needs { color: var(--yellow); }
+/* The flow a fix goes on to: Review → Merge #145 after Commit → PR. */
+.run-then { color: var(--blue); white-space: nowrap; }
+.run-then-off { color: var(--text3); }
 /* Why Play would refuse, beside the run's own state. Elided rather than
    wrapped: the full sentence is on hover, and the head is one line. */
 .run-why {

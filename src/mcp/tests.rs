@@ -149,3 +149,88 @@ fn a_report_says_nothing_twice() {
         "no empty summaries"
     );
 }
+
+/// Every step of `r` settled as `status`.
+fn settle(r: &mut Run, status: NodeStatus) {
+    for n in r.graph.nodes.clone() {
+        r.state.runs.entry(n.id).or_default().status = status;
+    }
+}
+
+#[tokio::test]
+async fn a_fix_goes_back_to_the_run_it_fixed_untrusted_or_not() {
+    let mut r = run(false);
+    r.then = Some(("review_and_merge".into(), "145".into()));
+    settle(&mut r, NodeStatus::Done);
+    match r.next().await {
+        Next::Flow(flow, pr) => {
+            assert_eq!((flow.as_str(), pr.as_str()), ("review_and_merge", "145"))
+        }
+        Next::Stop(_) => panic!("a clean fix goes back to the merge"),
+    }
+    let first = r.graph.nodes[0].id.clone();
+    r.state.runs.get_mut(&first).unwrap().status = NodeStatus::Failed;
+    assert!(
+        matches!(r.next().await, Next::Stop(_)),
+        "a failed commit does not go on to merge without it"
+    );
+}
+
+#[tokio::test]
+async fn a_merge_refused_over_edits_says_how_to_run_its_fix_and_goes_back_to_it() {
+    let dir = std::env::temp_dir().join(format!("gitagent-mcpfix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let repo = repo_path(dir.to_str().unwrap()).unwrap();
+    // The commit flow as this machine's Setup has it; none is a setup this
+    // test has nothing to say about.
+    let Some(commit) = runner::flow_for(&repo, probe::Need::Uncommitted) else {
+        return;
+    };
+
+    let graph = FlowBook::defaults()
+        .get("review_and_merge")
+        .expect("shipped")
+        .to_graph();
+    let mut state = RunState::fresh(&graph);
+    state.artifacts.insert("pr_number".into(), "145".into());
+    let mut r = Run::new(repo.clone(), "review_and_merge".into(), graph, state, false);
+    let merge = r.graph.nodes.last().unwrap().id.clone();
+    let step = r.state.runs.entry(merge).or_default();
+    step.status = NodeStatus::Failed;
+    step.remedies = vec![crate::services::graph::Remedy::flow(
+        "Commit them with Commit → PR, then review and merge #145",
+        "Commit → PR",
+        probe::Need::Uncommitted,
+    )];
+    let id = r.state.run;
+
+    let out = report(&r);
+    let failed = out["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["status"] == "failed")
+        .expect("the merge step");
+    let call = &failed["fixes"][0]["run_flow"];
+    assert_eq!(call["flow"], commit.as_str());
+    assert_eq!(call["fixing"], id);
+    assert_eq!(call["repo"], repo.as_str());
+
+    let mut runs = BTreeMap::new();
+    runs.insert(id, r);
+    assert_eq!(
+        going_back_to(id, &repo, &commit, &runs).unwrap(),
+        ("review_and_merge".to_string(), "145".to_string())
+    );
+    assert!(
+        going_back_to(id, &repo, "release", &runs).is_err(),
+        "only the flow the step offered chains back"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

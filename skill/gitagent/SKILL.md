@@ -30,6 +30,11 @@ are available:
   only when the user asks for a trusted run; when they answer an approval
   with "stop asking me", approve it with `stop_asking: true`. Either way,
   report what was approved automatically and where the run stopped.
+- A failed step's `fixes` can name a flow rather than a command, with a
+  `run_flow` entry (Commit → PR for a merge refused over uncommitted
+  changes). Say what it does, and on the user's yes call **`run_flow`** with
+  exactly those arguments, `fixing` included: once that flow finishes, the
+  flow that failed runs again on the same pull request, asking as usual.
 - **`trust_all`** says whether *Trust all* is on, and turns it off if the
   user asks. Never turn it on: only the user does, in the window.
 - **`list_steps`**, **`get_flow`**, **`save_flow`**, **`delete_flow`** and

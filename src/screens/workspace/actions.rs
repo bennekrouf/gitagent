@@ -158,6 +158,12 @@ pub(super) fn begin(
                     .artifacts
                     .insert("selected_pr_number".into(), pr.clone());
             }
+            if let Some((flow, pr)) = &then {
+                fresh.artifacts.insert(
+                    crate::services::graph::THEN.into(),
+                    crate::services::runner::then_label(&book.read(), flow, pr),
+                );
+            }
             states.write().insert(key.clone(), fresh);
             running.write().insert(key.clone());
             if trusting {

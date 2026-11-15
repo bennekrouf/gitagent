@@ -247,7 +247,16 @@ async fn call(name: &str, args: &Value, runs: &mut BTreeMap<u64, Run>) -> Result
         "list_flows" => list_flows(&repo_path(&text("repo"))?),
         "run_flow" => {
             let trusted = args["trusted"].as_bool().unwrap_or(false);
-            run_flow(&text("repo"), &text("flow"), &text("pr"), trusted, runs).await
+            let fixing = args["fixing"].as_u64();
+            run_flow(
+                &text("repo"),
+                &text("flow"),
+                &text("pr"),
+                trusted,
+                fixing,
+                runs,
+            )
+            .await
         }
         "approve" => {
             let id = args["run_id"].as_u64().ok_or("run_id is required")?;

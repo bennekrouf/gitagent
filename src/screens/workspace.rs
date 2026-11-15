@@ -299,7 +299,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
         async move { probe.all(&opened, false) }
     });
     let live_runs = watch::use_live_runs(book, repo_flows, setup_open);
-    watch::use_repo_changes(repos, running, statuses);
+    watch::use_repo_changes(repos, running, statuses, live_runs);
     watch::use_outside_settings(
         workspace.clone(),
         probe,
