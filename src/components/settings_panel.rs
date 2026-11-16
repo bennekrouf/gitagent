@@ -83,6 +83,9 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
     // Read once when the panel opens; the buttons below write straight through
     // to disk, so this only has to follow what was just clicked.
     let mut sharing = use_signal(telemetry::shared);
+    // IT turned usage statistics off with a policy: shown off, and locked.
+    let locked = desktop_kit::policy::get().disable_telemetry;
+    let shown = move || !locked && *sharing.read();
 
     let test = move |_| {
         let snapshot = cfg.read().clone();
@@ -260,12 +263,17 @@ pub fn SettingsPanel(props: SettingsPanelProps) -> Element {
                         if telemetry::available() {
                             div { class: "field-row",
                                 span { "Usage statistics" }
+                                if locked {
+                                    span { class: "field-note", "{desktop_kit::policy::MANAGED}" }
+                                }
                             }
                             div { class: "field-row",
                                 for (on, label) in [(true, "Share"), (false, "Off")] {
                                     button {
                                         key: "{label}",
-                                        class: if *sharing.read() == on { "seg seg-on" } else { "seg" },
+                                        class: if shown() == on { "seg seg-on" } else { "seg" },
+                                        disabled: locked,
+                                        title: if locked { "Turned off by your IT department" } else { "" },
                                         onclick: move |_| {
                                             telemetry::set_consent(on);
                                             sharing.set(on);

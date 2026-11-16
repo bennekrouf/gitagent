@@ -1,0 +1,124 @@
+<!--
+  GitAgent — Windows Installer package (.msi), for IT departments.
+  Build (WiX 5):
+    wix build installer\gitagent.wxs -ext WixToolset.Util.wixext -arch x64 ^
+      -d Version=X.Y.Z -o dist\gitagent.msi
+
+  One package, both audiences (Scope="perUserOrMachine"):
+    * double-clicked by someone: installs for them alone, in
+      %LOCALAPPDATA%\Programs\GitAgent, with no admin prompt;
+    * deployed by IT (Intune, Group Policy, SCCM): for every user, in
+      C:\Program Files\GitAgent:
+        msiexec /i gitagent.msi ALLUSERS=1 /qn
+
+  Never change the UpgradeCode: it is how Windows and deployment tools know a
+  new version replaces the old one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?ifndef Version ?>
+    <?define Version = "0.1.0" ?>
+  <?endif ?>
+
+  <Package Name="GitAgent"
+           Manufacturer="Mayorana"
+           Version="$(var.Version)"
+           UpgradeCode="FDEF1A27-CF97-4070-B58E-5D031B60808B"
+           Scope="perUserOrMachine"
+           Compressed="yes">
+
+    <!-- Same version again reinstalls; older is refused, newer replaces. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of GitAgent is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- WebView2 needs Windows 10 version 1809 (build 17763). -->
+    <Launch Condition="Installed OR WindowsBuild &gt;= 17763"
+            Message="GitAgent needs Windows 10 version 1809 or later." />
+
+    <Icon Id="GitAgentIcon" SourceFile="..\assets\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="GitAgentIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://mayorana.ch/en/apps/gitagent" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/bennekrouf/gitagent/issues" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- ── Close the running app ─────────────────────────────────────────────
+         Asked to close first, then ended if it hasn't, so the files are never
+         in use and no "close these applications" prompt is left stuck. -->
+    <util:CloseApplication Id="CloseGitAgent"
+                           Target="gitagent.exe"
+                           CloseMessage="yes"
+                           RebootPrompt="no"
+                           TerminateProcess="1"
+                           Timeout="5" />
+
+    <!-- ── Replace an install made with gitagent-setup.exe ─────────────────
+         The .exe installer (Inno Setup) uses the same folder. Its uninstaller
+         runs silently first, so the two never sit side by side. -->
+    <Property Id="INNO_UNINST_USER">
+      <RegistrySearch Root="HKCU" Bitness="always64" Type="raw" Name="UninstallString"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\{E07FBB64-1182-4AB0-9E01-766D1BC4843A}_is1" />
+    </Property>
+    <Property Id="INNO_UNINST_MACHINE">
+      <RegistrySearch Root="HKLM" Bitness="always64" Type="raw" Name="UninstallString"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\{E07FBB64-1182-4AB0-9E01-766D1BC4843A}_is1" />
+    </Property>
+
+    <SetProperty Id="RemoveInnoUser" Sequence="execute" Before="RemoveInnoUser"
+                 Value="[INNO_UNINST_USER] /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+                 Condition="INNO_UNINST_USER AND NOT REMOVE" />
+    <CustomAction Id="RemoveInnoUser" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+
+    <!-- A machine-wide one needs the installer's own rights to remove. -->
+    <SetProperty Id="RemoveInnoMachine" Sequence="execute" Before="RemoveInnoMachine"
+                 Value="[INNO_UNINST_MACHINE] /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+                 Condition="INNO_UNINST_MACHINE AND NOT REMOVE AND Privileged" />
+    <CustomAction Id="RemoveInnoMachine" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RemoveInnoUser" After="InstallInitialize"
+              Condition="INNO_UNINST_USER AND NOT REMOVE" />
+      <Custom Action="RemoveInnoMachine" After="RemoveInnoUser"
+              Condition="INNO_UNINST_MACHINE AND NOT REMOVE AND Privileged" />
+    </InstallExecuteSequence>
+
+    <!-- ── Files ───────────────────────────────────────────────────────────── -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="GitAgent">
+        <Component Id="App">
+          <File Id="GitAgentExe" Source="..\target\release\gitagent.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="WebView2Loader">
+          <File Source="..\target\release\WebView2Loader.dll" KeyPath="yes" />
+        </Component>
+        <Component Id="AppIcon">
+          <File Id="IconFile" Source="..\assets\icon.ico" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Start menu only: IT decides about desktop shortcuts. -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="GitAgentShortcut"
+                  Name="GitAgent"
+                  Description="Git work as flows of steps"
+                  Target="[INSTALLFOLDER]gitagent.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="GitAgentIcon" />
+        <RegistryValue Root="HKMU" Key="Software\Mayorana\GitAgent"
+                       Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="App" />
+      <ComponentRef Id="WebView2Loader" />
+      <ComponentRef Id="AppIcon" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

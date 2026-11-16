@@ -14,6 +14,7 @@ pub mod graph;
 pub mod licence;
 pub mod live;
 pub mod llm;
+pub mod no_window;
 pub mod notes;
 pub mod notify;
 pub mod poll;

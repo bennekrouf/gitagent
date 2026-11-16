@@ -451,6 +451,47 @@ jobs:
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           & $iscc /DMyAppVersion=$version installer\installer.iss
 
+      # The .msi for IT departments (Intune, Group Policy), beside the .exe.
+      # Same signed binary inside; see installer\gitagent.wxs.
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.Util.wixext/5.0.2
+
+      - name: Build .msi
+        shell: pwsh
+        run: |
+          $version = "${{ needs.prepare.outputs.tag || github.ref_name }}".TrimStart("v")
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          wix build installer\gitagent.wxs -ext WixToolset.Util.wixext -arch x64 `
+            -d Version=$version -o dist\gitagent.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item dist\gitagent.wixpdb -ErrorAction SilentlyContinue
+
+      - name: Sign .msi
+        if: steps.winsign.outputs.have == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id:     ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id:     ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint:                     ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name:     ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          files-folder: dist
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # After signing: signing rewrites the file.
+      - name: Checksum .msi
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist\gitagent.msi -Algorithm SHA256).Hash.ToLower()
+          "$hash  gitagent.msi" | Out-File "dist\gitagent.msi.sha256" -Encoding ASCII
+
       - name: Sign installer
         if: steps.winsign.outputs.have == 'true'
         uses: azure/trusted-signing-action@v0
@@ -488,6 +529,8 @@ jobs:
           path: |
             dist\gitagent-setup.exe
             dist\gitagent-setup.exe.sha256
+            dist\gitagent.msi
+            dist\gitagent.msi.sha256
 
   build-linux:
     needs: [prepare]
@@ -797,6 +840,11 @@ jobs:
 
           ### Windows
           Download `gitagent-setup.exe` and run it — the installer handles everything.
+
+          ### Windows, for IT departments
+          `gitagent.msi` deploys with Intune, Group Policy or SCCM.
+          For every user: `msiexec /i gitagent.msi ALLUSERS=1 /qn`.
+          Double-clicked, it installs for the current user only, with no admin prompt.
 
           ### Linux (x86_64)
           ```bash

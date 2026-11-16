@@ -1,6 +1,7 @@
 //! Commands whose output is shown as it comes, and the commit itself.
 
 use super::*;
+use crate::services::no_window::NoWindow;
 
 /// Whether `name` already names a local branch.
 ///
@@ -81,6 +82,7 @@ pub async fn run_streaming(
     use tokio::sync::mpsc;
 
     let mut cmd = Command::new(crate::services::env::resolve_program(program));
+    cmd.no_window();
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
