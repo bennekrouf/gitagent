@@ -454,6 +454,19 @@ impl Run {
         Ok(())
     }
 
+    /// Records what became of the flow this run was to go on to, for the
+    /// window's run view: `THEN_STARTED`, or why it did not start.
+    pub fn then_went(&mut self, outcome: &str) {
+        if self.then.is_none() {
+            return;
+        }
+        self.state.artifacts.insert(
+            crate::services::graph::THEN_OUTCOME.into(),
+            outcome.to_string(),
+        );
+        self.publish();
+    }
+
     /// Tells an open window where this run stands — see `services::live`.
     fn publish(&self) {
         let label = FlowBook::load()

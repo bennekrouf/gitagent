@@ -43,8 +43,10 @@ were never released.
   each step.
 - The run view says where such a fix goes next: **then Review → Merge #145**
   beside the step count while Commit → PR runs, **went on to** once the merge
-  has started, or **will not follow** when the commit stopped short. It shows
-  for a fix Claude is running as well.
+  has started, or **will not follow** when the commit stopped short. If the
+  commit finished but something else had the repository, it says **did not
+  start** and why, so you know to start the merge yourself. It shows for a
+  fix Claude is running as well.
 
 ### Fixed
 

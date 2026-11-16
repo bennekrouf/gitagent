@@ -653,10 +653,34 @@ fn the_head_names_the_merge_a_fix_goes_on_to() {
         state.set_status(&n.id, NodeStatus::Done);
     }
     let (_, text, _) = head::then_note(&state, &graph, true).unwrap();
+    assert_eq!(
+        text, "then Review → Merge #145",
+        "finished, merge not yet begun"
+    );
+
+    state.artifacts.insert(
+        crate::services::graph::THEN_OUTCOME.into(),
+        crate::services::graph::THEN_STARTED.into(),
+    );
+    let (_, text, _) = head::then_note(&state, &graph, true).unwrap();
     assert_eq!(text, "went on to Review → Merge #145");
+
+    // Finished cleanly, but something else had the repository.
+    state.artifacts.insert(
+        crate::services::graph::THEN_OUTCOME.into(),
+        "another run or the Branches panel had the repository".into(),
+    );
+    let (class, text, title) = head::then_note(&state, &graph, true).unwrap();
+    assert_eq!(text, "Review → Merge #145 did not start");
+    assert!(class.contains("run-then-off"));
+    assert!(title.contains("Branches panel"), "{title}");
 
     state.set_status(&graph.nodes[0].id, NodeStatus::Rejected);
     let (class, text, _) = head::then_note(&state, &graph, true).unwrap();
     assert_eq!(text, "Review → Merge #145 will not follow");
     assert!(class.contains("run-then-off"));
+    // The header does not call a run finished whose later steps never ran,
+    // and a rejection still means no merge.
+    let (_, text, _) = head::then_note(&state, &graph, false).unwrap();
+    assert_eq!(text, "Review → Merge #145 will not follow");
 }

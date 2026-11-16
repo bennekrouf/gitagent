@@ -103,6 +103,9 @@ pub(super) fn begin(
         // done its part: a fix that is a flow of its own — Commit → PR for a
         // merge refused over uncommitted changes — promises the merge after.
         let mut then = then;
+        // The fix that just finished, while the flow it promised has not yet
+        // started: its run view says whether that flow really did.
+        let mut fixed: Option<Key> = None;
 
         // Each turn of this loop is one flow, start to finish. Only a
         // trusted run goes round twice.
@@ -118,6 +121,7 @@ pub(super) fn begin(
                          was removed or renamed. Pick another tab, or put it back in Setup."
                     ),
                 ));
+                went(&mut states, &mut fixed, "it is not in Setup any more");
                 break;
             };
             let key: Key = (repo.clone(), id.clone(), pr.clone());
@@ -129,6 +133,11 @@ pub(super) fn begin(
                     .as_ref()
                     .is_some_and(|(r, _)| r == &repo)
             {
+                went(
+                    &mut states,
+                    &mut fixed,
+                    "another run or the Branches panel had the repository",
+                );
                 break;
             }
 
@@ -148,6 +157,7 @@ pub(super) fn begin(
             ) {
                 Ok(claim) => claim,
                 Err(why) => {
+                    went(&mut states, &mut fixed, &why);
                     chain_note.set(ChainNote::about(&repo, why));
                     break;
                 }
@@ -171,6 +181,11 @@ pub(super) fn begin(
                 );
             }
             states.write().insert(key.clone(), fresh);
+            went(
+                &mut states,
+                &mut fixed,
+                crate::services::graph::THEN_STARTED,
+            );
             running.write().insert(key.clone());
             if trusting {
                 trusted.write().insert(key.clone());
@@ -248,6 +263,7 @@ pub(super) fn begin(
                 if !trusted::may_continue(&finished, &graph) {
                     break;
                 }
+                fixed = Some(key.clone());
                 (id, pr) = back;
                 continue;
             }
@@ -274,6 +290,20 @@ pub(super) fn begin(
             (id, pr) = next;
         }
     });
+}
+
+/// Notes on the fix `fixed` names whether the flow it promised started, and
+/// forgets it: the run view reads this to say "went on to" or why not.
+fn went(states: &mut Signal<States>, fixed: &mut Option<Key>, outcome: &str) {
+    let Some(key) = fixed.take() else {
+        return;
+    };
+    if let Some(state) = states.write().get_mut(&key) {
+        state.artifacts.insert(
+            crate::services::graph::THEN_OUTCOME.into(),
+            outcome.to_string(),
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

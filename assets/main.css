@@ -1423,7 +1423,12 @@ a.pr-failed-check:hover {
     font-size: 13px; font-weight: 600;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.run-sub { display: flex; gap: 12px; font-size: 11px; color: var(--text2); margin-top: 2px; }
+.run-sub {
+    display: flex; flex-wrap: wrap; gap: 2px 12px;
+    font-size: 11px; color: var(--text2); margin-top: 2px;
+}
+/* Each part wraps to a line of its own rather than breaking mid-phrase. */
+.run-sub > span { white-space: nowrap; }
 .run-count { color: var(--text3); }
 .run-needs { color: var(--yellow); }
 /* The flow a fix goes on to: Review → Merge #145 after Commit → PR. */

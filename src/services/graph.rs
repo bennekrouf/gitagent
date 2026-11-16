@@ -199,6 +199,10 @@ pub struct ProposalItem {
 
 /// The artifact `RunState::then` reads.
 pub const THEN: &str = "then";
+/// The artifact `RunState::then_outcome` reads.
+pub const THEN_OUTCOME: &str = "then_outcome";
+/// `THEN_OUTCOME` once the flow it promised has really started.
+pub const THEN_STARTED: &str = "started";
 
 /// A known fix for a specific failure, runnable from the app.
 ///
@@ -495,6 +499,13 @@ impl RunState {
     /// as the fix for another; no step reads it.
     pub fn then(&self) -> &str {
         self.artifact(THEN)
+    }
+
+    /// What became of `then` once this run finished: `THEN_STARTED`, or why
+    /// it could not start, such as another run holding the repository.
+    /// Empty until that is known.
+    pub fn then_outcome(&self) -> &str {
+        self.artifact(THEN_OUTCOME)
     }
 
     pub fn artifact(&self, key: &str) -> &str {

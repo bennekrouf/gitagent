@@ -56,6 +56,10 @@ pub struct LiveRun {
     /// #145" — for a run started as the fix for another. Empty otherwise.
     #[serde(default)]
     pub then: String,
+    /// Whether `then` really started once this run finished — "started" —
+    /// or why it did not. Empty until that is known.
+    #[serde(default)]
+    pub then_outcome: String,
     /// Seconds since the epoch.
     pub updated: u64,
 }
@@ -165,6 +169,7 @@ pub fn snapshot(
         trusted,
         terminal: false,
         then: state.then().to_string(),
+        then_outcome: state.then_outcome().to_string(),
         updated: now(),
     }
 }
@@ -206,6 +211,11 @@ impl LiveRun {
             state
                 .artifacts
                 .insert(super::graph::THEN.into(), self.then.clone());
+        }
+        if !self.then_outcome.is_empty() {
+            state
+                .artifacts
+                .insert(super::graph::THEN_OUTCOME.into(), self.then_outcome.clone());
         }
         Some(state)
     }
@@ -324,6 +334,7 @@ mod tests {
             trusted: false,
             terminal: false,
             then: String::new(),
+            then_outcome: String::new(),
             updated,
         }
     }
@@ -340,6 +351,10 @@ mod tests {
             crate::services::graph::THEN.into(),
             "Review → Merge #145".into(),
         );
+        state.artifacts.insert(
+            crate::services::graph::THEN_OUTCOME.into(),
+            crate::services::graph::THEN_STARTED.into(),
+        );
         let live = snapshot(
             1,
             "/r",
@@ -350,11 +365,14 @@ mod tests {
             false,
         );
         let read: LiveRun = serde_json::from_value(serde_json::to_value(&live).unwrap()).unwrap();
-        assert_eq!(read.as_state(&graph).unwrap().then(), "Review → Merge #145");
+        let back = read.as_state(&graph).unwrap();
+        assert_eq!(back.then(), "Review → Merge #145");
+        assert_eq!(back.then_outcome(), crate::services::graph::THEN_STARTED);
 
         // Written by a server from before it: no field, nothing to show.
         let mut old = serde_json::to_value(run(false, 1)).unwrap();
         old.as_object_mut().unwrap().remove("then");
+        old.as_object_mut().unwrap().remove("then_outcome");
         assert_eq!(serde_json::from_value::<LiveRun>(old).unwrap().then, "");
     }
 
