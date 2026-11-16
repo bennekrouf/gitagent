@@ -121,6 +121,8 @@ fn attach_parent_console() {
         fn AttachConsole(process_id: u32) -> i32;
     }
     const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // SAFETY: AttachConsole takes a process id by value and touches no memory
+    // of ours; it fails harmlessly when there is no parent console.
     unsafe {
         AttachConsole(ATTACH_PARENT_PROCESS);
     }
