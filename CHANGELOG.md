@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- **Undo the local release, pull, and release again** treats the tag's name
+  as a name. Git allows characters such as `;` and `$` in tag names, and the
+  button used to hand the name to the shell, which would have run anything
+  written after them.
+
 ## [0.1.187] - 2026-11-16
 
 ### Changed

@@ -542,14 +542,19 @@ fn unpushed_release_message(tag: &str, tracking: &str, behind: usize) -> String 
 ///
 /// `--keep`, not `--hard`: it refuses rather than discard a local change, and
 /// the only thing it should ever remove is the version bump the script made.
+///
+/// The tag is `$1`, never part of the script: a tag name may hold `;`, `$` or
+/// backticks, which the shell would run.
 fn undo_release_remedy(tag: &str) -> Remedy {
-    let script = format!("git tag -d {tag} && git reset --keep HEAD~1 && git pull --rebase");
     Remedy::new(
         &format!("Undo the local {tag}, pull, and release again"),
         "sh",
-        &["-c", &script],
+        &["-c", UNDO_RELEASE_SCRIPT, "sh", tag],
     )
 }
+
+const UNDO_RELEASE_SCRIPT: &str =
+    r#"git tag -d "$1" && git reset --keep HEAD~1 && git pull --rebase"#;
 
 /// The working tree's diff, untracked files included — same shape `scan`
 /// commits as the `diff` artifact. Shared with `diff_preview` so the
