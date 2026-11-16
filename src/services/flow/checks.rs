@@ -55,6 +55,7 @@ pub(super) async fn run_remote(
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -89,6 +90,7 @@ pub(super) async fn run_tests(
                     ],
                     nothing_to_do: false,
                     items: vec![],
+                    remedies: vec![],
                 });
             }
         }
@@ -117,6 +119,7 @@ pub(super) async fn run_tests(
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -192,6 +195,7 @@ pub(super) async fn run_script(
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -733,5 +737,6 @@ pub(super) async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }

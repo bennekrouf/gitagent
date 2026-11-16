@@ -69,6 +69,7 @@ pub(super) async fn already_committed(
         ],
         nothing_to_do: false,
             items: vec![],
+            remedies: vec![],
         }))
 }
 
@@ -297,6 +298,7 @@ pub(super) async fn scan(repo: &str, state: &RunState) -> Result<StepOutcome, St
         log,
         artifacts,
         nothing_to_do: false,
+        remedies: vec![],
     })
 }
 
@@ -363,6 +365,7 @@ pub(super) async fn draft_commit(
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -483,6 +486,7 @@ async fn committed_meanwhile(
         artifacts: vec![],
         nothing_to_do: true,
         items: vec![],
+        remedies: vec![],
     }))
 }
 
@@ -728,6 +732,7 @@ pub(super) async fn commit_on(
             ],
             nothing_to_do: false,
             items: vec![],
+            remedies: vec![],
         });
     }
 
@@ -785,5 +790,6 @@ pub(super) async fn commit_on(
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }

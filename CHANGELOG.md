@@ -17,6 +17,17 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Review → Merge no longer turns red when the pull request's required checks
+  are still running: the run stops green and says so, with Merge
+  automatically still there to hand the merge to GitHub. With Trust all on, it
+  also asks GitHub to merge the pull request the moment the checks pass, so
+  nothing is left for you to click. Checks that already failed still stop the
+  run in red with their fixes.
+
 ## [0.1.187] - 2026-11-16
 
 ### Changed

@@ -162,6 +162,7 @@ pub async fn draft(
         artifacts: vec![("release_notes".into(), notes)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -364,6 +365,7 @@ pub async fn write(repo: &str, notes: &str) -> Result<StepOutcome, StepFailure> 
         artifacts: vec![],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -376,6 +378,7 @@ fn nothing_to_write(reason: String) -> StepOutcome {
         artifacts: vec![("release_notes".into(), String::new())],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     }
 }
 

@@ -132,6 +132,7 @@ pub fn settle(
             let entry = state.runs.entry(node.into()).or_default();
             entry.summary = outcome.summary;
             entry.log = outcome.log;
+            entry.remedies = outcome.remedies;
             // A step may offer files for deselection (scan does), and a
             // re-run must not silently restore ones already dropped.
             if !outcome.items.is_empty() {

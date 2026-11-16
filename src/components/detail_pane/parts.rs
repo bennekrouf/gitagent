@@ -116,7 +116,7 @@ pub(super) fn remedies(
                     "No automatic fix for this. Resolve it, then retry."
                 }
             } else {
-                div { class: "remedies-head", "Fix it from here" }
+                div { class: "remedies-head", if run.status == NodeStatus::Skipped { "From here" } else { "Fix it from here" } }
                 for (index, remedy) in run.remedies.iter().enumerate() {
                     div { key: "{remedy.display}", class: "remedy",
                         div { class: "remedy-main",

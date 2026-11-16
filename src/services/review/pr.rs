@@ -74,6 +74,7 @@ pub(super) async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
                 ],
                 nothing_to_do: false,
                 items: vec![],
+                remedies: vec![],
             })
         }
         Forge::AzureDevOps => {
@@ -137,6 +138,7 @@ pub(super) async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
                 ],
                 nothing_to_do: false,
                 items: vec![],
+                remedies: vec![],
             })
         }
         other => Err(StepFailure::from(format!(
@@ -239,6 +241,7 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
             ],
             nothing_to_do: false,
             items: vec![],
+            remedies: vec![],
         });
     }
 
@@ -347,6 +350,7 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -559,6 +563,7 @@ pub(super) async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome,
         ],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
