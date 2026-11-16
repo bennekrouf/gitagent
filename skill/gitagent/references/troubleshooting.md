@@ -94,6 +94,19 @@ base into it (0.1.64). A clean merge is pushed and the merge is retried
 resolve them in the editor, then finish from GitAgent. Abandoning the pull
 request is the last option, not the first.
 
+**"This repository has uncommitted changes, so #145 was not merged."**
+Merging would leave those changes stranded on a branch that is about to be
+deleted, so nothing was changed. The step offers **Start** on **Commit → PR**
+(0.1.185): on the pull request's branch it adds the changes to that pull
+request, elsewhere it opens one of their own, and Review → Merge runs again
+on the same pull request once the commit is done. The Commit → PR run's
+header says what became of the merge: **then Review → Merge #145** while the
+commit runs, **went on to** once the merge started, **did not start** when
+another run or the Branches panel had the repository (start the merge again
+by hand; before 0.1.186 this still read **went on to**), and **will not follow** when the commit failed or was rejected. If
+Commit → PR is hidden for the repository or removed in Setup, **Start** says
+so and runs nothing: commit by hand, then Review → Merge again.
+
 **"Nothing to review" / the pull request changes no files.**
 Everything on the branch is already in the base. GitAgent offers to close the
 pull request (0.1.52, 0.1.53).

@@ -29,8 +29,20 @@ were never released.
 ## [0.1.186] - 2026-11-16
 ## [Unreleased]
 
+### Changed
+
+- When Claude runs Commit → PR as the fix for a refused merge, its replies now
+  say what the run view says: that Review → Merge follows once the commit is
+  done, that it has started, or that it did not and you start it yourself.
+
 ### Fixed
 
+- The run view no longer says **went on to Review → Merge** when the merge
+  never started because another run or the Branches panel had the
+  repository: it says **did not start**, and why, so you know to start the
+  merge yourself. A commit you reject now says the merge **will not follow**,
+  where it used to still promise it, and the note no longer squeezes the step
+  count onto two lines.
 - A repository no longer stays locked with **Commit → PR is already running
   in this repository … in a GitAgent window** when nothing is running there:
   a run that was cancelled or cleared before it let go of the repository now
@@ -53,10 +65,8 @@ were never released.
   each step.
 - The run view says where such a fix goes next: **then Review → Merge #145**
   beside the step count while Commit → PR runs, **went on to** once the merge
-  has started, or **will not follow** when the commit stopped short. If the
-  commit finished but something else had the repository, it says **did not
-  start** and why, so you know to start the merge yourself. It shows for a
-  fix Claude is running as well.
+  has started, or **will not follow** when the commit stopped short. It shows
+  for a fix Claude is running as well.
 
 ### Fixed
 
