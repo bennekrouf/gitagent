@@ -268,6 +268,12 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                     }
                 }
                 }
+            } else if run.status == NodeStatus::Skipped && !run.remedies.is_empty() {
+                // Stopped green with a way on offered, such as a merge
+                // handed to GitHub for when the checks pass.
+                div { class: "detail-foot",
+                    {parts::remedies(&run, remedy_id.clone(), props.on_remedy, unresolved, rechecks)}
+                }
             } else if skippable_early {
                 div { class: "detail-actions",
                     button {

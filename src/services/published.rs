@@ -297,6 +297,7 @@ fn finished(
             artifacts: vec![],
             nothing_to_do: false,
             items: vec![],
+            remedies: vec![],
         });
     }
 

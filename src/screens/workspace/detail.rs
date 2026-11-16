@@ -221,7 +221,16 @@ pub(super) fn step_detail(
                                 if let Some(next) = next {
                                     if let Some(run) = entry.runs.get_mut(&node) {
                                         run.log = next.message;
-                                        run.remedies = next.remedies;
+                                        // Keep what the remedy just printed: a Finish that
+                                        // refused (markers left, a change about to be lost)
+                                        // otherwise came back as a fresh Run button, with
+                                        // its reason gone — a click that seemed to do nothing.
+                                        let mut fresh = next.remedies;
+                                        if let Some(same) = fresh.iter_mut().find(|r| r.label == remedy.label) {
+                                            same.failed = true;
+                                            same.output = output.clone();
+                                        }
+                                        run.remedies = fresh;
                                     }
                                 }
                             }

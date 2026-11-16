@@ -58,6 +58,7 @@ pub(super) async fn draft_pr(
         artifacts: vec![("pr_title".into(), title), ("pr_body".into(), body)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -167,6 +168,7 @@ pub(super) async fn push(repo: &str, state: &RunState) -> Result<StepOutcome, St
         artifacts: vec![("push_output".into(), out)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -195,5 +197,6 @@ pub(super) async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
         artifacts: vec![("pr_url".into(), opened.url)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }

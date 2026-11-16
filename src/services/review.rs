@@ -237,6 +237,7 @@ async fn lenses(
         artifacts,
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -490,6 +491,7 @@ async fn analyse(
         artifacts,
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 

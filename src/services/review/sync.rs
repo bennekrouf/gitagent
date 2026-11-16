@@ -356,6 +356,45 @@ for run in "$@"; do gh run rerun "$run" --failed || exit 1; done{auto}"#
     }
 }
 
+/// Trust all is on, or this run's steps are being approved without asking.
+fn trusting(state: &RunState) -> bool {
+    crate::services::store::trust_all() || state.runs.values().any(|r| !r.approved_by.is_empty())
+}
+
+/// Required checks still running: the normal state of a fresh pull request,
+/// not a failure. The run stops green. A trusted run hands the merge to
+/// GitHub (`--auto`) without asking; otherwise it says how to merge later.
+pub(super) async fn checks_pending(
+    repo: &str,
+    number: &str,
+    hold: &Hold,
+    trusting: bool,
+) -> StepOutcome {
+    if trusting && hold.auto_merge {
+        let args = auto_merge(number).args;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        if git::run(repo, "gh", &args).await.is_ok() {
+            git::forget_prs(repo);
+            return StepOutcome::nothing(format!(
+                "#{number}\u{2019}s checks are still running: GitHub will merge it the moment they pass"
+            ));
+        }
+    }
+    if hold.auto_merge {
+        return StepOutcome {
+            remedies: vec![auto_merge(number)],
+            ..StepOutcome::nothing(format!(
+                "#{number}\u{2019}s checks are still running. Merge automatically (below) \
+                 hands it to GitHub, which merges it the moment they pass, or run \
+                 Review \u{2192} Merge again once they are green"
+            ))
+        };
+    }
+    StepOutcome::nothing(format!(
+        "#{number}\u{2019}s checks are still running. Run Review \u{2192} Merge again once they pass"
+    ))
+}
+
 /// The merge, done another way: GitHub finishes it once the rules are met.
 fn auto_merge(number: &str) -> Remedy {
     Remedy::completes(
@@ -475,6 +514,9 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
                 None => {
                     if is_policy_hold(&e) {
                         let hold = Hold::read(repo, &number).await;
+                        if hold.failed.is_empty() {
+                            return Ok(checks_pending(repo, &number, &hold, trusting(state)).await);
+                        }
                         return Err(policy_guide(&number, &e, &hold));
                     }
                     return Err(merge_failure(&number, state.artifact("pr_base"), e, false));
@@ -517,6 +559,7 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
         artifacts: vec![("merge_output".into(), out)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -698,6 +741,7 @@ pub(super) async fn sync(repo: &str, state: &RunState) -> Result<StepOutcome, St
         artifacts: vec![("sync_output".into(), log)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -745,6 +789,7 @@ pub(super) async fn sync_around_edits(repo: &str, base: &str) -> Result<StepOutc
             artifacts: vec![("sync_output".into(), log)],
             nothing_to_do: false,
             items: vec![],
+            remedies: vec![],
         });
     }
 
@@ -784,6 +829,7 @@ pub(super) async fn sync_around_edits(repo: &str, base: &str) -> Result<StepOutc
         artifacts: vec![("sync_output".into(), log)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 
@@ -837,6 +883,7 @@ pub(super) async fn sync_elsewhere(
         artifacts: vec![("sync_output".into(), log)],
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     })
 }
 

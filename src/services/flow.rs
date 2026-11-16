@@ -45,6 +45,9 @@ pub struct StepOutcome {
     /// deselection right here. `scan` fills this so the choice can be made
     /// against the diff, rather than against a list of paths at the approval.
     pub items: Vec<ProposalItem>,
+    /// Buttons offered on a step that stopped green — a way on that is
+    /// not a fix, such as handing a merge to GitHub for later.
+    pub remedies: Vec<Remedy>,
 }
 
 impl StepOutcome {
@@ -56,6 +59,7 @@ impl StepOutcome {
             artifacts: vec![],
             nothing_to_do: true,
             items: vec![],
+            remedies: vec![],
         }
     }
 }
@@ -160,6 +164,7 @@ pub fn without_model(node: &NodeSpec, state: &RunState) -> StepOutcome {
         artifacts,
         nothing_to_do: false,
         items: vec![],
+        remedies: vec![],
     }
 }
 
