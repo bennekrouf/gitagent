@@ -178,7 +178,9 @@ pub(super) fn remedies(
                         // Folded: this footer sits under the step, and a merge's
                         // full output here pushed the conflict resolver — the
                         // thing that fixes it — out of sight.
+                        // A refusal is a few lines saying why: open, so it is read.
                         details { class: "remedy-fold",
+                            open: remedy.failed && remedy.output.lines().count() <= 12,
                             summary {
                                 class: if remedy.failed { "remedy-stopped" } else { "remedy-printed" },
                                 if remedy.failed { "That stopped before finishing — what it printed" }

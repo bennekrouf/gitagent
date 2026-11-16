@@ -30,6 +30,11 @@ were never released.
 
 ### Fixed
 
+- **Finish the merge** now shows why it refused, such as a file that still
+  has conflict markers or a pull request about to lose its changes. The
+  button used to come back as Run with the reason gone, so a click looked
+  like it did nothing.
+
 - **Undo the local release, pull, and release again** treats the tag's name
   as a name. Git allows characters such as `;` and `$` in tag names, and the
   button used to hand the name to the shell, which would have run anything
