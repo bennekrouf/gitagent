@@ -27,6 +27,7 @@ were never released.
   also asks GitHub to merge the pull request the moment the checks pass, so
   nothing is left for you to click. Checks that already failed still stop the
   run in red with their fixes.
+
 ### Fixed
 
 - **Undo the local release, pull, and release again** treats the tag's name
