@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The run view now shows detailed status for each flow, indicating where a fix
+  goes next, whether it started successfully, or why it did not. This helps
+  users understand the progress and outcomes of automated processes more
+  clearly.
+
 ## [0.1.186] - 2026-11-16
 
 ### Fixed
