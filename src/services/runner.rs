@@ -279,6 +279,69 @@ pub fn then_label(book: &FlowBook, flow: &str, pr: &str) -> String {
     }
 }
 
+/// What a run started as a fix says of the flow it goes on to, in the run
+/// view's head and in the MCP report alike.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ThenNote {
+    /// "then Review → Merge #145", "went on to …", "… did not start" or
+    /// "… will not follow".
+    pub text: String,
+    /// The sentence behind it: what happened, and what is left to the person.
+    pub why: String,
+    /// The flow is not coming: the person starts it themselves.
+    pub off: bool,
+}
+
+/// The note for `state`, or `None` when it was not started as a fix.
+/// `finished` is the caller's: the run view does not call a run finished
+/// while a step that may still run is pending.
+pub fn then_note(state: &RunState, graph: &Graph, finished: bool) -> Option<ThenNote> {
+    let then = state.then();
+    if then.is_empty() {
+        return None;
+    }
+    let note = |text: String, why: String, off: bool| ThenNote { text, why, off };
+    // Checked first: a rejection leaves the later steps unrun, so such a run
+    // is never called finished, and the flow after it is off all the same.
+    Some(if !trusted::may_continue(state, graph) {
+        note(
+            format!("{then} will not follow"),
+            format!(
+                "This flow stopped before finishing, so {then} was not started. \
+                 Start it yourself once this is sorted out."
+            ),
+            true,
+        )
+    } else if !finished {
+        note(
+            format!("then {then}"),
+            format!("Started as a fix: once this flow finishes, {then} starts on its own."),
+            false,
+        )
+    } else {
+        match state.then_outcome() {
+            // Finished, and the next flow is a moment from starting.
+            "" => note(
+                format!("then {then}"),
+                format!("This flow finished; {then} is starting."),
+                false,
+            ),
+            super::graph::THEN_STARTED => note(
+                format!("went on to {then}"),
+                format!("This flow finished, so {then} started after it."),
+                false,
+            ),
+            why => note(
+                format!("{then} did not start"),
+                format!(
+                    "This flow finished, but {then} could not start: {why}. Start it yourself."
+                ),
+                true,
+            ),
+        }
+    })
+}
+
 impl Run {
     pub fn new(repo: String, flow: String, graph: Graph, state: RunState, trusted: bool) -> Self {
         Run {

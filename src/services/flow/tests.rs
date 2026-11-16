@@ -141,10 +141,69 @@ fn a_release_whose_push_was_rejected_offers_to_undo_it_and_go_again() {
         fix.args,
         [
             "-c",
-            "git tag -d v0.3.41 && git reset --keep HEAD~1 && git pull --rebase"
+            r#"git tag -d "$1" && git reset --keep HEAD~1 && git pull --rebase"#,
+            "sh",
+            "v0.3.41"
         ]
     );
     assert!(fix.retry_after);
+}
+
+/// Git allows `;`, `$` and backticks in a tag name: the undo must delete such
+/// a tag, not run what it says.
+#[cfg(unix)]
+#[test]
+fn undoing_a_release_never_runs_the_tag_name() {
+    let root = std::env::temp_dir().join(format!("gitagent-hostile-tag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "release",
+    ]);
+    let tag = "v1;touch${IFS}semicolon;`touch${IFS}backtick`$(touch${IFS}dollar)";
+    git(&["tag", tag]);
+
+    let fix = undo_release_remedy(tag);
+    // The reset fails (there is no HEAD~1): only the tag matters here.
+    let _ = std::process::Command::new(&fix.program)
+        .args(&fix.args)
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    for planted in ["semicolon", "backtick", "dollar"] {
+        assert!(
+            !root.join(planted).exists(),
+            "the tag name ran `touch {planted}`"
+        );
+    }
+    assert_eq!(
+        git(&["tag", "--list"]).trim(),
+        "",
+        "the tag was not deleted"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -327,8 +386,18 @@ async fn a_release_catches_up_with_a_merge_made_on_the_forge() {
     let fix = &failure.remedies[0];
     assert!(fix.label.contains("v0.1.1"));
 
-    // And the fix leaves this copy exactly where origin is, tag gone.
-    sh(&format!("cd here && {}", fix.args[1]));
+    // And the fix, run as the button runs it, leaves this copy exactly where
+    // origin is, tag gone.
+    let out = std::process::Command::new(&fix.program)
+        .args(&fix.args)
+        .current_dir(root.join("here"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let refs = head();
     let mut lines = refs.lines();
     assert_eq!(lines.next(), lines.next());

@@ -157,6 +157,48 @@ fn settle(r: &mut Run, status: NodeStatus) {
     }
 }
 
+#[test]
+fn a_fix_tells_claude_where_it_goes_next_as_the_window_does() {
+    use crate::services::graph::{THEN, THEN_OUTCOME, THEN_STARTED};
+    let mut r = run(false);
+    assert!(report(&r)["then"].is_null(), "not a fix");
+
+    r.then = Some(("review_and_merge".into(), "145".into()));
+    r.state
+        .artifacts
+        .insert(THEN.into(), "Review → Merge #145".into());
+    let out = report(&r);
+    assert_eq!(out["then"]["note"], "then Review → Merge #145");
+    assert_eq!(out["then"]["starts_by_itself"], true);
+    assert!(
+        out["produced"].get(THEN).is_none(),
+        "said once, in words: {}",
+        out["produced"]
+    );
+
+    settle(&mut r, NodeStatus::Done);
+    r.state
+        .artifacts
+        .insert(THEN_OUTCOME.into(), THEN_STARTED.into());
+    let out = report(&r);
+    assert_eq!(out["then"]["note"], "went on to Review → Merge #145");
+    assert!(out["produced"].get(THEN_OUTCOME).is_none());
+    assert_eq!(brief(&out)["then"], out["then"], "kept under earlier_flows");
+
+    r.state.artifacts.insert(
+        THEN_OUTCOME.into(),
+        "run 9 (release) is still going in this repository".into(),
+    );
+    let out = report(&r);
+    assert_eq!(out["then"]["note"], "Review → Merge #145 did not start");
+    assert_eq!(out["then"]["starts_by_itself"], false);
+    assert!(
+        out["then"]["why"].as_str().unwrap().contains("still going"),
+        "{}",
+        out["then"]
+    );
+}
+
 #[tokio::test]
 async fn a_fix_goes_back_to_the_run_it_fixed_untrusted_or_not() {
     let mut r = run(false);

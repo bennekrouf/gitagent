@@ -35,6 +35,16 @@ are available:
   changes). Say what it does, and on the user's yes call **`run_flow`** with
   exactly those arguments, `fixing` included: once that flow finishes, the
   flow that failed runs again on the same pull request, asking as usual.
+  The fix's report has a `then` entry: its `note` is what the window's run
+  view shows beside the step count (**then Review → Merge #145** while the
+  fix runs, **went on to …** once the merge started, **… did not start**
+  when something else had the repository, **… will not follow** when the fix
+  failed or was rejected), and `why` says the rest. Give the user the note
+  each time you report on the fix. When `starts_by_itself` is false, tell
+  them `why` and that they start the failed flow again themselves. The call
+  that finishes the fix (`run_flow`, or the last `approve`) answers with the
+  failed flow's new run, the fix listed under `earlier_flows` with its
+  `then`.
 - **`trust_all`** says whether *Trust all* is on, and turns it off if the
   user asks. Never turn it on: only the user does, in the window.
 - **`list_steps`**, **`get_flow`**, **`save_flow`**, **`delete_flow`** and
