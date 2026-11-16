@@ -112,9 +112,38 @@ impl Drop for Claim {
         if read(&self.file).is_some_and(|h| h.pid == std::process::id() && h.token == self.token) {
             let _ = std::fs::remove_file(&self.file);
         }
+        // Only this claim's own entry: a claim that was let go of early (see
+        // `release_here`) and dropped later must not forget the newer claim
+        // that has the repository now.
         if let Ok(mut held) = held {
-            held.remove(&self.repo);
+            if held.get(&self.repo) == Some(&self.token) {
+                held.remove(&self.repo);
+            }
         }
+    }
+}
+
+/// Lets go of whatever claim this process has on `repo`, whoever holds the
+/// `Claim`.
+///
+/// For the window, which keeps its own list of what is running: once that
+/// list has nothing for a repository, a claim this process still has on it
+/// belongs to a run that was cancelled, cleared or lost, whose task never got
+/// as far as dropping it. Left alone it refuses every run the window starts
+/// there, for as long as the window stays open — the beating thread keeps it
+/// fresh — with "already running … in a GitAgent window" about a run nobody
+/// can see or stop.
+pub fn release_here(repo: &str) {
+    let key = key(repo);
+    let file = file_for(&key);
+    let Ok(mut held) = held_here().lock() else {
+        return;
+    };
+    let Some(token) = held.remove(&key) else {
+        return;
+    };
+    if read(&file).is_some_and(|h| h.pid == std::process::id() && h.token == token) {
+        let _ = std::fs::remove_file(&file);
     }
 }
 
@@ -625,6 +654,27 @@ mod tests {
         let file = held_by_another_process(&path, "Release", now(), Some(now()));
         assert!(held_elsewhere(&path));
         let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn a_claim_this_process_left_behind_can_be_let_go_without_its_owner() {
+        let _alone = beating_alone();
+        let dir = repo();
+        let path = dir.to_string_lossy().into_owned();
+        // A run whose task never got to drop its claim.
+        let orphan = claim(&path, "Commit \u{2192} PR", By::Window).expect("claim");
+        assert!(claim(&path, "Commit \u{2192} PR", By::Window).is_err());
+
+        release_here(&path);
+        let fresh = claim(&path, "Commit \u{2192} PR", By::Window).expect("free once let go");
+
+        // The orphan's task finally ends: the new run keeps the repository.
+        drop(orphan);
+        assert!(held(&path), "dropping the old claim freed the new run's");
+        beat();
+        assert!(held(&path), "the new claim is still beaten");
+        drop(fresh);
+        assert!(!held(&path));
     }
 
     #[test]
