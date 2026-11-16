@@ -190,39 +190,43 @@ async fn carry_on(first: u64, runs: &mut BTreeMap<u64, Run>) -> Result<Value, St
     let mut id = first;
     for leg in 1..=trusted::MOST_FLOWS {
         let run = runs.get(&id).ok_or(format!("run {id} went away"))?;
-        legs.push(report(run));
-        match run.next().await {
+        let next = run.next().await;
+        let repo = run.repo.clone();
+        // A trusted chain stays trusted; going back after a fix asks as the
+        // run it fixed did, unless trust says otherwise.
+        let trusting = run.trusting();
+        let (onward, stopped) = match next {
             Next::Flow(next, next_pr) if leg < trusted::MOST_FLOWS => {
-                let repo = run.repo.clone();
-                // A trusted chain stays trusted; going back after a fix asks
-                // as the run it fixed did, unless trust says otherwise.
-                let trusting = run.trusting();
                 match start_flow(&repo, &next, &next_pr, trusting, None, runs).await {
                     Ok(next_id) => {
                         went(runs, id, crate::services::graph::THEN_STARTED);
-                        id = next_id;
+                        (Some(next_id), None)
                     }
                     // The leg that just ran is real work: report it, with
                     // why the chain ended there, rather than only the error.
                     Err(why) => {
                         went(runs, id, &why);
-                        if let Some(last) = legs.last_mut() {
-                            last["chain_stopped"] = json!(why);
-                        }
-                        break;
+                        (None, Some(why))
                     }
                 }
             }
             Next::Flow(..) => {
                 went(runs, id, "too many flows ran in a row");
-                break;
+                (None, None)
             }
-            Next::Stop(why) => {
-                if let (Some(why), Some(last)) = (why, legs.last_mut()) {
-                    last["chain_stopped"] = json!(why);
-                }
-                break;
-            }
+            Next::Stop(why) => (None, why),
+        };
+        // Reported only now, so a fix's `then` says whether the flow after it
+        // really started.
+        let run = runs.get(&id).ok_or(format!("run {id} went away"))?;
+        let mut this = report(run);
+        if let Some(why) = stopped {
+            this["chain_stopped"] = json!(why);
+        }
+        legs.push(this);
+        match onward {
+            Some(next_id) => id = next_id,
+            None => break,
         }
     }
     let Some(mut last) = legs.pop() else {
@@ -500,6 +504,10 @@ pub(super) fn report(run: &Run) -> Value {
         .artifacts
         .iter()
         .filter(|(k, v)| !k.contains('.') && v.len() <= 300 && !v.trim().is_empty())
+        // Said once, in words, as `then` below.
+        .filter(|(k, _)| {
+            *k != crate::services::graph::THEN && *k != crate::services::graph::THEN_OUTCOME
+        })
         .collect();
     // Nor is anything said twice: a draft already reads as its step's
     // summary, file_notes names every path with what happened to it, and the
@@ -526,6 +534,10 @@ pub(super) fn report(run: &Run) -> Value {
         "steps": steps,
         "produced": produced,
     });
+    // The flow a fix goes on to, as the window's run view says it.
+    if let Some(note) = runner::then_note(state, &run.graph, state.is_finished(&run.graph)) {
+        out["then"] = json!({ "note": note.text, "why": note.why, "starts_by_itself": !note.off });
+    }
     if run.trusted || !run.approved_by_trust.is_empty() || run.held.is_some() {
         out["trusted"] = json!(run.held.is_none() && run.trusting());
         out["approved_automatically"] = json!(run.approved_by_trust);
@@ -556,7 +568,7 @@ pub(super) fn brief(report: &Value) -> Value {
         "steps": steps,
         "produced": report["produced"],
     });
-    for key in ["approved_automatically", "chain_stopped"] {
+    for key in ["approved_automatically", "chain_stopped", "then"] {
         if !report[key].is_null() {
             out[key] = report[key].clone();
         }
