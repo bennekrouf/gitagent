@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- A repository no longer stays locked with **Commit → PR is already running
+  in this repository … in a GitAgent window** when nothing is running there:
+  a run that was cancelled or cleared before it let go of the repository now
+  frees it, so Start, Trusted run and the other flows work again without
+  quitting GitAgent.
+
 ## [0.1.185] - 2026-11-15
 
 ### Changed

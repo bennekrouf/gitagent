@@ -285,6 +285,11 @@ pub(super) fn step_detail(
                 move |_| {
                     states.write().remove(&key);
                     running.write().remove(&key);
+                    // The repository is free the moment the run is
+                    // cancelled, not when its task next wakes to notice.
+                    if !running.read().iter().any(|k| k.0 == key.0) {
+                        crate::services::busy::release_here(&key.0);
+                    }
                     // A run parked at an approval
                     // hears about it now, not on its
                     // next timeout.

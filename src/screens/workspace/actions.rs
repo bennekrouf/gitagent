@@ -135,6 +135,12 @@ pub(super) fn begin(
             // The window's own runs are guarded above; this is for the ones
             // Claude or a terminal is driving in another process. Held until
             // this leg is over, cancelled or not.
+            //
+            // Nothing of this window's is running here (checked just above),
+            // so a claim this process still has on the repository is left
+            // over from a run that was cancelled or cleared before its task
+            // let go. It must not refuse the window's own Start.
+            crate::services::busy::release_here(&repo);
             let _claim = match crate::services::busy::claim(
                 &repo,
                 &def.label,
