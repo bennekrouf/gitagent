@@ -2,6 +2,7 @@
 //! branch, and worktrees.
 
 use super::*;
+use crate::services::no_window::NoWindow;
 
 /// `git fetch <args>`, tried a second time when another git process moved a
 /// remote-tracking ref while this one was writing it.
@@ -141,6 +142,7 @@ pub async fn check_access(repo: &str) -> Result<(), String> {
         return Ok(());
     }
     let child = Command::new(crate::services::env::resolve_program("git"))
+        .no_window()
         .args(["ls-remote", "--quiet", "origin", "HEAD"])
         .current_dir(repo)
         .env("GIT_TERMINAL_PROMPT", "0")

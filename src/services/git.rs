@@ -5,6 +5,7 @@
 //! out and read the exit code. Every function here is deterministic — no model
 //! is involved, and the graph treats these as free.
 
+use crate::services::no_window::NoWindow;
 use std::process::Stdio;
 use tokio::process::Command;
 mod streaming;
@@ -134,6 +135,7 @@ pub async fn run(repo: &str, program: &str, args: &[&str]) -> Result<String, Str
         return Err(format!("{repo}: no such folder"));
     }
     let output = Command::new(super::env::resolve_program(program))
+        .no_window()
         .args(args)
         .current_dir(repo)
         .stdin(Stdio::null())
@@ -369,6 +371,7 @@ pub const IGNORE_DIRTY_SUBMODULES: &str = "--ignore-submodules=dirty";
 /// exit code 1 to mean "there were differences", which is not a failure.
 async fn run_lenient(repo: &str, args: &[&str]) -> String {
     Command::new("git")
+        .no_window()
         .args(args)
         .current_dir(repo)
         .stdin(Stdio::null())
@@ -506,6 +509,7 @@ pub async fn push(repo: &str, branch: &str) -> Result<String, String> {
 
 pub async fn has_gh() -> bool {
     Command::new(super::env::resolve_program("gh"))
+        .no_window()
         .arg("--version")
         .stdin(Stdio::null())
         .output()

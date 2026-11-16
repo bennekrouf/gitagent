@@ -3,6 +3,8 @@
 //! The window is two screens: a repository list, and a run view for one
 //! repository. The flow it runs is hardcoded today (see `services::flow`); the
 //! engine underneath it is not.
+// Release builds on Windows are GUI programs: no cmd window opens beside the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod cli;
 mod components;
@@ -109,6 +111,26 @@ pub fn open_in_new_window(path: String) {
     dioxus::desktop::window().new_window(dom, window_config(&window_title(Some(&name))));
 }
 
+/// A Windows GUI build has no console of its own: borrow the one of the
+/// terminal it was started from, so command-line output still shows there.
+/// Does nothing when started some other way (no parent console).
+#[cfg(windows)]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // SAFETY: AttachConsole takes a process id by value and touches no memory
+    // of ours; it fails harmlessly when there is no parent console.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}
+
 fn main() {
     kit::init();
     // Before the licence is first read, so a number saved by an older
@@ -128,6 +150,7 @@ fn main() {
     }
     // `gitagent run`: one flow from a terminal, its approvals asked there.
     if std::env::args().nth(1).as_deref() == Some("run") {
+        attach_parent_console();
         services::env::adopt_login_env();
         telemetry::init();
         let args: Vec<String> = std::env::args().skip(2).collect();

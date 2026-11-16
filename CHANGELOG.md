@@ -17,6 +17,27 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- GitAgent is now also published as an .msi for IT departments, to deploy with
+  Intune, Group Policy or SCCM: `msiexec /i gitagent.msi ALLUSERS=1 /qn`
+  installs it for every user. Double-clicked, it installs for you alone with no
+  admin prompt, and it replaces an install made with the setup .exe.
+- IT departments can manage GitAgent on Windows with Group Policy or Intune:
+  turn off the update check, self-update or usage statistics, and set
+  the licence number for every user, under
+  `HKLM\SOFTWARE\Policies\Mayorana\GitAgent`.
+
+### Fixed
+
+- On Windows, GitAgent no longer opens a black command window next to its
+  own, and closing that window no longer quits the app.
+- Installing over an existing GitAgent on Windows no longer gets stuck on
+  "Setup was unable to automatically close all applications". Setup now
+  closes GitAgent and its helper processes itself before replacing it.
+
 ## [0.1.188] - 2026-11-16
 
 ### Changed

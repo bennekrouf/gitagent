@@ -328,9 +328,11 @@ pub fn parse_reg_values(text: &str) -> Vec<(String, String)> {
 
 #[cfg(windows)]
 fn registry_values(key: &str) -> Vec<(String, String)> {
+    use crate::services::no_window::NoWindow;
     use std::process::{Command, Stdio};
 
     let Ok(output) = Command::new("reg")
+        .no_window()
         .args(["query", key])
         .stdin(Stdio::null())
         .output()
@@ -428,9 +430,11 @@ fn refresh_windows_path() -> bool {
 
 #[cfg(windows)]
 fn registry_path(key: &str) -> Option<String> {
+    use crate::services::no_window::NoWindow;
     use std::process::{Command, Stdio};
 
     let output = Command::new("reg")
+        .no_window()
         .args(["query", key, "/v", "Path"])
         .stdin(Stdio::null())
         .output()
