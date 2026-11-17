@@ -554,12 +554,24 @@ fn describe_network_failure(what: &str, chain: &str, timed_out: bool) -> String 
 /// A reply stopped at its ceiling (`limit`) is half an object, and the raw text
 /// that a parse error would show is mostly the loop that ran it out — the
 /// same token over and over. Say what happened instead.
-fn cut_off(model: &str, limit: u32) -> String {
-    format!(
-        "{model} ran out of room before it finished its answer ({limit} tokens), \
-         so the reply was cut off and cannot be read. Small models do this when they \
-         start repeating themselves. Run the step again, or pick a larger model in Settings."
-    )
+///
+/// On api0 the model sent is the region's id, which reads as nonsense here
+/// ("china ran out of room"), and there is no model to pick, only a region.
+fn cut_off(model: &str, region: Option<&Region>, limit: u32) -> String {
+    match region {
+        Some(r) => format!(
+            "api0's {} model ran out of room before it finished its answer ({limit} tokens), \
+             so the reply was cut off and cannot be read. Models do this when they start \
+             repeating themselves. Run the step again, or switch api0 to another region in \
+             Settings.",
+            r.label
+        ),
+        None => format!(
+            "{model} ran out of room before it finished its answer ({limit} tokens), \
+             so the reply was cut off and cannot be read. Small models do this when they \
+             start repeating themselves. Run the step again, or pick a larger model in Settings."
+        ),
+    }
 }
 
 /// A model ollama has on disk.

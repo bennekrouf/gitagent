@@ -58,8 +58,13 @@ pub async fn complete_json(
 
 /// Two empty answers in a row: what it is, and what to do about it.
 pub(super) fn empty_answer(cfg: &LlmConfig) -> String {
-    let who = match cfg.kind {
-        ProviderKind::Remote => format!("{} on {}", cfg.remote_model_name(), cfg.preset().label),
+    // api0 by region, as the cut-off message does: its model ids mean nothing
+    // to the person who picked "China" in Settings.
+    let who = match (cfg.kind, cfg.region()) {
+        (ProviderKind::Remote, Some(r)) => format!("api0's {} model", r.label),
+        (ProviderKind::Remote, None) => {
+            format!("{} on {}", cfg.remote_model_name(), cfg.preset().label)
+        }
         _ => cfg.ollama_model.clone(),
     };
     format!(
@@ -169,7 +174,7 @@ pub(super) async fn call_ollama(
     let value: Value =
         serde_json::from_str(&text).map_err(|e| format!("ollama sent invalid JSON: {e}"))?;
     if value["done_reason"] == "length" {
-        return Err(cut_off(&cfg.ollama_model, ANSWER_TOKENS));
+        return Err(cut_off(&cfg.ollama_model, None, ANSWER_TOKENS));
     }
     value["message"]["content"]
         .as_str()
@@ -242,7 +247,11 @@ pub(super) async fn call_openai_compatible(
     let value: Value = serde_json::from_str(&text)
         .map_err(|e| format!("{} sent invalid JSON: {e}", preset.label))?;
     if value["choices"][0]["finish_reason"] == "length" {
-        return Err(cut_off(cfg.remote_model_name(), REMOTE_ANSWER_TOKENS));
+        return Err(cut_off(
+            cfg.remote_model_name(),
+            cfg.region(),
+            REMOTE_ANSWER_TOKENS,
+        ));
     }
     value["choices"][0]["message"]["content"]
         .as_str()

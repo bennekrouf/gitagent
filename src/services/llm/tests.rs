@@ -531,16 +531,36 @@ async fn a_server_that_never_answers_reads_as_a_timeout() {
 
 #[test]
 fn an_empty_answer_names_the_model_and_not_json() {
-    let cfg = LlmConfig {
-        kind: ProviderKind::Remote,
-        remote: "api0".into(),
-        remote_model: "china".into(),
-        ..LlmConfig::default()
-    };
+    let mut cfg = LlmConfig::default();
+    cfg.use_region("china");
     let said = empty_answer(&cfg);
     assert!(
-        said.starts_with("china on api0 sent back an empty answer"),
+        said.starts_with("api0's China model sent back an empty answer"),
         "{said}"
     );
     assert!(!said.contains("JSON"));
+
+    let local = LlmConfig {
+        kind: ProviderKind::Ollama,
+        ollama_model: "qwen3:4b".into(),
+        ..LlmConfig::default()
+    };
+    assert!(empty_answer(&local).starts_with("qwen3:4b sent back"));
+}
+
+#[test]
+fn a_cut_off_reply_on_api0_names_the_region_not_its_id() {
+    let mut cfg = LlmConfig::default();
+    cfg.use_region("china");
+    let said = cut_off(cfg.remote_model_name(), cfg.region(), 8192);
+    assert!(
+        said.starts_with("api0's China model ran out of room"),
+        "{said}"
+    );
+    assert!(said.contains("switch api0 to another region"), "{said}");
+    assert!(!said.contains("pick a larger model"), "{said}");
+
+    let said = cut_off("qwen3:4b", None, 4096);
+    assert!(said.starts_with("qwen3:4b ran out of room"), "{said}");
+    assert!(said.contains("pick a larger model in Settings"), "{said}");
 }
