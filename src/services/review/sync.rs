@@ -8,55 +8,84 @@ use super::*;
 /// person's — so the step says which files, and offers to finish or abandon
 /// right there instead of leaving the old message and a button that looks
 /// like it did nothing. `None` when the output is not a conflict.
-pub fn conflict_followup(number: &str, base: &str, output: &str) -> Option<StepFailure> {
+pub fn conflict_followup(
+    number: &str,
+    base: &str,
+    output: &str,
+    settled: &[String],
+) -> Option<StepFailure> {
     let files: Vec<&str> = output
         .lines()
         .filter_map(|l| l.split_once("Merge conflict in ").map(|(_, f)| f.trim()))
         .collect();
-    merge_stopped(number, base, &files)
+    merge_stopped(number, base, &files, settled)
 }
 
 /// The same, for a merge git is known to be in the middle of, whatever the
 /// last command printed: running "Bring the base in" again during it, or
 /// coming back to it after a restart, prints no "Merge conflict in" lines,
 /// and left the step offering to start the merge it is already in. `files`
-/// are the ones it stopped on, settled or not.
-pub fn merge_stopped(number: &str, base: &str, files: &[&str]) -> Option<StepFailure> {
+/// are the ones it stopped on, settled or not; `settled` the changelogs
+/// GitAgent merged itself, which nobody needs to look at.
+///
+/// Two steps and a way out, nothing more: which side is which is said on
+/// the buttons that pick one, where it is needed, not here ahead of time.
+pub fn merge_stopped(
+    number: &str,
+    base: &str,
+    files: &[&str],
+    settled: &[String],
+) -> Option<StepFailure> {
     if files.is_empty() {
         return None;
     }
-    let message = format!(
-        "{base} is merged into #{number}'s branch everywhere except where both sides \
-         changed the same lines. Nothing has been pushed.\n\n\
-         Resolve {} above: Resolve with AI proposes a merge of each conflict for \
-         you to check before anything is saved. Or pick a side for each yourself, \
-         or fix them in your editor, where each sits between <<<<<<< and \
-         >>>>>>>:\n{}\n\n\
-         In each conflict, Current is #{number}'s branch — the pull request's own \
-         changes — and Incoming is {base}. When {base} already has an earlier \
-         version of the same change, from a pull request merged before, Current is \
-         usually the side to keep, and Both keeps two versions of the same lines.\n\n\
-         Then Finish below. It commits the merge, pushes, waits for GitHub to \
-         recheck #{number}, and tries the merge again. It refuses while any of \
-         these files still has a marker, and when a file the pull request changed \
-         would end up exactly as {base} has it — its change lost.\n\n\
-         Or abandon the merge to put the branch back as it was.",
-        if files.len() == 1 {
-            "this file"
-        } else {
-            "these files"
-        },
-        files
-            .iter()
-            .map(|f| format!("  {f}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
+    let left: Vec<&str> = files
+        .iter()
+        .copied()
+        .filter(|f| !settled.iter().any(|s| s == f))
+        .collect();
+    let finish_line = format!(
+        "Finish below: it checks the project still builds, commits, pushes and \
+         merges #{number} again."
     );
+    let settled_line = (!settled.is_empty()).then(|| {
+        format!(
+            "{} merged for you: every note from both sides is kept, under [Unreleased].",
+            settled.join(", ")
+        )
+    });
+    let message = if left.is_empty() {
+        format!(
+            "#{number} conflicted with {base} only in {}. Nothing has been pushed.\n\n\
+             {finish_line}\n\n\
+             Or abandon the merge to put the branch back as it was.",
+            settled_line.unwrap_or_default()
+        )
+    } else {
+        format!(
+            "#{number} conflicts with {base} in {}. Nothing has been pushed.\n\n\
+             1. Resolve {} above, with Resolve with AI or by picking a side:\n{}\n\
+             2. {finish_line}\n\n\
+             {}Or abandon the merge to put the branch back as it was.",
+            if left.len() == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{} files", left.len())
+            },
+            if left.len() == 1 { "it" } else { "each" },
+            left.iter()
+                .map(|f| format!("  {f}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            settled_line.map(|l| format!("{l}\n\n")).unwrap_or_default(),
+        )
+    };
     let script = format!(
         r#"left=$(git diff --name-only --diff-filter=U | while IFS= read -r f; do grep -l '^<<<<<<< ' "$f"; done)
 if [ -n "$left" ]; then printf 'Still has conflict markers, fix it first:\n%s\n' "$left"; exit 1; fi
 git diff --name-only --diff-filter=U | while IFS= read -r f; do git add -- "$f"; done
 {KEEPS_THE_CHANGE}
+{STILL_BUILDS}
 git commit --no-edit && git push || exit 1
 {WAIT_FOR_GITHUB}"#
     );
@@ -67,7 +96,7 @@ git commit --no-edit && git push || exit 1
     );
     let finish = Remedy {
         display: format!(
-            "git add <fixed files> && git commit --no-edit && git push   (then waits for GitHub to recheck #{number})"
+            "cargo check / go build, then git add <fixed files> && git commit --no-edit && git push   (then waits for GitHub to recheck #{number})"
         ),
         ..finish
     }
@@ -610,6 +639,7 @@ pub(super) async fn merge_in_progress(repo: &str, number: &str, base: &str) -> O
     if git::in_progress(repo).await != Some(git::InProgress::Merge) {
         return None;
     }
+    let settled = crate::services::conflicts::changelog::settle_all(repo).await;
     let mut files: Vec<String> = crate::services::conflicts::list(repo)
         .await
         .into_iter()
@@ -619,7 +649,7 @@ pub(super) async fn merge_in_progress(repo: &str, number: &str, base: &str) -> O
     files.sort();
     files.dedup();
     let files: Vec<&str> = files.iter().map(String::as_str).collect();
-    merge_stopped(number, base, &files)
+    merge_stopped(number, base, &files, &settled)
 }
 
 /// Why the merge is refused while tracked files have uncommitted changes, or

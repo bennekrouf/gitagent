@@ -282,6 +282,72 @@ mod tests {
         assert!(merge(&crlf, &crlf, &crlf).is_none());
     }
 
+    /// In a real repository: a release on main, with a last note, while the
+    /// pull request added its own at the same spot, then main brought in.
+    /// (A release alone, with no note at the spot, merges without a clash —
+    /// and files the pull request's note under the release.)
+    #[tokio::test]
+    async fn a_real_merge_is_settled_and_staged() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitagent-test-changelog-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.to_str().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            out.status.success()
+        };
+        let write = |text: &str| std::fs::write(dir.join("CHANGELOG.md"), text).unwrap();
+        assert!(git(&["init", "-q", "-b", "main"]));
+        write(&format!(
+            "{TOP}## [Unreleased]\n\n### Changed\n\n- Shipped.\n\n## [0.1.0]\n"
+        ));
+        assert!(git(&["add", "."]) && git(&["commit", "-qm", "base"]));
+        assert!(git(&["checkout", "-qb", "pr"]));
+        write(&format!(
+            "{TOP}## [Unreleased]\n\n### Changed\n\n- Shipped.\n- Ours.\n\n## [0.1.0]\n"
+        ));
+        assert!(git(&["commit", "-qam", "ours"]));
+        assert!(git(&["checkout", "-q", "main"]));
+        write(&format!(
+            "{TOP}## [0.1.1] - 2026-11-17\n\n### Changed\n\n- Shipped.\n- Theirs.\n\n## [0.1.0]\n"
+        ));
+        assert!(git(&["commit", "-qam", "release"]));
+        assert!(git(&["checkout", "-q", "pr"]));
+        assert!(!git(&["merge", "-q", "main"]), "the two sides clash");
+
+        assert_eq!(settle_all(repo).await, vec!["CHANGELOG.md".to_string()]);
+        let text = std::fs::read_to_string(dir.join("CHANGELOG.md")).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "{TOP}## [Unreleased]\n\n### Changed\n\n- Ours.\n\n## [0.1.1] - 2026-11-17\n\n### Changed\n\n- Shipped.\n- Theirs.\n\n## [0.1.0]\n"
+            )
+        );
+        assert!(
+            list(repo).await.is_empty(),
+            "staged: nothing left in conflict"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn only_a_file_named_changelog_edited_on_both_sides_counts() {
         let file = |path: &str, code: &str| Conflicted {

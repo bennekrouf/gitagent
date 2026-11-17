@@ -380,7 +380,7 @@ fn a_conflicted_bring_in_turns_into_finishing_or_abandoning_it() {
                    CONFLICT (content): Merge conflict in Cargo.lock\n\
                    CONFLICT (content): Merge conflict in src/api/config_upload.rs\n\
                    Automatic merge failed; fix conflicts and then commit the result.";
-    let next = conflict_followup("66", "master", out).unwrap();
+    let next = conflict_followup("66", "master", out, &[]).unwrap();
     assert!(next
         .message
         .contains("  Cargo.lock\n  src/api/config_upload.rs"));
@@ -396,7 +396,7 @@ fn a_conflicted_bring_in_turns_into_finishing_or_abandoning_it() {
     );
     assert!(finish.args[1].find("git commit").unwrap() < finish.args[1].find("git push").unwrap());
     assert_eq!(next.remedies[1].args, ["merge", "--abort"]);
-    assert!(conflict_followup("66", "master", "fatal: not a git repository").is_none());
+    assert!(conflict_followup("66", "master", "fatal: not a git repository", &[]).is_none());
 }
 
 #[test]
@@ -658,12 +658,24 @@ fn skipping_the_checks_is_only_offered_to_an_admin() {
 fn a_merge_already_stopped_offers_finish_whatever_was_printed() {
     // #73: every file resolved, yet the step still offered "Bring main in"
     // again: running it mid-merge prints no "Merge conflict in" lines.
-    assert!(conflict_followup("73", "main", "error: You have not concluded your merge").is_none());
-    let next = merge_stopped("73", "main", &["CHANGELOG.md", "Cargo.lock", "Cargo.toml"]).unwrap();
+    assert!(conflict_followup(
+        "73",
+        "main",
+        "error: You have not concluded your merge",
+        &[]
+    )
+    .is_none());
+    let next = merge_stopped(
+        "73",
+        "main",
+        &["CHANGELOG.md", "Cargo.lock", "Cargo.toml"],
+        &[],
+    )
+    .unwrap();
     assert!(next.remedies[0].label.starts_with("Finish the merge"));
     assert!(next.remedies.iter().all(|r| !r.label.starts_with("Bring")));
     assert!(next.message.contains("Cargo.lock"));
-    assert!(merge_stopped("73", "main", &[]).is_none());
+    assert!(merge_stopped("73", "main", &[], &[]).is_none());
 }
 
 #[test]
@@ -855,4 +867,66 @@ fn only_an_admin_is_offered_to_change_the_repository() {
     );
     assert!(failure.remedies.is_empty());
     assert!(failure.message.contains("ask an admin"));
+}
+
+#[test]
+fn a_stopped_merge_says_two_steps_and_a_way_out() {
+    let next = merge_stopped("239", "main", &["CHANGELOG.md", "src/x.rs"], &[]).unwrap();
+    assert!(
+        next.message
+            .starts_with("#239 conflicts with main in 2 files."),
+        "{}",
+        next.message
+    );
+    assert!(
+        next.message.contains("1. Resolve each above"),
+        "{}",
+        next.message
+    );
+    assert!(next.message.contains("2. Finish below"), "{}", next.message);
+    assert!(
+        next.message.lines().count() <= 10,
+        "short: {}",
+        next.message
+    );
+    assert!(
+        !next.message.contains("Incoming"),
+        "said on the buttons instead"
+    );
+}
+
+#[test]
+fn a_changelog_merged_for_you_is_not_asked_about() {
+    let settled = vec!["CHANGELOG.md".to_string()];
+    let next = merge_stopped("239", "main", &["CHANGELOG.md", "src/x.rs"], &settled).unwrap();
+    assert!(next.message.contains("in 1 file."), "{}", next.message);
+    assert!(next.message.contains("  src/x.rs"));
+    assert!(next.message.contains("CHANGELOG.md merged for you"));
+
+    let only = merge_stopped("239", "main", &["CHANGELOG.md"], &settled).unwrap();
+    assert!(
+        only.message.contains("only in CHANGELOG.md merged for you"),
+        "{}",
+        only.message
+    );
+    assert!(!only.message.contains("1. Resolve"));
+    assert!(only.remedies[0].label.starts_with("Finish the merge"));
+}
+
+#[test]
+fn finish_checks_the_build_before_it_commits() {
+    let next = merge_stopped("239", "main", &["src/x.rs"], &[]).unwrap();
+    let script = &next.remedies[0].args[1];
+    let check = script
+        .find("cargo check")
+        .expect("checks a Rust project builds");
+    assert!(
+        check < script.find("git commit").unwrap(),
+        "before the commit"
+    );
+    assert!(script.contains("go build"));
+    assert!(
+        script.contains("git add -- Cargo.lock"),
+        "an updated lock goes in the merge"
+    );
 }

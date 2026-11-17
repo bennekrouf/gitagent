@@ -19,6 +19,23 @@ were never released.
 
 ## [Unreleased]
 
+### Changed
+
+- A step's panel in the run view now takes the window's full height, header
+  included, so there is more room for its log and diff. Fold or close it to
+  reach the play controls.
+- When bringing the base into a pull request stops on conflicts, the step
+  now says it in two steps (resolve each file, then Finish) instead of
+  eight paragraphs. Which side is which is on the Accept buttons, where you
+  choose.
+- A conflicted CHANGELOG.md is merged for you, with no AI: every note the
+  pull request added goes under [Unreleased], after the base's, and a fresh
+  [Unreleased] is opened when a release has just taken it. Files that edit
+  a released section are still left to you.
+- Finish checks that the merged code still builds (cargo check, or go build)
+  before it commits, so a resolution that doesn't compile is caught before
+  it is pushed, not by CI afterwards.
+
 ### Fixed
 
 - A model step that got an empty answer from the model asks it once more
