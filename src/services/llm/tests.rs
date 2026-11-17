@@ -528,3 +528,20 @@ async fn a_server_that_never_answers_reads_as_a_timeout() {
     assert!(said.contains("time limit"), "{said}");
     drop(listener);
 }
+
+#[test]
+fn a_cut_off_reply_on_api0_names_the_region_not_its_id() {
+    let mut cfg = LlmConfig::default();
+    cfg.use_region("china");
+    let said = cut_off(cfg.remote_model_name(), cfg.region(), 8192);
+    assert!(
+        said.starts_with("api0's China model ran out of room"),
+        "{said}"
+    );
+    assert!(said.contains("switch api0 to another region"), "{said}");
+    assert!(!said.contains("pick a larger model"), "{said}");
+
+    let said = cut_off("qwen3:4b", None, 4096);
+    assert!(said.starts_with("qwen3:4b ran out of room"), "{said}");
+    assert!(said.contains("pick a larger model in Settings"), "{said}");
+}
