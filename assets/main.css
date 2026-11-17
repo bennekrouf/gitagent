@@ -1407,6 +1407,8 @@ a.pr-failed-check:hover {
     flex: 1; min-width: 0;
     display: flex; flex-direction: column;
     background: var(--bg0);
+    /* What a step's panel spans: the whole view, top to bottom. */
+    position: relative; overflow: hidden;
 }
 .run-head {
     display: flex; align-items: center; gap: 16px;
@@ -1766,8 +1768,8 @@ a.pr-failed-check:hover {
     .run-view { --panel-move: 0s; }
 }
 
-/* Everything under the run view's header: the map, the pills, and a step's
-   panel when one is open — which covers these but never the play controls. */
+/* Everything under the run view's header: the map and the pills. A step's
+   panel is not in here: it spans the whole view, header included. */
 .run-body {
     flex: 1; min-height: 0;
     display: flex; flex-direction: column;
@@ -1776,9 +1778,9 @@ a.pr-failed-check:hover {
 /* Slides out from under an open panel, and back, in step with it. */
 .run-svg { transition: transform var(--panel-move) var(--panel-ease); }
 
-/* A step's panel over the run map: the same content as the list view's right
-   column, sliding in from the right and covering part of the map, which stays
-   visible and clickable to its left. */
+/* A step's panel over the run view: the same content as the list view's right
+   column, sliding in from the right over the full height — header, flow tabs
+   and map — which stay visible and clickable to its left. */
 .run-drawer {
     position: absolute; top: 0; right: 0; bottom: 0;
     /* Worked out by `panel_width` in run_view.rs, which slides the map out
@@ -1871,11 +1873,11 @@ a.pr-failed-check:hover {
     background: radial-gradient(circle, var(--text3) 1.3px, transparent 1.6px) center / 4px 7.33px repeat-y;
 }
 .run-drawer-grip:hover::after,
-.run-body-resizing .run-drawer-grip::after { background: var(--green); }
+.run-view-resizing .run-drawer-grip::after { background: var(--green); }
 /* Following the pointer, not easing after it; and no text turning blue. */
-.run-body-resizing { user-select: none; cursor: col-resize; }
-.run-body-resizing .run-drawer,
-.run-body-resizing .run-svg { transition: none; }
+.run-view-resizing { user-select: none; cursor: col-resize; }
+.run-view-resizing .run-drawer,
+.run-view-resizing .run-svg { transition: none; }
 
 /* Room for both buttons at the end of the step's header row. */
 .run-drawer .detail-head { padding-right: 84px; }

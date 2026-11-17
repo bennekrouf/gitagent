@@ -23,6 +23,7 @@ use super::git;
 
 pub mod ai;
 pub use ai::Proposal;
+pub mod changelog;
 
 /// One stretch of a conflicted file: either text both sides agree on, or a
 /// clash between them.

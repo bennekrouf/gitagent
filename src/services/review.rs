@@ -522,6 +522,26 @@ if [ -n "$lost" ]; then
   exit 1
 fi"#;
 
+/// The part of the Finish script that refuses a merge which no longer
+/// builds: a conflict settled on the wrong side, or by a model, compiles or
+/// it doesn't, and finding out here is a minute where finding out from CI
+/// is a push, a wait and another round. Only where the toolchain is known
+/// and installed; anywhere else the check is left to CI, as before. A lock
+/// file the check brings up to date goes into the merge, rather than being
+/// left behind as an edit that stops the merge retried after it.
+const STILL_BUILDS: &str = r#"if [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
+  echo "Checking the merged code still builds (cargo check)..."
+  if ! cargo check --workspace --all-targets --quiet; then
+    printf '\nNot committed: the merged code does not build. Fix the error above in the files it names, then Finish again.\n'; exit 1
+  fi
+  git diff --quiet -- Cargo.lock 2>/dev/null || git add -- Cargo.lock
+elif [ -f go.mod ] && command -v go >/dev/null 2>&1; then
+  echo "Checking the merged code still builds (go build)..."
+  if ! go build ./...; then
+    printf '\nNot committed: the merged code does not build. Fix the error above in the files it names, then Finish again.\n'; exit 1
+  fi
+fi"#;
+
 /// What to do about edits that clashed when they were put back. The step is
 /// done either way; this is the person's to finish in their editor.
 fn clashes_note(paths: &[String]) -> String {

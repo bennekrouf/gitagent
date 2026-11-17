@@ -195,9 +195,13 @@ pub(super) fn step_detail(
                         let merging = retry_graph.get(&node).is_some_and(|n| n.step == Step::Merge);
                         // Git mid-merge is the truth here, not the output: run
                         // again during the merge, it prints no conflict lines.
+                        // Changelogs first: both sides adding notes is the
+                        // usual clash, and one GitAgent settles itself.
+                        let mut settled = vec![];
                         let stopped = if !ok && merging
                             && git::in_progress(&key.0).await == Some(git::InProgress::Merge)
                         {
+                            settled = crate::services::conflicts::changelog::settle_all(&key.0).await;
                             let mut files: Vec<String> = crate::services::conflicts::list(&key.0)
                                 .await
                                 .into_iter()
@@ -216,8 +220,8 @@ pub(super) fn step_detail(
                                 let number = entry.artifact("pr_number").to_string();
                                 let base = entry.artifact("pr_base").to_string();
                                 let files: Vec<&str> = stopped.iter().map(String::as_str).collect();
-                                let next = crate::services::review::conflict_followup(&number, &base, &output)
-                                    .or_else(|| crate::services::review::merge_stopped(&number, &base, &files));
+                                let next = crate::services::review::conflict_followup(&number, &base, &output, &settled)
+                                    .or_else(|| crate::services::review::merge_stopped(&number, &base, &files, &settled));
                                 if let Some(next) = next {
                                     if let Some(run) = entry.runs.get_mut(&node) {
                                         run.log = next.message;

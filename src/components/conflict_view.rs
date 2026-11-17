@@ -571,9 +571,26 @@ fn ClashBlock(clash: Clash, pick: Option<Pick>, on_pick: EventHandler<Option<Pic
                     }
                     button { class: "clash-btn", onclick: move |_| on_pick.call(None), "Undo" }
                 } else {
-                    button { class: "clash-btn", onclick: move |_| on_pick.call(Some(Pick::Current)), "Accept current" }
-                    button { class: "clash-btn", onclick: move |_| on_pick.call(Some(Pick::Incoming)), "Accept incoming" }
-                    button { class: "clash-btn", onclick: move |_| on_pick.call(Some(Pick::Both)), "Accept both" }
+                    // Which side is which, said where the choice is made. Bringing
+                    // the base into a pull request, current is the pull request.
+                    button {
+                        class: "clash-btn",
+                        title: "Keep the side checked out here. When the base is brought into a pull request, that is the pull request's own change — usually the one to keep.",
+                        onclick: move |_| on_pick.call(Some(Pick::Current)),
+                        "Accept current"
+                    }
+                    button {
+                        class: "clash-btn",
+                        title: "Keep the side coming in. When the base is brought into a pull request, that is the base branch.",
+                        onclick: move |_| on_pick.call(Some(Pick::Incoming)),
+                        "Accept incoming"
+                    }
+                    button {
+                        class: "clash-btn",
+                        title: "Keep both, current first. For two different additions — not two versions of the same lines, which would then be in the file twice.",
+                        onclick: move |_| on_pick.call(Some(Pick::Both)),
+                        "Accept both"
+                    }
                 }
             }
             if let Some(p) = &pick {
