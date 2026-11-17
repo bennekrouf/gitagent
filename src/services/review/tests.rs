@@ -930,3 +930,41 @@ fn finish_checks_the_build_before_it_commits() {
         "an updated lock goes in the merge"
     );
 }
+
+#[test]
+fn misfiled_notes_stop_the_merge_with_one_fix() {
+    let stop = misfiled_guide(
+        "239",
+        "main",
+        "CHANGELOG.md",
+        &["- Ours.".to_string()],
+        "/tmp/fixed.md",
+        "abc123",
+    );
+    assert!(stop.message.contains("wrong version"), "{}", stop.message);
+    assert!(stop.message.contains("  - Ours."));
+    assert!(stop.message.contains("Nothing has been merged"));
+    let fix = &stop.remedies[0];
+    assert!(
+        fix.retry_after,
+        "the merge runs again once the notes are moved"
+    );
+    assert_eq!(
+        fix.args[2..],
+        [
+            "sh",
+            "239",
+            "main",
+            "/tmp/fixed.md",
+            "CHANGELOG.md",
+            "abc123"
+        ],
+        "everything travels as an argument"
+    );
+    let script = &fix.args[1];
+    assert!(
+        script.find("rev-parse").unwrap() < script.find("git merge").unwrap(),
+        "a moved base is caught first"
+    );
+    assert!(script.find("git commit --amend").unwrap() < script.find("git push").unwrap());
+}

@@ -567,6 +567,12 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
     if let Some(refusal) = uncommitted_in_the_way(repo, &number).await {
         return Err(refusal);
     }
+    if forge == Forge::GitHub {
+        let (base, head) = (state.artifact("pr_base"), state.artifact("pr_head"));
+        if let Some(stop) = misfiled_notes(repo, &number, base, head).await {
+            return Err(stop);
+        }
+    }
 
     let out = match forge {
         Forge::GitHub => match git::run(
@@ -650,6 +656,127 @@ pub(super) async fn merge_in_progress(repo: &str, number: &str, base: &str) -> O
     files.dedup();
     let files: Vec<&str> = files.iter().map(String::as_str).collect();
     merge_stopped(number, base, &files, &settled)
+}
+
+/// Release notes the merge would file under the wrong version: `base`
+/// released `[Unreleased]` after `head` branched, and git, merging without
+/// a clash, puts the pull request's notes under that release. `None` when
+/// they would land under `[Unreleased]`, when the merge clashes (that has
+/// its own way through), or when anything here cannot be read — the merge
+/// then goes ahead as it always did.
+async fn misfiled_notes(repo: &str, number: &str, base: &str, head: &str) -> Option<StepFailure> {
+    use crate::services::conflicts::changelog;
+    if base.is_empty() || head.is_empty() {
+        return None;
+    }
+    let _ = git::fetch(repo, &["origin", base, head]).await;
+    let (theirs_ref, ours_ref) = (format!("origin/{base}"), format!("origin/{head}"));
+    let rev = |args: Vec<String>| async move {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        git::run(repo, "git", &args)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let at = rev(vec!["rev-parse".into(), theirs_ref.clone()]).await?;
+    let fork = rev(vec![
+        "merge-base".into(),
+        theirs_ref.clone(),
+        ours_ref.clone(),
+    ])
+    .await?;
+    // What GitHub's merge would make of it, without touching the checkout.
+    // A clash exits non-zero, and is left to the merge that reports it.
+    let tree = rev(vec![
+        "merge-tree".into(),
+        "--write-tree".into(),
+        theirs_ref.clone(),
+        ours_ref.clone(),
+    ])
+    .await?;
+    let tree = tree.lines().next()?.to_string();
+    let changed = rev(vec![
+        "diff".into(),
+        "--name-only".into(),
+        fork.clone(),
+        ours_ref.clone(),
+    ])
+    .await?;
+    for path in changed.lines().filter(|p| changelog::is_changelog_path(p)) {
+        let show = |at: &str| rev(vec!["show".into(), format!("{at}:{path}")]);
+        let (Some(old), Some(ours), Some(theirs), Some(merged)) = (
+            show(&fork).await,
+            show(&ours_ref).await,
+            show(&theirs_ref).await,
+            show(&tree).await,
+        ) else {
+            continue;
+        };
+        let lost = changelog::misfiled(&old, &ours, &theirs, &merged);
+        if lost.is_empty() {
+            continue;
+        }
+        let fixed = changelog::merge(&old, &ours, &theirs)?;
+        // Through a file, not an argument: a changelog outgrows the longest
+        // command line Windows takes.
+        let file = crate::services::store::data_dir().join(format!("changelog-fix-{number}.md"));
+        std::fs::write(&file, &fixed).ok()?;
+        return Some(misfiled_guide(
+            number,
+            base,
+            path,
+            &lost,
+            &file.to_string_lossy(),
+            &at,
+        ));
+    }
+    None
+}
+
+/// What stops the merge, and the one click that puts the notes right.
+pub(super) fn misfiled_guide(
+    number: &str,
+    base: &str,
+    path: &str,
+    lost: &[String],
+    fixed: &str,
+    at: &str,
+) -> StepFailure {
+    let message = format!(
+        "#{number} would file its release notes under the wrong version. {base} released \
+         [Unreleased] after #{number} branched, and merged as it stands, these notes from \
+         {path} land under that release, which never shipped them:\n{}\n\n\
+         Move them (below): it brings {base} into #{number}'s branch with the notes back \
+         under [Unreleased], pushes, and merges again. Nothing has been merged or changed.",
+        lost.iter()
+            .map(|l| format!("  {l}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    // Positional arguments, never spliced in. `$5` is where the base stood
+    // when this was worked out: moved since, the notes are worked out again.
+    let script = format!(
+        r#"gh pr checkout "$1" || exit 1
+git fetch origin "$2" || exit 1
+if [ "$(git rev-parse "origin/$2")" != "$5" ]; then echo "$2 moved since this was checked. Run Review → Merge again."; exit 1; fi
+git merge --no-edit "origin/$2" || exit 1
+cp "$3" "$4" && git add -- "$4" && git commit --amend --no-edit && git push || exit 1
+{WAIT_FOR_GITHUB}"#
+    );
+    let fix = Remedy::new(
+        &format!("Move the notes back under [Unreleased], push, and merge #{number} again"),
+        "sh",
+        &["-c", &script, "sh", number, base, fixed, path, at],
+    );
+    StepFailure {
+        message,
+        remedies: vec![Remedy {
+            display: format!(
+                "gh pr checkout {number} && git merge origin/{base} && (notes under [Unreleased] in {path}) && git commit --amend && git push"
+            ),
+            ..fix
+        }],
+    }
 }
 
 /// Why the merge is refused while tracked files have uncommitted changes, or
