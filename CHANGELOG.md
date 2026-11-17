@@ -34,6 +34,10 @@ were never released.
 
 ### Fixed
 
+- A model step that got an empty answer from the model asks it once more
+  instead of failing at once with "model did not return JSON". If the second
+  answer is empty too, the step says which model sent nothing and that
+  running it again or choosing another model is the way forward.
 - The Windows release build no longer fails making the .msi: the installer
   looked for the app, its icon and WebView2Loader.dll in the wrong folder.
 

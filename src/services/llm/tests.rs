@@ -530,6 +530,25 @@ async fn a_server_that_never_answers_reads_as_a_timeout() {
 }
 
 #[test]
+fn an_empty_answer_names_the_model_and_not_json() {
+    let mut cfg = LlmConfig::default();
+    cfg.use_region("china");
+    let said = empty_answer(&cfg);
+    assert!(
+        said.starts_with("api0's China model sent back an empty answer"),
+        "{said}"
+    );
+    assert!(!said.contains("JSON"));
+
+    let local = LlmConfig {
+        kind: ProviderKind::Ollama,
+        ollama_model: "qwen3:4b".into(),
+        ..LlmConfig::default()
+    };
+    assert!(empty_answer(&local).starts_with("qwen3:4b sent back"));
+}
+
+#[test]
 fn a_cut_off_reply_on_api0_names_the_region_not_its_id() {
     let mut cfg = LlmConfig::default();
     cfg.use_region("china");
