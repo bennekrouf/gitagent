@@ -528,3 +528,19 @@ async fn a_server_that_never_answers_reads_as_a_timeout() {
     assert!(said.contains("time limit"), "{said}");
     drop(listener);
 }
+
+#[test]
+fn an_empty_answer_names_the_model_and_not_json() {
+    let cfg = LlmConfig {
+        kind: ProviderKind::Remote,
+        remote: "api0".into(),
+        remote_model: "china".into(),
+        ..LlmConfig::default()
+    };
+    let said = empty_answer(&cfg);
+    assert!(
+        said.starts_with("china on api0 sent back an empty answer"),
+        "{said}"
+    );
+    assert!(!said.contains("JSON"));
+}

@@ -23,22 +23,50 @@ pub async fn complete_json(
         serde_json::to_string_pretty(schema).unwrap_or_default()
     );
 
-    let raw = match cfg.kind {
-        ProviderKind::Ollama => call_ollama(cfg, &system, user, schema, asker).await?,
-        ProviderKind::Remote => call_openai_compatible(cfg, &system, user, asker).await?,
-        // Reaching here means a model step ran with no model configured, which
-        // the executor is supposed to have headed off. Say which of the two is
-        // broken rather than pretending the provider is unreachable.
-        ProviderKind::Off => {
-            return Err(
-                "this step needs a model, but this install is set to run without one. \
-                 Pick a provider in Settings, or skip the step."
-                    .into(),
-            )
+    // An empty answer is the model or the gateway in front of it having a
+    // bad moment, not a reply to the prompt: asked again, it usually
+    // answers. Asked once more only — a model that is always empty stays so.
+    let mut raw = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            (asker.on_line)("The answer came back empty. Asking once more…");
         }
-    };
+        raw = match cfg.kind {
+            ProviderKind::Ollama => call_ollama(cfg, &system, user, schema, asker).await?,
+            ProviderKind::Remote => call_openai_compatible(cfg, &system, user, asker).await?,
+            // Reaching here means a model step ran with no model configured, which
+            // the executor is supposed to have headed off. Say which of the two is
+            // broken rather than pretending the provider is unreachable.
+            ProviderKind::Off => {
+                return Err(
+                    "this step needs a model, but this install is set to run without one. \
+                     Pick a provider in Settings, or skip the step."
+                        .into(),
+                )
+            }
+        };
+        if !raw.trim().is_empty() {
+            break;
+        }
+    }
+    if raw.trim().is_empty() {
+        return Err(empty_answer(cfg));
+    }
 
     parse_object(&raw)
+}
+
+/// Two empty answers in a row: what it is, and what to do about it.
+pub(super) fn empty_answer(cfg: &LlmConfig) -> String {
+    let who = match cfg.kind {
+        ProviderKind::Remote => format!("{} on {}", cfg.remote_model_name(), cfg.preset().label),
+        _ => cfg.ollama_model.clone(),
+    };
+    format!(
+        "{who} sent back an empty answer, twice. That is the model or its provider, \
+         not your changes. Run the step again, or choose another model for this folder \
+         in Settings."
+    )
 }
 
 /// Models wrap JSON in ```json fences often enough to be worth handling here
