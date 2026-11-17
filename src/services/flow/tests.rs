@@ -863,3 +863,50 @@ fn a_long_reason_is_cut_on_the_card() {
     assert_eq!(summary.chars().count(), 120);
     assert!(summary.ends_with('…'));
 }
+
+/// What `scan` leaves after finding commits made in a terminal, on `branch`.
+fn hand_committed(branch: &str) -> RunState {
+    let mut s = RunState::default();
+    for (k, v) in [
+        ("base", "main"),
+        ("branch", branch),
+        ("already_committed", "true"),
+    ] {
+        s.artifacts.insert(k.into(), v.into());
+    }
+    s
+}
+
+#[test]
+fn commits_made_in_a_terminal_on_a_topic_branch_leave_only_the_push() {
+    let s = hand_committed("feat/thing");
+    assert!(only_push_left(&s));
+    assert!(
+        nothing_to_approve(&spec(Step::Commit), &s),
+        "no files to pick and no message to edit"
+    );
+    assert!(
+        !nothing_to_approve(&spec(Step::Push), &s),
+        "the push still asks"
+    );
+}
+
+#[test]
+fn commits_made_on_the_base_branch_still_get_a_branch_of_their_own() {
+    let s = hand_committed("main");
+    assert!(committed_by_hand(&s));
+    assert!(
+        !only_push_left(&s),
+        "the commit step moves them onto a branch"
+    );
+    assert!(!nothing_to_approve(&spec(Step::Commit), &s));
+}
+
+#[test]
+fn the_scan_asks_first_only_when_there_is_a_diff_to_show() {
+    let scan = spec(Step::ScanChanges);
+    assert!(!nothing_to_approve(&scan, &RunState::default()));
+    let mut s = RunState::default();
+    s.artifacts.insert("tree_clean".into(), "true".into());
+    assert!(nothing_to_approve(&scan, &s));
+}

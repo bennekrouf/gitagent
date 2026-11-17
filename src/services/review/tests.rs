@@ -812,3 +812,47 @@ async fn a_merge_refused_over_uncommitted_changes_offers_commit_and_pr() {
     assert!(!fix.abandons);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn an_admin_is_offered_to_allow_auto_merge_where_it_is_off() {
+    let message =
+        "X Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge.";
+    let admin = Hold {
+        admin: true,
+        ..Hold::default()
+    };
+    let failure = policy_guide("7", message, &admin);
+    let allow = &failure.remedies[0];
+    assert!(
+        allow.label.starts_with("Allow auto-merge"),
+        "{}",
+        allow.label
+    );
+    assert_eq!(allow.args[3], "7", "the number travels as an argument");
+    assert!(allow.args[1].contains("allow_auto_merge=true"));
+
+    let allowed = Hold {
+        auto_merge: true,
+        admin: true,
+        ..Hold::default()
+    };
+    let failure = policy_guide("7", message, &allowed);
+    assert!(
+        !failure
+            .remedies
+            .iter()
+            .any(|r| r.label.starts_with("Allow")),
+        "already allowed: nothing to turn on"
+    );
+}
+
+#[test]
+fn only_an_admin_is_offered_to_change_the_repository() {
+    let failure = policy_guide(
+        "7",
+        "X Pull request o/r#7 is not mergeable: the base branch policy prohibits the merge.",
+        &Hold::default(),
+    );
+    assert!(failure.remedies.is_empty());
+    assert!(failure.message.contains("ask an admin"));
+}

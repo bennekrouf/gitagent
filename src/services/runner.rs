@@ -60,16 +60,41 @@ impl Proposal {
     }
 }
 
-/// Settles a step that Settings leaves nothing to run with, and says whether
-/// it did. Such a step is bypassed rather than failed: the merge behind it
-/// waits on it, and an optional step nobody set up must not stop a merge.
-pub fn bypass_unconfigured(state: &mut RunState, node: &NodeSpec, cfg: &LlmConfig) -> bool {
+/// Settles a step that has nothing to do, and says whether it did: one that
+/// Settings leaves nothing to run with, or one that commits made outside
+/// GitAgent leave without a job. Such a step is bypassed rather than failed:
+/// the steps behind it wait on it, and a step with nothing to do must not
+/// stop them.
+pub fn bypass_unneeded(state: &mut RunState, node: &NodeSpec, cfg: &LlmConfig) -> bool {
     let bypass = |state: &mut RunState, summary: String, log: String| {
         state.set_status(&node.id, NodeStatus::Bypassed);
         let entry = state.runs.entry(node.id.clone()).or_default();
         entry.summary = summary;
         entry.log = log;
     };
+    // Committed in a terminal: the message is the one written there, and the
+    // tests guard history that is already written. CI runs them on the pull
+    // request, so nothing is lost by not running them a second time here.
+    if node.step == Step::DraftCommit && flow::only_push_left(state) {
+        bypass(
+            state,
+            "skipped \u{2014} already committed".into(),
+            "The commits on this branch were made outside GitAgent, so their \
+             messages are already written. Nothing was drafted."
+                .into(),
+        );
+        return true;
+    }
+    if node.step == Step::RunTests && flow::committed_by_hand(state) {
+        bypass(
+            state,
+            "skipped \u{2014} already committed".into(),
+            "The commits on this branch were made outside GitAgent, so there is no \
+             commit left for the tests to hold back. CI runs them on the pull request."
+                .into(),
+        );
+        return true;
+    }
     // A model step on an install with no model never calls one: it writes
     // what can be derived from the diff and is marked skipped.
     if node.kind == NodeKind::Model && !cfg.uses_model() {
@@ -614,7 +639,7 @@ impl Run {
         (self.progress)(Progress::Step(node));
         self.publish();
 
-        if !bypass_unconfigured(&mut self.state, node, &cfg) {
+        if !bypass_unneeded(&mut self.state, node, &cfg) {
             let resolved = self.state.resolved_for(node);
             let progress = self.progress;
             let result = flow::execute(node, &self.repo, &cfg, &resolved, &mut |line| {
@@ -638,5 +663,56 @@ mod tests {
             err.starts_with("/gitagent/no/such/repo: path not found ("),
             "got {err}"
         );
+    }
+
+    fn spec(step: Step, kind: NodeKind) -> NodeSpec {
+        NodeSpec {
+            id: "n".into(),
+            title: String::new(),
+            subtitle: String::new(),
+            step,
+            kind,
+            deps: vec![],
+            reads: vec![],
+            writes: vec![],
+            requires_approval: false,
+            config: Default::default(),
+            bind: Default::default(),
+        }
+    }
+
+    fn hand_committed(branch: &str) -> RunState {
+        let mut s = RunState::default();
+        for (k, v) in [
+            ("base", "main"),
+            ("branch", branch),
+            ("already_committed", "true"),
+        ] {
+            s.artifacts.insert(k.into(), v.into());
+        }
+        s
+    }
+
+    #[test]
+    fn commits_made_in_a_terminal_skip_the_draft_and_the_tests() {
+        let cfg = LlmConfig::default();
+        let mut s = hand_committed("feat/thing");
+        let draft = spec(Step::DraftCommit, NodeKind::Model);
+        assert!(bypass_unneeded(&mut s, &draft, &cfg));
+        assert_eq!(s.status("n"), NodeStatus::Bypassed);
+
+        let mut s = hand_committed("main");
+        let tests = spec(Step::RunTests, NodeKind::Deterministic);
+        assert!(
+            bypass_unneeded(&mut s, &tests, &cfg),
+            "tests skip on base too"
+        );
+    }
+
+    #[test]
+    fn uncommitted_work_still_runs_the_tests() {
+        let mut s = RunState::default();
+        let tests = spec(Step::RunTests, NodeKind::Deterministic);
+        assert!(!bypass_unneeded(&mut s, &tests, &LlmConfig::default()));
     }
 }

@@ -250,6 +250,19 @@ pub fn is_first_commit(state: &RunState) -> bool {
     state.artifact("first_commit") == "true"
 }
 
+/// Set by `scan` when the working tree was clean and commits made outside
+/// GitAgent — `git commit` in a terminal — sit ahead of the base, unpushed.
+pub fn committed_by_hand(state: &RunState) -> bool {
+    state.artifact("already_committed") == "true"
+}
+
+/// Commits made outside GitAgent on a topic branch: there is nothing left to
+/// draft, pick or commit, only to push. On the base branch they still need a
+/// branch of their own, which the drafted name and the commit step make.
+pub fn only_push_left(state: &RunState) -> bool {
+    committed_by_hand(state) && !must_branch(state)
+}
+
 /// Exactly what will happen if the human approves this node. Rendered in the
 /// approval pane, so it must describe the real command, not a paraphrase.
 pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
@@ -362,6 +375,11 @@ pub fn nothing_to_approve(node: &NodeSpec, state: &RunState) -> bool {
     match node.step {
         Step::WriteNotes => state.artifact("release_notes").trim().is_empty(),
         Step::OpenPr => is_first_commit(state),
+        // A clean tree has no diff to look at first: whatever is ahead of the
+        // base was committed by hand, and the push approval shows it.
+        Step::ScanChanges => state.artifact("tree_clean") == "true",
+        // No files to pick and no message to edit: the commit is already made.
+        Step::Commit => only_push_left(state),
         _ => false,
     }
 }

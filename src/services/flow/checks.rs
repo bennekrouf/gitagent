@@ -727,6 +727,10 @@ pub(super) async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome
         });
     }
 
+    // Read here, before the scan's approval: with nothing uncommitted there
+    // is no diff for that approval to show, so it is not asked.
+    let tree_clean = git::status(repo).await.is_ok_and(|c| c.is_empty());
+
     Ok(StepOutcome {
         summary: format!("{} · base {base}", forge.label()),
         log,
@@ -734,6 +738,10 @@ pub(super) async fn preflight(repo: &str, cfg: &LlmConfig) -> Result<StepOutcome
             ("remote_url".into(), url.unwrap_or_default()),
             ("forge".into(), forge.as_key()),
             ("base".into(), base),
+            (
+                "tree_clean".into(),
+                if tree_clean { "true" } else { "" }.into(),
+            ),
         ],
         nothing_to_do: false,
         items: vec![],

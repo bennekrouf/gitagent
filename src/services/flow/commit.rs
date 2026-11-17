@@ -66,6 +66,7 @@ pub(super) async fn already_committed(
             ("commit_paths".into(), String::new()),
             ("file_notes".into(), String::new()),
             ("untracked".into(), String::new()),
+            ("already_committed".into(), "true".into()),
         ],
         nothing_to_do: false,
             items: vec![],
