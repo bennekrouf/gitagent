@@ -35,6 +35,11 @@ were never released.
 - Finish checks that the merged code still builds (cargo check, or go build)
   before it commits, so a resolution that doesn't compile is caught before
   it is pushed, not by CI afterwards.
+- Merge no longer files a pull request's release notes under a version that
+  never shipped them. When a release renamed [Unreleased] after the pull
+  request branched, git merges the two without a conflict and the notes land
+  under the release; Merge now stops first and offers one click that moves
+  them back under [Unreleased], pushes, and merges again.
 
 ### Fixed
 

@@ -55,11 +55,7 @@ pub async fn settle_all(repo: &str) -> Vec<String> {
 
 /// A changelog edited on both sides, by its file name in any folder.
 fn is_changelog(file: &Conflicted) -> bool {
-    file.code == "UU"
-        && Path::new(&file.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.eq_ignore_ascii_case("CHANGELOG.md"))
+    file.code == "UU" && is_changelog_path(&file.path)
 }
 
 /// The base's changelog with the entries `ours` added to `[Unreleased]`
@@ -112,6 +108,40 @@ pub fn merge(base: &str, ours: &str, theirs: &str) -> Option<String> {
         out.push_str(tail);
     }
     Some(out)
+}
+
+/// The notes `ours` added to `[Unreleased]` that a merge git did without a
+/// clash filed somewhere else in `merged` — under a version `theirs`
+/// released meanwhile, which never shipped them. A release that only renames
+/// the heading is lines away from the pull request's note, so git merges
+/// the two cleanly and the note lands under the new version. Each note by
+/// its first line. Empty when every note is where it belongs, or already
+/// on `theirs` through another pull request.
+pub fn misfiled(base: &str, ours: &str, theirs: &str, merged: &str) -> Vec<String> {
+    let Some(before) = entries(unreleased(base).unwrap_or("")) else {
+        return vec![];
+    };
+    let Some(added) = entries(unreleased(ours).unwrap_or("")) else {
+        return vec![];
+    };
+    let filed = squashed(unreleased(merged).unwrap_or(""));
+    let shipped = squashed(theirs);
+    added
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| !before.iter().any(|(_, b)| same(b, e)))
+        .filter(|e| !shipped.contains(&squashed(e)))
+        .filter(|e| !filed.contains(&squashed(e)))
+        .map(|e| e.lines().next().unwrap_or_default().trim().to_string())
+        .collect()
+}
+
+/// A changelog by its file name, in any folder.
+pub fn is_changelog_path(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("CHANGELOG.md"))
 }
 
 /// The `[Unreleased]` heading's line, case aside.
@@ -346,6 +376,88 @@ mod tests {
             "staged: nothing left in conflict"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// gitagent#239 for real: main released `[Unreleased]` and nothing else,
+    /// the pull request added a note, and git merges them with no clash —
+    /// filing the note under the release. Caught, and put right.
+    #[test]
+    fn a_clean_merge_that_files_a_note_under_a_release_is_caught() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitagent-test-misfiled-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let write = |text: &str| std::fs::write(dir.join("CHANGELOG.md"), text).unwrap();
+        let base = format!("{TOP}## [Unreleased]\n\n### Changed\n\n- Shipped.\n\n## [0.1.0]\n");
+        let ours = format!(
+            "{TOP}## [Unreleased]\n\n### Changed\n\n- Shipped.\n\n### Fixed\n\n- Ours.\n\n## [0.1.0]\n"
+        );
+        let theirs =
+            format!("{TOP}## [0.1.1] - 2026-11-17\n\n### Changed\n\n- Shipped.\n\n## [0.1.0]\n");
+        git(&["init", "-q", "-b", "main"]);
+        write(&base);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "pr"]);
+        write(&ours);
+        git(&["commit", "-qam", "ours"]);
+        git(&["checkout", "-q", "main"]);
+        write(&theirs);
+        git(&["commit", "-qam", "release"]);
+
+        let tree = git(&["merge-tree", "--write-tree", "main", "pr"]);
+        let merged = git(&[
+            "show",
+            &format!("{}:CHANGELOG.md", tree.lines().next().unwrap()),
+        ]);
+        assert!(
+            merged.contains(
+                "## [0.1.1] - 2026-11-17\n\n### Changed\n\n- Shipped.\n\n### Fixed\n\n- Ours."
+            ),
+            "git files the note under the release: {merged}"
+        );
+        assert_eq!(misfiled(&base, &ours, &theirs, &merged), vec!["- Ours."]);
+        let fixed = merge(&base, &ours, &theirs).unwrap();
+        assert!(
+            misfiled(&base, &ours, &theirs, &fixed).is_empty(),
+            "{fixed}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_note_filed_where_it_belongs_or_already_shipped_is_not_flagged() {
+        let base = format!("{TOP}## [0.1.0]\n");
+        let ours = format!("{TOP}## [Unreleased]\n\n### Fixed\n\n- Ours.\n\n## [0.1.0]\n");
+        assert!(misfiled(&base, &ours, &base, &ours).is_empty());
+        let shipped = format!("{TOP}## [0.1.1]\n\n### Fixed\n\n- Ours.\n\n## [0.1.0]\n");
+        assert!(misfiled(&base, &ours, &shipped, &shipped).is_empty());
     }
 
     #[test]
