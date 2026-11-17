@@ -17,6 +17,26 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Committed in a terminal? Commit → PR now goes straight to the push: it no
+  longer stops to show a diff there is none of, drafts a message you already
+  wrote, runs the tests again, or asks you to approve a commit that is already
+  made. Commits made on the base branch still get a branch of their own first.
+- An approved merge whose checks are still running is handed to GitHub at
+  once, which merges it the moment they pass: no second click on Merge
+  automatically, and nothing to come back for.
+- Where the repository doesn't allow auto-merge yet, an admin gets one button
+  that turns it on and hands the pull request to GitHub. Everyone else is told
+  who can turn it on, and where.
+
+### Fixed
+
+- The Windows release build no longer fails making the .msi: the installer
+  looked for the app, its icon and WebView2Loader.dll in the wrong folder.
+
 ## [0.1.189] - 2026-11-16
 
 ### Added

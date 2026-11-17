@@ -257,13 +257,17 @@ pub(super) fn policy_guide(number: &str, message: &str, hold: &Hold) -> StepFail
         next = if hold.auto_merge {
             "Merge automatically (below) hands it to GitHub, which merges it the moment \
              the checks pass. Nothing here waits for it."
+        } else if hold.admin {
+            "Run Review \u{2192} Merge again once the checks are green. Or Allow \
+             auto-merge (below): it turns that on for the repository and hands this pull \
+             request to GitHub, which merges it the moment the checks pass."
         } else {
             "Run Review \u{2192} Merge again once the checks are green. To have GitHub \
-             merge it by itself instead, turn on Allow auto-merge in the repository\u{2019}s \
-             Settings \u{2192} General."
+             merge it by itself instead, ask an admin to turn on Allow auto-merge in the \
+             repository\u{2019}s Settings \u{2192} General."
         },
     );
-    let mut remedies = vec![];
+    let mut remedies = allow_auto_merge(number, hold);
     if hold.auto_merge {
         remedies.push(auto_merge(number));
     }
@@ -356,21 +360,14 @@ for run in "$@"; do gh run rerun "$run" --failed || exit 1; done{auto}"#
     }
 }
 
-/// Trust all is on, or this run's steps are being approved without asking.
-fn trusting(state: &RunState) -> bool {
-    crate::services::store::trust_all() || state.runs.values().any(|r| !r.approved_by.is_empty())
-}
-
 /// Required checks still running: the normal state of a fresh pull request,
-/// not a failure. The run stops green. A trusted run hands the merge to
-/// GitHub (`--auto`) without asking; otherwise it says how to merge later.
-pub(super) async fn checks_pending(
-    repo: &str,
-    number: &str,
-    hold: &Hold,
-    trusting: bool,
-) -> StepOutcome {
-    if trusting && hold.auto_merge {
+/// not a failure. The run stops green. The merge was already approved, so
+/// where the repository allows it the merge goes to GitHub (`--auto`) at
+/// once, rather than asking a second time on a button: GitHub merges it the
+/// moment the checks pass, and nothing here waits. Where it doesn't, an
+/// admin is offered the one click that allows it and hands the merge over.
+pub(super) async fn checks_pending(repo: &str, number: &str, hold: &Hold) -> StepOutcome {
+    if hold.auto_merge {
         let args = auto_merge(number).args;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         if git::run(repo, "gh", &args).await.is_ok() {
@@ -379,8 +376,6 @@ pub(super) async fn checks_pending(
                 "#{number}\u{2019}s checks are still running: GitHub will merge it the moment they pass"
             ));
         }
-    }
-    if hold.auto_merge {
         return StepOutcome {
             remedies: vec![auto_merge(number)],
             ..StepOutcome::nothing(format!(
@@ -390,9 +385,54 @@ pub(super) async fn checks_pending(
             ))
         };
     }
-    StepOutcome::nothing(format!(
-        "#{number}\u{2019}s checks are still running. Run Review \u{2192} Merge again once they pass"
-    ))
+    StepOutcome {
+        remedies: allow_auto_merge(number, hold),
+        ..StepOutcome::nothing(pending_without_auto_merge(number, hold))
+    }
+}
+
+/// What to do about running checks in a repository that doesn't let GitHub
+/// merge by itself.
+fn pending_without_auto_merge(number: &str, hold: &Hold) -> String {
+    if hold.admin {
+        format!(
+            "#{number}\u{2019}s checks are still running, and this repository doesn\u{2019}t \
+             let GitHub merge pull requests by itself yet. Allow auto-merge (below) turns \
+             that on for the repository and hands #{number} to GitHub, which merges it the \
+             moment they pass; every merge after that goes the same way on its own. Or run \
+             Review \u{2192} Merge again once they are green"
+        )
+    } else {
+        format!(
+            "#{number}\u{2019}s checks are still running. Run Review \u{2192} Merge again once \
+             they pass. To have GitHub merge by itself instead, ask an admin of the \
+             repository to turn on Allow auto-merge in its Settings \u{2192} General"
+        )
+    }
+}
+
+/// Turns on Allow auto-merge for the repository and hands `number` to GitHub,
+/// for someone allowed to change the repository's settings. Nothing for
+/// anyone else: the setting is an admin's to change.
+fn allow_auto_merge(number: &str, hold: &Hold) -> Vec<Remedy> {
+    if hold.auto_merge || !hold.admin {
+        return vec![];
+    }
+    // `{owner}/{repo}` is gh's to fill in; the number travels as an argument.
+    let script = r#"gh api -X PATCH "repos/{owner}/{repo}" -F allow_auto_merge=true >/dev/null \
+&& gh pr merge "$1" --auto --squash --delete-branch"#;
+    let remedy = Remedy::completes(
+        &format!("Allow auto-merge on this repository, and merge #{number} once it passes"),
+        "sh",
+        &["-c", script, "sh", number],
+    );
+    vec![Remedy {
+        display: format!(
+            "gh api -X PATCH repos/{{owner}}/{{repo}} -F allow_auto_merge=true \
+             && gh pr merge {number} --auto --squash --delete-branch"
+        ),
+        ..remedy
+    }]
 }
 
 /// The merge, done another way: GitHub finishes it once the rules are met.
@@ -515,7 +555,7 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
                     if is_policy_hold(&e) {
                         let hold = Hold::read(repo, &number).await;
                         if hold.failed.is_empty() {
-                            return Ok(checks_pending(repo, &number, &hold, trusting(state)).await);
+                            return Ok(checks_pending(repo, &number, &hold).await);
                         }
                         return Err(policy_guide(&number, &e, &hold));
                     }

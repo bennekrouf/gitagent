@@ -261,9 +261,9 @@ pub(super) async fn drive(
             .or_default()
             .set_status(&node.id, NodeStatus::Running);
 
-        // No model, no focused review, no second reviewer: settled here,
-        // once, rather than in each step that would have used one.
-        if runner::bypass_unconfigured(
+        // No model, no focused review, no second reviewer, or commits made
+        // outside GitAgent: settled here, once, rather than in each step.
+        if runner::bypass_unneeded(
             states.write().entry(key.clone()).or_default(),
             &node,
             &cfg.read(),

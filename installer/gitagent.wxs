@@ -37,7 +37,7 @@
     <Launch Condition="Installed OR WindowsBuild &gt;= 17763"
             Message="GitAgent needs Windows 10 version 1809 or later." />
 
-    <Icon Id="GitAgentIcon" SourceFile="..\assets\icon.ico" />
+    <Icon Id="GitAgentIcon" SourceFile="assets\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="GitAgentIcon" />
     <Property Id="ARPURLINFOABOUT" Value="https://mayorana.ch/en/apps/gitagent" />
     <Property Id="ARPHELPLINK" Value="https://github.com/bennekrouf/gitagent/issues" />
@@ -89,13 +89,13 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="GitAgent">
         <Component Id="App">
-          <File Id="GitAgentExe" Source="..\target\release\gitagent.exe" KeyPath="yes" />
+          <File Id="GitAgentExe" Source="target\release\gitagent.exe" KeyPath="yes" />
         </Component>
         <Component Id="WebView2Loader">
-          <File Source="..\target\release\WebView2Loader.dll" KeyPath="yes" />
+          <File Source="target\release\WebView2Loader.dll" KeyPath="yes" />
         </Component>
         <Component Id="AppIcon">
-          <File Id="IconFile" Source="..\assets\icon.ico" KeyPath="yes" />
+          <File Id="IconFile" Source="assets\icon.ico" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
