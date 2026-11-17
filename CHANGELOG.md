@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- When merging a pull request, if the release notes are filed under the wrong
+  version, GitAgent now stops the merge and offers a one-click fix to move the
+  notes back under [Unreleased], push, and merge again. This prevents notes from
+  being lost or misplaced in the changelog.
+
 ## [0.1.191] - 2026-11-17
 
 ### Changed
