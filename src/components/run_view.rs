@@ -540,46 +540,44 @@ pub fn RunView(props: RunViewProps) -> Element {
 
     rsx! {
         div {
-            class: "run-view",
+            class: if resizing.read().is_some() { "run-view run-view-resizing" } else { "run-view" },
             // Every animation's duration is divided by this, so 2× is twice
-            // as quick on screen as well as through the history.
-            style: "--run-speed: {speed};",
+            // as quick on screen as well as through the history. The panel's
+            // width is for `.run-drawer`, which spans the whole view.
+            style: "--run-speed: {speed}; --panel-w: {open_w}px;",
+            // Listened for on the whole view, not the edge: the pointer
+            // outruns a 6px grip as soon as it moves, and the grip now runs
+            // the full height, header included.
+            onmousemove: move |e| {
+                let started = *resizing.peek();
+                if let Some((from_x, from_w, _)) = started {
+                    // Leftwards widens: the panel is pinned to the right.
+                    let w = store::Layout::clamp_panel(from_w + from_x - e.client_coordinates().x, area_w);
+                    resizing.set(Some((from_x, from_w, w)));
+                }
+            },
+            onmouseup: move |_| {
+                if let Some((_, _, w)) = resizing.take() {
+                    props.on_panel_width.call(Some(w));
+                }
+            },
+            // A pointer that leaves mid-drag would otherwise leave the
+            // edge stuck to it.
+            onmouseleave: move |_| {
+                if let Some((_, _, w)) = resizing.take() {
+                    props.on_panel_width.call(Some(w));
+                }
+            },
             {head::run_head(cursor, playing, epoch, len, this_run, at, live, fresh, startable, started, total, done, waiting, finished, props.clone())}
 
             // Under the player, where the button that was just pressed is.
             {props.note}
 
-            // Above the body, so a step's panel never covers the flow tabs or
-            // the pull request being validated.
             {props.flows}
             div { class: "run-context", {props.context} }
 
             div {
-                class: if resizing.read().is_some() { "run-body run-body-resizing" } else { "run-body" },
-                // The panel's width, for `.run-drawer` to take.
-                style: "--panel-w: {open_w}px;",
-                // Listened for on the whole body, not the edge: the pointer
-                // outruns a 6px grip as soon as it moves.
-                onmousemove: move |e| {
-                    let started = *resizing.peek();
-                    if let Some((from_x, from_w, _)) = started {
-                        // Leftwards widens: the panel is pinned to the right.
-                        let w = store::Layout::clamp_panel(from_w + from_x - e.client_coordinates().x, area_w);
-                        resizing.set(Some((from_x, from_w, w)));
-                    }
-                },
-                onmouseup: move |_| {
-                    if let Some((_, _, w)) = resizing.take() {
-                        props.on_panel_width.call(Some(w));
-                    }
-                },
-                // A pointer that leaves mid-drag would otherwise leave the
-                // edge stuck to it.
-                onmouseleave: move |_| {
-                    if let Some((_, _, w)) = resizing.take() {
-                        props.on_panel_width.call(Some(w));
-                    }
-                },
+                class: "run-body",
             div {
                 class: if *playing.read() { "run-canvas" } else { "run-canvas run-paused" },
                 // ⌘ + scroll, or a pinch, zooms the map; plain scrolling
@@ -625,6 +623,9 @@ pub fn RunView(props: RunViewProps) -> Element {
                     "{(z * 100.0).round()}%"
                 }
             }
+            }
+            // Over the whole view, header and flow tabs included, so a step's
+            // panel takes the full height of the window for its log and diff.
             // The panel's left edge, dragged to widen it as far as the whole
             // view — for reading a diff — and back down to `PANEL_MIN`.
             if props.panel_open && !props.panel_folded {
@@ -643,7 +644,6 @@ pub fn RunView(props: RunViewProps) -> Element {
                 }
             }
             {props.children}
-            }
         }
     }
 }
