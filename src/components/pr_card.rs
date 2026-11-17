@@ -9,7 +9,9 @@
 use dioxus::prelude::*;
 
 use crate::services::checkhint::{self, Hint};
+use crate::services::forge::Forge;
 use crate::services::probe::{Checks, PrBrief};
+use crate::services::review;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct PrCardProps {
@@ -17,6 +19,37 @@ pub struct PrCardProps {
     /// Where the pull request's repository is checked out: what working out
     /// why its checks failed, and updating it from its base, run in.
     pub repo: String,
+    /// Where it lives: what closing it runs, and whether it can be closed
+    /// from here at all.
+    pub forge: Forge,
+    /// False while a run is on this pull request: closing it under the run
+    /// would leave the run merging something that is gone.
+    pub closable: bool,
+    /// Called once it is closed, to read the repository's pull requests again.
+    pub on_closed: EventHandler<String>,
+}
+
+/// The button's word: Azure calls closing a pull request abandoning it.
+fn close_word(forge: &Forge) -> Option<&'static str> {
+    match forge {
+        Forge::GitHub => Some("Close"),
+        Forge::AzureDevOps => Some("Abandon"),
+        _ => None,
+    }
+}
+
+/// What the card asks before closing, so a stray click cannot.
+fn close_question(forge: &Forge, number: &str) -> String {
+    match forge {
+        Forge::AzureDevOps => format!(
+            "Abandon #{number} without merging? Its branch is kept, and it can be \
+             reactivated in Azure DevOps."
+        ),
+        _ => format!(
+            "Close #{number} without merging? Its branch is kept, and it can be \
+             reopened on GitHub."
+        ),
+    }
 }
 
 fn checks_label(checks: Checks) -> (&'static str, &'static str) {
@@ -37,6 +70,10 @@ pub fn PrCard(props: PrCardProps) -> Element {
     let mut hint = use_signal(|| None::<Hint>);
     let mut update = use_signal(|| None::<Result<String, String>>);
     let mut updating = use_signal(|| false);
+    // Closing: asked, then running, then gone from the list.
+    let mut asking = use_signal(|| false);
+    let mut closing = use_signal(|| false);
+    let close = close_word(&props.forge).filter(|_| props.closable);
     let repo = props.repo.clone();
     let watched = pr.clone();
     use_effect(use_reactive!(|repo, watched| {
@@ -87,6 +124,56 @@ pub fn PrCard(props: PrCardProps) -> Element {
                         href: "{pr.url}",
                         target: "_blank",
                         "open ↗"
+                    }
+                }
+                if let Some(word) = close {
+                    button {
+                        class: if pr.url.is_empty() { "pr-close pr-close-alone" } else { "pr-close" },
+                        disabled: *closing.read(),
+                        title: "{word} this pull request without merging it",
+                        onclick: move |evt: Event<MouseData>| {
+                            evt.stop_propagation();
+                            asking.set(true);
+                        },
+                        "{word}"
+                    }
+                }
+            }
+            if let (Some(word), true) = (close, *asking.read()) {
+                div { class: "pr-hint",
+                    onclick: |evt: Event<MouseData>| evt.stop_propagation(),
+                    span { class: "pr-hint-text", "{close_question(&props.forge, &pr.number)}" }
+                    button {
+                        class: "btn btn-danger pr-hint-btn",
+                        disabled: *closing.read(),
+                        onclick: {
+                            let repo = props.repo.clone();
+                            let forge = props.forge.clone();
+                            let number = pr.number.clone();
+                            let empty = pr.files == 0 && forge == Forge::GitHub;
+                            let on_closed = props.on_closed;
+                            move |_| {
+                                let (repo, forge, number) = (repo.clone(), forge.clone(), number.clone());
+                                closing.set(true);
+                                spawn(async move {
+                                    let done = review::close_pr(&repo, &forge, &number, empty).await;
+                                    closing.set(false);
+                                    asking.set(false);
+                                    let ok = done.is_ok();
+                                    update.set(Some(done));
+                                    if ok {
+                                        on_closed.call(number);
+                                    }
+                                });
+                            }
+                        },
+                        if *closing.read() { "{word}\u{2026}" } else { "{word} #{pr.number}" }
+                    }
+                    button {
+                        class: "btn pr-hint-btn",
+                        disabled: *closing.read(),
+                        onclick: move |_| asking.set(false),
+                        "Keep it"
                     }
                 }
             }
@@ -197,6 +284,16 @@ mod tests {
         assert_eq!(checks_label(Checks::Pending).0, "checks running");
         // Azure: never claim green for something nobody looked at.
         assert_eq!(checks_label(Checks::Unknown).0, "checks not read");
+    }
+
+    #[test]
+    fn closing_is_offered_only_where_gitagent_can_and_asks_first() {
+        assert_eq!(close_word(&Forge::GitHub), Some("Close"));
+        assert_eq!(close_word(&Forge::AzureDevOps), Some("Abandon"));
+        assert_eq!(close_word(&Forge::None), None);
+        assert_eq!(close_word(&Forge::Unsupported("gitlab.com".into())), None);
+        assert!(close_question(&Forge::GitHub, "243").starts_with("Close #243 without merging?"));
+        assert!(close_question(&Forge::AzureDevOps, "243").contains("Azure DevOps"));
     }
 
     #[test]

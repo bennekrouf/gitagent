@@ -968,3 +968,34 @@ fn misfiled_notes_stop_the_merge_with_one_fix() {
     );
     assert!(script.find("git commit --amend").unwrap() < script.find("git push").unwrap());
 }
+
+#[test]
+fn closing_from_the_card_runs_each_forges_own_command() {
+    let (program, args) = close_command(&Forge::GitHub, &[], "243", false).unwrap();
+    assert_eq!(program, "gh");
+    assert_eq!(args[0..3], ["pr", "close", "243"]);
+    assert_eq!(args[4], "Closing without merging.");
+    let (_, args) = close_command(&Forge::GitHub, &[], "243", true).unwrap();
+    assert!(args[4].contains("no longer changes any files"));
+    // Abandoned, not deleted: Azure keeps it, and the org scope finds it.
+    let scope = vec![
+        "--org".to_string(),
+        "https://dev.azure.com/acme".to_string(),
+    ];
+    let (program, args) = close_command(&Forge::AzureDevOps, &scope, "243", true).unwrap();
+    assert_eq!(program, "az");
+    assert_eq!(
+        args[0..7],
+        [
+            "repos",
+            "pr",
+            "update",
+            "--id",
+            "243",
+            "--status",
+            "abandoned"
+        ]
+    );
+    assert_eq!(args[args.len() - 2..], scope[..]);
+    assert!(close_command(&Forge::None, &[], "243", false).is_none());
+}
