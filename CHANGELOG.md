@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Every open pull request in Review → Merge now has a Close button (Abandon on
+  Azure DevOps), for one you no longer want merged, such as one that changes
+  no files. It asks once before closing, and keeps the branch. Neither GitHub
+  nor Azure DevOps can delete a pull request, so closing is the nearest thing,
+  and you can reopen it there later.
+
 ## [0.1.192] - 2026-11-17
 
 ### Fixed

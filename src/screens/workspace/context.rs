@@ -239,6 +239,7 @@ pub(super) fn flow_context(
                         // rest are unpickable — switching to another
                         // would leave that run's git state (checkout,
                         // fetch) racing against this one's.
+                        let forge = status_map.get(&repo).map(|s| s.forge.clone()).unwrap_or(forge::Forge::None);
                         let running_pr = running
                             .read()
                             .iter()
@@ -279,7 +280,24 @@ pub(super) fn flow_context(
                                                         diff_panel.set(None);
                                                     }
                                                 },
-                                                PrCard { pr: pr.clone(), repo: repo.clone() }
+                                                PrCard {
+                                                    pr: pr.clone(),
+                                                    repo: repo.clone(),
+                                                    forge: forge.clone(),
+                                                    closable: running_pr.as_deref() != Some(pr.number.as_str()),
+                                                    on_closed: {
+                                                        let repo = repo.clone();
+                                                        move |number: String| {
+                                                            if *selected_pr.peek() == number {
+                                                                selected_pr.set(String::new());
+                                                                selected_node.set(String::new());
+                                                                drawer.set(None);
+                                                                diff_panel.set(None);
+                                                            }
+                                                            reprobe(repo.clone(), statuses);
+                                                        }
+                                                    },
+                                                }
                                                 // The one being reviewed can be read in
                                                 // full beside the map, in the run view.
                                                 if pr.number == pr_id && *run_view.read() {
@@ -307,7 +325,16 @@ pub(super) fn flow_context(
                 }
             } else if let Some(pr) = status_map.get(&repo).and_then(|s| s.pr.clone()) {
                 div { class: "pr-solo",
-                    PrCard { pr: pr.clone(), repo: repo.clone() }
+                    PrCard {
+                        pr: pr.clone(),
+                        repo: repo.clone(),
+                        forge: status_map.get(&repo).map(|s| s.forge.clone()).unwrap_or(forge::Forge::None),
+                        closable: !running.read().iter().any(|(r, f, _)| r == &repo && f == &flow_id),
+                        on_closed: {
+                            let repo = repo.clone();
+                            move |_| reprobe(repo.clone(), statuses)
+                        },
+                    }
                     if *run_view.read() {
                         button {
                             class: "btn pr-diff-btn",

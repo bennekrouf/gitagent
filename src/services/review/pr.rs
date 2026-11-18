@@ -623,3 +623,66 @@ pub(super) fn empty_pr(
     };
     StepFailure { message, remedies }
 }
+
+/// The command that closes pull request `number` from its card — on Azure,
+/// abandons it — or `None` on a forge GitAgent cannot open one on. GitHub and
+/// Azure keep every pull request for good, so closing is as close to deleting
+/// one as either allows; the branch stays, for the Branches panel to clean up.
+pub fn close_command(
+    forge: &Forge,
+    az_scope: &[String],
+    number: &str,
+    empty: bool,
+) -> Option<(&'static str, Vec<String>)> {
+    let owned = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    match forge {
+        Forge::GitHub => {
+            let comment = if empty {
+                "Closing — this pull request no longer changes any files."
+            } else {
+                "Closing without merging."
+            };
+            Some(("gh", owned(&["pr", "close", number, "--comment", comment])))
+        }
+        Forge::AzureDevOps => {
+            let mut args = owned(&[
+                "repos",
+                "pr",
+                "update",
+                "--id",
+                number,
+                "--status",
+                "abandoned",
+                "--output",
+                "none",
+            ]);
+            args.extend(az_scope.iter().cloned());
+            Some(("az", args))
+        }
+        _ => None,
+    }
+}
+
+/// Closes (on Azure, abandons) pull request `number` of the repository at
+/// `repo`, and says so in a line.
+pub async fn close_pr(
+    repo: &str,
+    forge: &Forge,
+    number: &str,
+    empty: bool,
+) -> Result<String, String> {
+    let scope = if *forge == Forge::AzureDevOps {
+        forge::azure_scope(repo, Scope::Organization).await
+    } else {
+        vec![]
+    };
+    let Some((program, args)) = close_command(forge, &scope, number, empty) else {
+        return Err("GitAgent can't close pull requests on this remote.".into());
+    };
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    git::run(repo, program, &args).await?;
+    Ok(match forge {
+        Forge::AzureDevOps => format!("Abandoned #{number}."),
+        _ => format!("Closed #{number}."),
+    })
+}
