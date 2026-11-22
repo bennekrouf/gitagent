@@ -65,6 +65,7 @@ fn status(changes: usize, pr: Option<Checks>) -> RepoStatus {
         }),
         prs: vec![],
         prs_error: None,
+        issues: vec![],
         ahead: 0,
         behind: 0,
     }
@@ -688,4 +689,19 @@ fn skipped_and_neutral_checks_do_not_count_against_a_build() {
 fn no_checks_at_all_is_unknown_not_green() {
     assert_eq!(rollup(&json!([])), Checks::Unknown);
     assert_eq!(rollup(&json!(null)), Checks::Unknown);
+}
+
+#[test]
+fn open_issues_are_read_from_gh() {
+    let out = r#"[{"number":4,"title":"Crash on start","url":"https://github.com/o/r/issues/4"},
+                  {"title":"no number, skipped"}]"#;
+    assert_eq!(
+        prs::issues_from_json(out),
+        vec![IssueBrief {
+            number: "4".into(),
+            title: "Crash on start".into(),
+            url: "https://github.com/o/r/issues/4".into(),
+        }]
+    );
+    assert!(prs::issues_from_json("not json").is_empty());
 }

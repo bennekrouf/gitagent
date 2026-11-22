@@ -349,6 +349,14 @@ a.btn { text-decoration: none; }
     background: color-mix(in srgb, var(--yellow) 22%, transparent);
     color: var(--yellow);
 }
+/* Information only — nothing waits on an issue, so it stays out of the
+   colours that ask for attention. */
+.issue-count-badge {
+    background: color-mix(in srgb, var(--text3) 18%, transparent);
+    color: var(--text2);
+    text-decoration: none;
+}
+.issue-count-badge:hover { color: var(--text1); }
 .pr-count-error {
     background: color-mix(in srgb, var(--red) 22%, transparent);
     color: var(--red);
