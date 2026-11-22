@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- The GitAgent Pro window now names the email a licence belongs to when its
+  subscription has lapsed, not only while it is active, so you know which
+  subscription email to look for.
+- On the day a monthly plan renews, before the renewal has come through, the
+  window no longer says your subscription "isn't active (active)". It says the
+  month has ended and the renewal is on its way, and shows "Renewal due since"
+  that day instead of "Renews on" a day already past.
+
 ## [0.1.193] - 2026-11-18
 
 ### Added

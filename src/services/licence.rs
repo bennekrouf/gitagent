@@ -86,6 +86,9 @@ pub trait AccountExt {
     fn apps(&self) -> String;
     /// How a licence that isn't Pro is headed in the licence window.
     fn credits_headline(&self) -> String;
+    /// Stripe still has the subscription live, but api0 counts it inactive:
+    /// its month is over and the renewal hasn't been recorded yet.
+    fn renewal_pending(&self) -> bool;
 }
 
 impl AccountExt for Account {
@@ -109,6 +112,10 @@ impl AccountExt for Account {
             "{kind} \u{2014} {} AI credits left this month",
             self.credits.left
         )
+    }
+
+    fn renewal_pending(&self) -> bool {
+        !self.active && matches!(self.status.as_str(), "active" | "trialing")
     }
 }
 
@@ -142,13 +149,23 @@ impl Lapse {
             Lapse::Unknown => "This licence number isn't known. Check it against your \
                                subscription email."
                 .into(),
+            // Stripe still calls it active, but its month is over: the
+            // renewal hasn't reached api0 yet. Calling that "not active
+            // (active)" helps nobody.
+            Lapse::Inactive(a) if a.renewal_pending() => format!(
+                "Your {} month ended on {} and its renewal hasn't come through yet. \
+                 Check again in a while; if it stays like this, check the payment \
+                 in Manage subscription.",
+                a.plan.name,
+                a.period_end_day()
+            ),
             Lapse::Inactive(a) => format!(
                 "Your {} subscription isn't active ({}). Renew it to keep its AI credits.",
                 a.plan.name,
-                if a.status.is_empty() {
-                    "ended"
-                } else {
-                    a.status.as_str()
+                match a.status.as_str() {
+                    "" | "canceled" => "ended",
+                    "past_due" | "unpaid" => "payment due",
+                    other => other,
                 }
             ),
             Lapse::Offline(_) => format!(
