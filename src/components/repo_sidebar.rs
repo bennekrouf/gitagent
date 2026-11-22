@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use crate::components::forge_icon::ForgeIcon;
 use crate::services::forge::Forge;
 use crate::services::graph::{NodeStatus, RunState};
-use crate::services::probe::Wants;
+use crate::services::probe::{IssueBrief, Wants, ISSUES_READ};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Phase {
@@ -213,6 +213,9 @@ pub struct RepoEntry {
     /// auth) — shown instead of the count badge, so a check that never
     /// happened never looks identical to a repository that is truly clean.
     pub prs_error: Option<String>,
+    /// Open issues on the repository, for information: the badge counts them
+    /// and opens the repository's Issues page.
+    pub issues: Vec<IssueBrief>,
     /// Set when a run here is waiting on an approval: the row offers the
     /// button itself, held or not. `None` when nothing waits, or every file is
     /// unchecked, which keeps the plain "needs you".
@@ -238,6 +241,37 @@ impl RepoEntry {
             && (self.approval.is_some()
                 || (self.start.is_some() && !self.phase.is_live() && self.failed_step.is_none()))
     }
+}
+
+/// "1 issue", "7 issues", "50+ issues" once the read was cut off.
+fn issues_label(n: usize) -> String {
+    let more = if n >= ISSUES_READ { "+" } else { "" };
+    format!("{n}{more} issue{}", if n == 1 { "" } else { "s" })
+}
+
+/// The repository's Issues page, from where its issues live. `None` when
+/// there are none to show, which hides the badge.
+fn issues_link(issues: &[IssueBrief]) -> Option<String> {
+    let url = &issues.first()?.url;
+    let page = url
+        .rsplit_once("/issues/")
+        .map(|(repo, _)| format!("{repo}/issues"));
+    Some(page.unwrap_or_else(|| url.clone()))
+}
+
+/// The newest few titles, so what is open can be read without leaving.
+fn issues_tooltip(issues: &[IssueBrief]) -> String {
+    const SHOWN: usize = 10;
+    let mut lines: Vec<String> = issues
+        .iter()
+        .take(SHOWN)
+        .map(|i| format!("#{}  {}", i.number, i.title))
+        .collect();
+    if issues.len() > SHOWN {
+        lines.push(format!("… and {} more", issues.len() - SHOWN));
+    }
+    lines.push("Click to open the issues on GitHub".into());
+    lines.join("\n")
 }
 
 fn row_class(selected: bool) -> &'static str {
@@ -511,6 +545,16 @@ pub fn RepoSidebar(props: RepoSidebarProps) -> Element {
                                             class: "pr-count-badge",
                                             title: "{entry.open_pr_count} open pull request(s) — select this repo, then Review \u{2192} Merge, to pick one",
                                             "{entry.open_pr_count} PR" if entry.open_pr_count != 1 { "s" }
+                                        }
+                                    }
+                                    if let Some(link) = issues_link(&entry.issues) {
+                                        a {
+                                            class: "pr-count-badge issue-count-badge",
+                                            href: "{link}",
+                                            target: "_blank",
+                                            title: "{issues_tooltip(&entry.issues)}",
+                                            onclick: |evt: Event<MouseData>| evt.stop_propagation(),
+                                            "{issues_label(entry.issues.len())}"
                                         }
                                     }
                                 }
@@ -795,11 +839,35 @@ mod tests {
             behind: 0,
             open_pr_count: 0,
             prs_error: None,
+            issues: vec![],
             approval: None,
             start: None,
             failed_step: None,
             settle: None,
         }
+    }
+
+    #[test]
+    fn the_issue_badge_counts_and_links_to_the_issues_page() {
+        let issue = |n: usize| IssueBrief {
+            number: n.to_string(),
+            title: format!("bug {n}"),
+            url: format!("https://github.com/o/r/issues/{n}"),
+        };
+        assert_eq!(issues_link(&[]), None, "no issues, no badge");
+        assert_eq!(
+            issues_link(&[issue(4)]).as_deref(),
+            Some("https://github.com/o/r/issues")
+        );
+        assert_eq!(issues_label(1), "1 issue");
+        assert_eq!(issues_label(7), "7 issues");
+        assert_eq!(issues_label(ISSUES_READ), format!("{ISSUES_READ}+ issues"));
+
+        let many: Vec<_> = (1..=12).map(issue).collect();
+        let tip = issues_tooltip(&many);
+        assert!(tip.starts_with("#1  bug 1\n"));
+        assert!(tip.contains("… and 2 more"));
+        assert!(!tip.contains("bug 11"));
     }
 
     #[test]

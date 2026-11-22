@@ -133,6 +133,59 @@ pub(super) async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBri
     }
 }
 
+/// How many open issues are read per repository. The badge says "50+" past
+/// it rather than paging for an exact count nobody acts on.
+pub const ISSUES_READ: usize = 50;
+
+/// Open issues on a GitHub repository, newest first. Number, title and URL
+/// only: about one point of the hourly GraphQL budget per repository. Any
+/// failure — rate limit, signed out, issues turned off — is an empty list.
+pub(super) async fn list_open_issues(repo: &str, forge: &Forge) -> Vec<IssueBrief> {
+    if *forge != Forge::GitHub || rate_limited().is_some() {
+        return vec![];
+    }
+    let limit = ISSUES_READ.to_string();
+    let Ok(out) = git::run(
+        repo,
+        "gh",
+        &[
+            "issue",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            &limit,
+            "--json",
+            "number,title,url",
+        ],
+    )
+    .await
+    .inspect_err(|e| {
+        if is_rate_limit(e) {
+            hold_off(e);
+        }
+    }) else {
+        return vec![];
+    };
+    issues_from_json(&out)
+}
+
+pub(super) fn issues_from_json(out: &str) -> Vec<IssueBrief> {
+    serde_json::from_str::<serde_json::Value>(out)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|issue| {
+            Some(IssueBrief {
+                number: issue["number"].as_i64()?.to_string(),
+                title: issue["title"].as_str().unwrap_or_default().to_string(),
+                url: issue["url"].as_str().unwrap_or_default().to_string(),
+            })
+        })
+        .collect()
+}
+
 pub(super) async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
     match forge {
         Forge::GitHub => {

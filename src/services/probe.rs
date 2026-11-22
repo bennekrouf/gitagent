@@ -17,6 +17,7 @@ use super::git;
 use super::release::{self, ReleaseState};
 use super::store;
 mod prs;
+pub use prs::ISSUES_READ;
 use prs::*;
 pub(crate) use prs::{failed_checks, rollup};
 mod status;
@@ -51,6 +52,15 @@ pub struct PrBrief {
     /// on — so "checks failing" can say which one and take you to why.
     /// Empty for any other state, and on Azure, where checks are not read.
     pub failed: Vec<FailedCheck>,
+}
+
+/// One open issue on the forge, shown for information: nothing in the app
+/// acts on issues, so this is all that is read of one.
+#[derive(Clone, PartialEq, Debug)]
+pub struct IssueBrief {
+    pub number: String,
+    pub title: String,
+    pub url: String,
 }
 
 /// One check that did not pass.
@@ -298,16 +308,25 @@ async fn probe_with(repo: &str, reuse: Option<&RepoStatus>) -> RepoStatus {
             None => list_open_prs(repo, &forge).await,
         }
     };
-    let (pr, listed, (release, unmerged, (ahead, behind))) = tokio::join!(own_pr, listed, async {
-        if forge != Forge::None && reuse.is_none() {
-            fetch_base(repo, &base).await;
+    // Issues ride the same five-minute reuse as pull requests: a file change
+    // re-reads the branch and counts, never GitHub.
+    let issues = async {
+        match reuse {
+            Some(old) => old.issues.clone(),
+            None => list_open_issues(repo, &forge).await,
         }
-        tokio::join!(
-            release::status(repo, &base),
-            unmerged_commits(repo, &base),
-            ahead_behind(repo),
-        )
-    },);
+    };
+    let (pr, listed, issues, (release, unmerged, (ahead, behind))) =
+        tokio::join!(own_pr, listed, issues, async {
+            if forge != Forge::None && reuse.is_none() {
+                fetch_base(repo, &base).await;
+            }
+            tokio::join!(
+                release::status(repo, &base),
+                unmerged_commits(repo, &base),
+                ahead_behind(repo),
+            )
+        },);
     let pr = match (&forge, &listed) {
         (Forge::GitHub, Ok(list)) => list.iter().find(|p| p.head == branch).cloned(),
         _ => pr,
@@ -325,6 +344,7 @@ async fn probe_with(repo: &str, reuse: Option<&RepoStatus>) -> RepoStatus {
         pr,
         prs,
         prs_error,
+        issues,
         ahead,
         behind,
         unmerged,
@@ -502,6 +522,7 @@ mod default_pr_tests {
             pr: pr.map(brief),
             prs: prs.iter().map(|n| brief(n)).collect(),
             prs_error: None,
+            issues: vec![],
             ahead: 0,
             behind: 0,
             unmerged: 0,

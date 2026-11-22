@@ -144,6 +144,10 @@ pub struct RepoStatus {
     /// `prs` alone cannot tell those two apart, and showing "clean" for a
     /// check that never happened is worse than showing nothing.
     pub prs_error: Option<String>,
+    /// Open issues on the repository, for information only. GitHub only, and
+    /// empty when they could not be read: unlike pull requests, nothing here
+    /// waits on them, so a failed read is not worth a warning.
+    pub issues: Vec<IssueBrief>,
     /// Commits on this branch not yet on its upstream, and vice versa. Both
     /// `0` whenever there's nothing to report — no upstream configured, or
     /// the branch is caught up — not just "unpushed work exists".

@@ -67,6 +67,7 @@ fn repo(changes: usize, unmerged: usize, pr: Option<Checks>, release: bool) -> R
         pr: pr.map(brief),
         prs: pr.map(|c| vec![brief(c)]).unwrap_or_default(),
         prs_error: None,
+        issues: vec![],
         ahead: 0,
         behind: 0,
         unmerged,

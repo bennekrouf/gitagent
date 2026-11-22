@@ -17,6 +17,15 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Repositories on GitHub now show how many issues are open, beside their pull
+  request count in the repository list. Hover the badge to read the newest
+  titles, or click it to open the repository's issues on GitHub. It is there
+  for information only: nothing in GitAgent waits on an issue.
+
 ## [0.1.194] - 2026-11-22
 
 ### Fixed

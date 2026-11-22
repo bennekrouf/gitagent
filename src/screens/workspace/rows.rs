@@ -44,6 +44,7 @@ pub(super) fn repo_entries(
                 behind: status.map(|s| s.behind).unwrap_or(0),
                 open_pr_count: status.map(|s| s.prs.len()).unwrap_or(0),
                 prs_error: status.and_then(|s| s.prs_error.clone()),
+                issues: status.map(|s| s.issues.clone()).unwrap_or_default(),
                 approval: approval_for(states, book, &repo.path),
                 start: status.and_then(|s| {
                     row_start(book, s, &repo_flows.hidden_for(&repo.path))
