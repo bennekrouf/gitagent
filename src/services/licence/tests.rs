@@ -157,3 +157,23 @@ fn what_an_older_gitagent_saved_is_carried_over() {
     assert!(legacy(&dir).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_lapse_says_why_without_contradicting_itself() {
+    // Stripe still live, the month over: the renewal is on its way.
+    let mut due = account(false, &["*"]);
+    due.status = "active".into();
+    due.period_end = "2026-11-22T00:00:00Z".into();
+    assert!(due.renewal_pending());
+    let said = Lapse::Inactive(due).explain();
+    assert!(!said.contains("isn't active"), "{said}");
+    assert!(said.contains("2026-11-22"), "{said}");
+
+    let cancelled = account(false, &["*"]);
+    assert!(!cancelled.renewal_pending());
+    assert!(Lapse::Inactive(cancelled).explain().contains("(ended)"));
+
+    let mut unpaid = account(false, &["*"]);
+    unpaid.status = "past_due".into();
+    assert!(Lapse::Inactive(unpaid).explain().contains("(payment due)"));
+}

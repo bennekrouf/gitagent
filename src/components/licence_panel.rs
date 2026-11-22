@@ -199,6 +199,9 @@ pub fn LicencePanel(props: LicencePanelProps) -> Element {
                         Status::Lapsed(lapse) => rsx! {
                             p { class: "probe probe-bad", "{lapse.explain()}" }
                             if let Some(a) = lapse.account() {
+                                if !a.email.is_empty() {
+                                    p { "Licensed to " strong { "{a.email}" } "." }
+                                }
                                 PlanDetails { account: a.clone() }
                             }
                         },
@@ -343,6 +346,9 @@ fn PlanDetails(account: Account) -> Element {
     let renewal = (!day.is_empty()).then(|| {
         if account.cancel_at_period_end {
             format!("Ends on {day}; it won't renew.")
+        } else if !account.active {
+            // The day is over: "Renews on" a past day reads as a promise.
+            format!("Renewal due since {day}.")
         } else {
             format!("Renews on {day}.")
         }
