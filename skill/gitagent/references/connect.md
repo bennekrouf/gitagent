@@ -5,8 +5,11 @@ argument, `mcp`: it talks over stdio and opens no window. The agent starts it
 when it needs it; the app does not have to be open (some features need it
 open, as the skill says).
 
-The **MCP** button in GitAgent's window shows the exact config and commands below
-with the real path to the app on this computer. Prefer copying from there.
+The **MCP** button in GitAgent's window does this: it shows whether GitAgent
+is installed and running in Claude Desktop, Claude Code, Codex and VS Code,
+and has Install, Update, Uninstall and Test buttons. Send the user there
+first. Its *By hand* section has the config and commands below with the real
+path to the app on this computer.
 Below, `<app>` stands for that path.
 
 Do not edit these files or run these commands for the user without asking:
@@ -65,8 +68,8 @@ computer as GitAgent.
 After restarting the client, ask it to list its tools: the `gitagent` server's
 tools should be there. If they are missing:
 
-- The path is wrong (the app was moved or reinstalled): copy it again from
-  the **MCP** button.
+- The path is wrong (the app was moved or reinstalled): press Update
+  in the **MCP** window.
 - On macOS, the app was never opened once: open it from Applications first
   so macOS lets it run.
 - The client was not fully restarted: quit it, not just close the window.
