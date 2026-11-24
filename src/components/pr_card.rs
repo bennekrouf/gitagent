@@ -27,6 +27,29 @@ pub struct PrCardProps {
     pub closable: bool,
     /// Called once it is closed, to read the repository's pull requests again.
     pub on_closed: EventHandler<String>,
+    /// The repository's base branch, the one its pull requests should go
+    /// into. A pull request into any other branch is flagged on the card.
+    /// Empty when it is not known yet, and then nothing is flagged.
+    #[props(default)]
+    pub base: String,
+}
+
+/// Where a pull request goes, as the card shows it: `from → into`, and a
+/// warning when `into` is not the repository's base. `None` when the
+/// forge did not name both branches.
+pub fn route(pr: &PrBrief, base: &str) -> Option<(String, Option<String>)> {
+    if pr.head.is_empty() || pr.base.is_empty() {
+        return None;
+    }
+    let text = format!("{} \u{2192} {}", pr.head, pr.base);
+    let off = (!base.is_empty() && pr.base != base).then(|| {
+        format!(
+            "Goes into {}, not {base}, this repository's base branch. Merging it \
+             does not bring the change to {base}.",
+            pr.base
+        )
+    });
+    Some((text, off))
 }
 
 /// The button's word: Azure calls closing a pull request abandoning it.
@@ -93,6 +116,16 @@ pub fn PrCard(props: PrCardProps) -> Element {
             div { class: "pr-card-head",
                 span { class: "pr-number", "#{pr.number}" }
                 span { class: "pr-title", "{pr.title}" }
+            }
+            if let Some((text, off)) = route(&pr, &props.base) {
+                div {
+                    class: if off.is_some() { "pr-route pr-route-off" } else { "pr-route" },
+                    title: off.clone().unwrap_or_else(|| format!("From {} into {}", pr.head, pr.base)),
+                    span { class: "pr-route-text", "\u{2442} {text}" }
+                    if off.is_some() {
+                        span { class: "pr-route-warn", "not the base" }
+                    }
+                }
             }
             div { class: "pr-card-meta",
                 span { class: "pr-size", "{pr.size()}" }
@@ -276,6 +309,42 @@ fn checks_page(pr_url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn into(base: &str) -> PrBrief {
+        PrBrief {
+            number: "292".into(),
+            title: "t".into(),
+            url: String::new(),
+            checks: Checks::Unknown,
+            files: 0,
+            additions: 0,
+            deletions: 0,
+            commits: 0,
+            base: base.into(),
+            head: "feat/version".into(),
+            failed: vec![],
+        }
+    }
+
+    #[test]
+    fn a_card_says_where_the_pull_request_goes() {
+        let (text, off) = route(&into("develop"), "develop").unwrap();
+        assert_eq!(text, "feat/version \u{2192} develop");
+        assert!(off.is_none());
+    }
+
+    #[test]
+    fn a_pull_request_into_another_branch_than_the_base_is_flagged() {
+        let (_, off) = route(&into("main"), "develop").unwrap();
+        let off = off.expect("main is not the base");
+        assert!(off.contains("Goes into main, not develop"), "{off}");
+    }
+
+    #[test]
+    fn nothing_is_flagged_while_the_base_is_not_known() {
+        assert!(route(&into("main"), "").unwrap().1.is_none());
+        assert!(route(&into(""), "develop").is_none());
+    }
 
     #[test]
     fn every_check_state_reads_as_words_rather_than_a_colour_alone() {

@@ -371,7 +371,13 @@ pub(super) fn repo_actions(
     }
     button {
         class: "btn btn-ghost",
-        title: "Which branch this repository's pull requests target",
+        title: match repo_bases.read().get(&repo) {
+            Some(base) => format!("Pull requests here go into {base}, set for this repository. Click to change it."),
+            None => match status_map.get(&repo).map(|s| s.base.as_str()).filter(|b| !b.is_empty()) {
+                Some(base) => format!("Pull requests here go into {base}, the repository's default branch on origin. Click to set another."),
+                None => "Which branch this repository's pull requests go into".to_string(),
+            },
+        },
         onclick: {
             let repo = repo.clone();
             move |_| {
@@ -381,10 +387,10 @@ pub(super) fn repo_actions(
                 base_editor_open.set(Some(repo.clone()));
             }
         },
-        match repo_bases.read().get(&repo) {
-            Some(base) => format!("Base: {base}"),
-            None => "Base: auto".to_string(),
-        }
+        {base_label(
+            repo_bases.read().get(&repo),
+            status_map.get(&repo).map(|s| s.base.as_str()),
+        )}
     }
     // Two ways to start the same run. The
     // trusted one answers the approvals for
@@ -525,5 +531,15 @@ pub(super) fn hide_flow(
             .unwrap_or_default();
         selected_flow.set(next);
         selected_node.set(first_node);
+    }
+}
+
+/// The Base button's text: the branch set for the repository, else the
+/// default it falls back to, named so it is never a guess what "auto" means.
+pub(super) fn base_label(set: Option<&str>, default: Option<&str>) -> String {
+    match (set, default.filter(|d| !d.is_empty())) {
+        (Some(base), _) => format!("Base: {base}"),
+        (None, Some(default)) => format!("Base: {default} (default)"),
+        (None, None) => "Base: default".to_string(),
     }
 }

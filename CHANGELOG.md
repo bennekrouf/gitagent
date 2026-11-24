@@ -17,6 +17,28 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Every pull request card now says where it goes, as `branch → base`. A pull
+  request into another branch than the repository's base is shown in yellow
+  and marked "not the base", so one opened against `main` in a repository
+  that works on `develop` stands out before you review or merge it.
+- The Base button names the branch in use when none is set, as
+  "Base: develop (default)" instead of "Base: auto", and the Base dialog says
+  which branch that default is.
+- Open PR's approval starts with "From <branch> into <base>", and its result
+  repeats it.
+
+### Fixed
+
+- Commit → PR no longer adopts a pull request already open from the branch
+  when it goes into another branch than the base. It stops and offers to
+  point that pull request at the base. It also refuses to open one with no
+  base known, where GitHub would pick its default branch, or from the base
+  branch into itself.
+
 ## [0.1.198] - 2026-11-24
 
 ### Fixed

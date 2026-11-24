@@ -650,7 +650,7 @@ pub fn Workspace(props: WorkspaceProps) -> Element {
             McpPanel { on_close: move |_| mcp_open.set(false) }
         }
 
-        {dialogs::base_editor_dialog(repos, repo_bases, base_editor_open, base_editor_value)}
+        {dialogs::base_editor_dialog(repos, repo_bases, base_editor_open, base_editor_value, statuses)}
 
         {dialogs::confirm_hide_dialog(repos, book, confirm_hide, hide_flow)}
     }

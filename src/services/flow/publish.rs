@@ -177,19 +177,43 @@ pub(super) async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
         return Ok(StepOutcome::nothing(first_commit_note(state)));
     }
     let forge = Forge::from_key(state.artifact("forge"));
+    let (base, head) = (state.artifact("base"), state.artifact("work_branch"));
+    if let Some(refusal) = unroutable(base, head) {
+        return Err(refusal);
+    }
     let opened = forge::create_pr(
         &forge,
         repo,
-        state.artifact("base"),
-        state.artifact("work_branch"),
+        base,
+        head,
         state.artifact("pr_title"),
         state.artifact("pr_body"),
     )
     .await?;
+    // A pull request already open from this branch may go somewhere else:
+    // GitHub answers "already exists" whatever its target. Adopting it
+    // would carry on into a review and a merge into the wrong branch.
+    if opened.already_open && forge == Forge::GitHub {
+        if let Ok(out) = git::run(
+            repo,
+            "gh",
+            &["pr", "view", head, "--json", "number,baseRefName"],
+        )
+        .await
+        {
+            let value: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
+            let into = value["baseRefName"].as_str().unwrap_or_default();
+            let number = value["number"].as_i64().unwrap_or_default().to_string();
+            if !into.is_empty() && into != base {
+                return Err(wrong_target(&number, head, into, base));
+            }
+        }
+    }
+    let route = format!("{head} \u{2192} {base}");
     let said = if opened.already_open {
-        format!("already open: {}", opened.url)
+        format!("{route}, already open: {}", opened.url)
     } else {
-        opened.url.clone()
+        format!("{route}: {}", opened.url)
     };
     Ok(StepOutcome {
         summary: said.clone(),
@@ -199,4 +223,44 @@ pub(super) async fn open_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
         items: vec![],
         remedies: vec![],
     })
+}
+
+/// A pull request that cannot go where the repository's base says: no base
+/// at all (the forge would pick its default branch, which may not be the
+/// one chosen), or from the base into itself. `None` when it can.
+pub(crate) fn unroutable(base: &str, head: &str) -> Option<StepFailure> {
+    if base.trim().is_empty() {
+        return Some(StepFailure::from(
+            "No base branch is known for this repository, so the pull request is not \
+             opened: the forge would pick its own default, which may not be the branch \
+             you chose. Set one with the Base button, then retry."
+                .to_string(),
+        ));
+    }
+    if head == base {
+        return Some(StepFailure::from(format!(
+            "The changes are on {base} itself, the base branch, so there is nothing to \
+             open a pull request from. Commit them on a branch of their own and retry."
+        )));
+    }
+    None
+}
+
+/// The pull request already open from `head` goes into `into`, not the
+/// repository's base: refused, with the fix of pointing it at the base.
+pub(crate) fn wrong_target(number: &str, head: &str, into: &str, base: &str) -> StepFailure {
+    StepFailure {
+        message: format!(
+            "#{number} from {head} is already open, but it goes into {into}, not {base}, \
+             this repository's base branch. It is not adopted: reviewing and merging it \
+             would land the change on {into}.\n\n\
+             Point #{number} at {base} below, then the run carries on. If {into} is the \
+             branch you meant, change this repository's base with the Base button instead."
+        ),
+        remedies: vec![Remedy::new(
+            &format!("Point #{number} at {base}"),
+            "gh",
+            &["pr", "edit", number, "--base", base],
+        )],
+    }
 }

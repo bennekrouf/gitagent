@@ -338,6 +338,7 @@ async fn probe_with(repo: &str, reuse: Option<&RepoStatus>) -> RepoStatus {
 
     RepoStatus {
         branch,
+        base,
         changes,
         tracked_changes,
         forge,
@@ -515,6 +516,7 @@ mod default_pr_tests {
 
     fn status(pr: Option<&str>, prs: &[&str]) -> RepoStatus {
         RepoStatus {
+            base: "main".into(),
             branch: "feat/x".into(),
             changes: 0,
             tracked_changes: 0,

@@ -43,6 +43,7 @@ fn the_repository_check_never_asks_github_for_every_commit() {
 
 fn status(changes: usize, pr: Option<Checks>) -> RepoStatus {
     RepoStatus {
+        base: "main".into(),
         branch: "master".into(),
         changes,
         tracked_changes: changes,

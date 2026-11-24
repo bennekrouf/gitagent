@@ -60,6 +60,7 @@ fn repo(changes: usize, unmerged: usize, pr: Option<Checks>, release: bool) -> R
         failed: vec![],
     };
     RepoStatus {
+        base: "main".into(),
         branch: "feat/x".into(),
         changes,
         tracked_changes: changes,
