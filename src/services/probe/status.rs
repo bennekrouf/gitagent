@@ -127,6 +127,10 @@ impl Wants {
 #[derive(Clone, PartialEq, Debug)]
 pub struct RepoStatus {
     pub branch: String,
+    /// The branch this repository's pull requests go into: the override
+    /// when one is set, else the detected default. What the Base button
+    /// names when no override is set, and what a PR card is checked against.
+    pub base: String,
     pub changes: usize,
     /// `changes` without the untracked files, which no commit here takes:
     /// what has to be committed before a pull request can be merged.

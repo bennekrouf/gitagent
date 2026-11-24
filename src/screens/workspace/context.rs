@@ -285,6 +285,7 @@ pub(super) fn flow_context(
                                                     repo: repo.clone(),
                                                     forge: forge.clone(),
                                                     closable: running_pr.as_deref() != Some(pr.number.as_str()),
+                                                    base: status_map.get(&repo).map(|s| s.base.clone()).unwrap_or_default(),
                                                     on_closed: {
                                                         let repo = repo.clone();
                                                         move |number: String| {
@@ -330,6 +331,7 @@ pub(super) fn flow_context(
                         repo: repo.clone(),
                         forge: status_map.get(&repo).map(|s| s.forge.clone()).unwrap_or(forge::Forge::None),
                         closable: !running.read().iter().any(|(r, f, _)| r == &repo && f == &flow_id),
+                        base: status_map.get(&repo).map(|s| s.base.clone()).unwrap_or_default(),
                         on_closed: {
                             let repo = repo.clone();
                             move |_| reprobe(repo.clone(), statuses)

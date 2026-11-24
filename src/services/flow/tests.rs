@@ -910,3 +910,30 @@ fn the_scan_asks_first_only_when_there_is_a_diff_to_show() {
     s.artifacts.insert("tree_clean".into(), "true".into());
     assert!(nothing_to_approve(&scan, &s));
 }
+
+#[test]
+fn no_pull_request_is_opened_without_a_base_or_from_the_base_itself() {
+    assert!(publish::unroutable("", "feat/x").is_some());
+    let same = publish::unroutable("develop", "develop").expect("base into itself");
+    assert!(
+        same.message.contains("on develop itself"),
+        "{}",
+        same.message
+    );
+    assert!(publish::unroutable("develop", "feat/x").is_none());
+}
+
+#[test]
+fn an_open_pull_request_into_another_branch_is_not_adopted() {
+    let refused = publish::wrong_target("292", "feat/x", "main", "develop");
+    assert!(
+        refused.message.contains("goes into main, not develop"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(refused.remedies.len(), 1);
+    assert_eq!(
+        refused.remedies[0].args,
+        vec!["pr", "edit", "292", "--base", "develop"]
+    );
+}

@@ -1311,6 +1311,18 @@ a.btn { text-decoration: none; }
     margin-top: 5px; font-size: 10.5px; color: var(--text2);
     display: flex; gap: 5px; align-items: baseline; flex-wrap: wrap;
 }
+/* Where the pull request goes: from → into, always on the card, and
+   flagged when "into" is not the repository's base branch. */
+.pr-route {
+    margin-top: 4px; font-size: 10.5px; color: var(--text2);
+    display: flex; gap: 6px; align-items: baseline; min-width: 0;
+}
+.pr-route-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-route-off .pr-route-text { color: var(--yellow); }
+.pr-route-warn {
+    flex-shrink: 0; font-size: 9.5px; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--yellow);
+}
 .pr-size { color: var(--text1); }
 .pr-dot { color: var(--text3); }
 .pr-card-foot {

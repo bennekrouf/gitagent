@@ -336,6 +336,7 @@ fn with_nothing_running_the_flow_follows_what_the_repository_needs() {
 fn a_row_offers_the_commit_or_release_its_repository_is_ready_for() {
     use crate::services::release::ReleaseState;
     let status = |changes: usize, release: bool| RepoStatus {
+        base: "main".into(),
         branch: "main".into(),
         changes,
         tracked_changes: changes,
@@ -374,6 +375,7 @@ fn a_row_offers_the_commit_or_release_its_repository_is_ready_for() {
     assert!(row_start(&book, &status(0, false), &[]).is_none());
     // Committed on a branch with no pull request: push and open one.
     let unpushed = RepoStatus {
+        base: "main".into(),
         branch: "topic".into(),
         unmerged: 1,
         ..status(0, false)
@@ -420,6 +422,7 @@ fn a_row_ready_to_merge_offers_that_pull_request_by_number() {
         failed: vec![],
     };
     let ready = |pr: Option<PrBrief>, others: Vec<PrBrief>| RepoStatus {
+        base: "main".into(),
         branch: "feat/x".into(),
         changes: 0,
         tracked_changes: 0,
@@ -588,6 +591,7 @@ fn of_two_failures_the_last_one_is_opened() {
 
 fn probed(changes: usize) -> RepoStatus {
     RepoStatus {
+        base: "main".into(),
         branch: "main".into(),
         changes,
         tracked_changes: changes,
@@ -975,4 +979,13 @@ fn an_outside_run_still_going_or_long_over_is_not_read_again() {
         watch::ended_since(&[going, other], &[]),
         vec!["/w/minicrm".to_string()]
     );
+}
+
+#[test]
+fn the_base_button_names_the_default_rather_than_saying_auto() {
+    use super::actions::base_label;
+    assert_eq!(base_label(Some("release"), Some("main")), "Base: release");
+    assert_eq!(base_label(None, Some("develop")), "Base: develop (default)");
+    assert_eq!(base_label(None, None), "Base: default");
+    assert_eq!(base_label(None, Some("")), "Base: default");
 }

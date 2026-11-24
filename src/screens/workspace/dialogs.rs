@@ -73,10 +73,24 @@ pub(super) fn base_editor_dialog(
     mut repo_bases: Signal<RepoBases>,
     mut base_editor_open: Signal<Option<String>>,
     mut base_editor_value: Signal<String>,
+    statuses: Signal<BTreeMap<String, RepoStatus>>,
 ) -> Element {
     rsx! {
         if let Some(repo) = base_editor_open.read().clone() {
             {
+                // The default the repository falls back to, when it is the one
+                // in use: with a branch set, the last check named that instead.
+                let detected = repo_bases
+                    .read()
+                    .get(&repo)
+                    .is_none()
+                    .then(|| statuses.read().get(&repo).map(|s| s.base.clone()))
+                    .flatten()
+                    .filter(|b| !b.is_empty());
+                let placeholder = match &detected {
+                    Some(base) => format!("{base} (the default branch on origin)"),
+                    None => "auto-detected (origin/HEAD, then main, then master)".to_string(),
+                };
                 let repo_label = repos.read().iter()
                     .find(|r| r.path == repo)
                     .map(|r| r.label.clone())
@@ -96,7 +110,7 @@ pub(super) fn base_editor_dialog(
                                     span { "Target branch" }
                                     input {
                                         value: "{base_editor_value.read()}",
-                                        placeholder: "auto-detected (origin/HEAD, then main, then master)",
+                                        placeholder: "{placeholder}",
                                         // A branch name is not prose: git takes
                                         // it exactly as typed, so nothing here
                                         // may capitalise, correct or complete
@@ -108,6 +122,13 @@ pub(super) fn base_editor_dialog(
                                         spellcheck: "false",
                                         "autocorrect": "off",
                                         oninput: move |e| base_editor_value.set(e.value()),
+                                    }
+                                }
+                                if let Some(base) = &detected {
+                                    p { class: "field-note",
+                                        "Now: {base}, this repository's default branch on origin. \
+                                         Pull requests from GitAgent go into it, and none is opened \
+                                         into any other branch."
                                     }
                                 }
                                 p { class: "field-note",
@@ -126,6 +147,9 @@ pub(super) fn base_editor_dialog(
                                                 repo_bases.write().set(&repo, "");
                                                 store::save_repo_bases(&repo_bases.read());
                                                 base_editor_open.set(None);
+                                                // The card checks and the Base button read the
+                                                // base off the repository's last check.
+                                                reprobe_local(repo.clone(), statuses);
                                             }
                                         },
                                         "Clear (use auto-detection)"
@@ -138,6 +162,9 @@ pub(super) fn base_editor_dialog(
                                                 repo_bases.write().set(&repo, &base_editor_value.read());
                                                 store::save_repo_bases(&repo_bases.read());
                                                 base_editor_open.set(None);
+                                                // The card checks and the Base button read the
+                                                // base off the repository's last check.
+                                                reprobe_local(repo.clone(), statuses);
                                             }
                                         },
                                         "Save"
