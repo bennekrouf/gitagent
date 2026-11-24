@@ -37,6 +37,28 @@ were never released.
 - Azure DevOps pull requests in the sidebar show their size instead of
   "0 files +0 −0", and link to their page instead of a bare `/pullrequest/N`.
 
+## [0.1.197] - 2026-11-24
+
+### Fixed
+
+- Resolving a pull request's conflicts from the Check status step no longer
+  leaves the old "conflicts with main" message under "Nothing is left to
+  resolve". Once Bring main in stops on conflicts, the step now offers
+  Finish the merge, as Merge does, which commits, pushes and checks the pull
+  request again.
+
+## [0.1.196] - 2026-11-24
+
+### Changed
+
+- The MCP window now connects GitAgent for you. For Claude Desktop, Claude
+  Code, Codex and VS Code it shows whether GitAgent is installed there and
+  running, with Install, Update and Uninstall buttons, and a Test that starts
+  the server and counts its tools. Before, you copied commands and edited
+  Claude's config file yourself; those steps are still there, under By hand.
+- Claude Desktop undoes a change made to its settings while it is open:
+  GitAgent waits for you to quit it, then installs.
+
 ## [0.1.195] - 2026-11-22
 
 ### Added
