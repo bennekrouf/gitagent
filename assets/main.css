@@ -1727,6 +1727,11 @@ a.pr-failed-check:hover {
     fill: var(--text3); font-size: 13px;
     paint-order: stroke; stroke: var(--bg0); stroke-width: 5px; stroke-linejoin: round;
 }
+.run-gate-route {
+    fill: var(--text2); font-size: 11px;
+    paint-order: stroke; stroke: var(--bg0); stroke-width: 4px; stroke-linejoin: round;
+}
+.run-gate-route-off { fill: var(--yellow); }
 .run-gate-ok   .run-gate-box  { fill: var(--green); stroke: var(--green); }
 .run-gate-ok   .run-gate-text { fill: var(--text1); }
 .run-gate-bad  .run-gate-box  { fill: var(--red); stroke: var(--red); }
@@ -2093,6 +2098,7 @@ a.pr-failed-check:hover {
     font-size: 11px; color: var(--yellow); margin-bottom: 6px;
 }
 .conflicts-title { font-size: 14px; font-weight: 700; }
+.conflicts-settled .conflicts-title { color: var(--green); }
 .conflicts-lead { font-size: 12px; color: var(--text1); line-height: 1.5; margin-bottom: 11px; }
 .conflicts-count { color: var(--text3); }
 .conflicts-hint { font-size: 11px; color: var(--text2); margin-bottom: 9px; line-height: 1.5; }

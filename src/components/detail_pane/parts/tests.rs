@@ -186,3 +186,36 @@ fn a_failed_step_with_a_diff_still_says_what_went_wrong() {
     assert!(html.contains("merge yet"), "{html}");
     assert!(html.contains("Diff"), "{html}");
 }
+
+#[test]
+fn finishing_is_named_as_the_one_step_left() {
+    assert_eq!(
+        finish_label("Finish the merge, push, and merge #86 again"),
+        "All conflicts resolved. Commit, push and merge #86."
+    );
+    assert_eq!(finish_label("Something else"), "Something else");
+}
+
+#[test]
+fn once_resolved_only_the_way_on_is_offered() {
+    let html = render(|| {
+        let mut finish = remedy(true);
+        finish.label = "Finish the merge, push, and merge #86 again".into();
+        let abandon = Remedy {
+            label: "Abandon the merge — put the branch back as it was".into(),
+            display: "git merge --abort".into(),
+            abandons: true,
+            ..remedy(false)
+        };
+        let run = NodeRun {
+            remedies: vec![finish, abandon],
+            ..Default::default()
+        };
+        next_step(&run, "merge".into(), EventHandler::new(|_| {}))
+    });
+    assert!(html.contains("Commit, push and merge #86"), "{html}");
+    assert!(html.contains("Continue"), "{html}");
+    assert!(!html.contains("Abandon"), "{html}");
+    assert!(!html.contains("git commit"), "no command line: {html}");
+    assert!(!html.contains("Fix it from here"), "{html}");
+}

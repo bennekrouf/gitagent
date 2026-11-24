@@ -3,7 +3,7 @@
 
 use dioxus::prelude::*;
 
-use crate::components::conflict_view::ConflictView;
+use crate::components::conflict_view::{ConflictView, Phase};
 use crate::components::diff_view::DiffView;
 use crate::services::graph::{NodeRun, NodeSpec, NodeStatus};
 
@@ -101,6 +101,13 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     // The files git is still waiting on, as the resolver last read them —
     // what holds back a fix that finishes the merge.
     let mut unresolved = use_signal(Vec::<String>::new);
+    // Where resolving a stuck merge stands, as the resolver last said. Once
+    // the model is asked, the error and the manual fixes give way to it; once
+    // every file is resolved, only the way on is left.
+    let mut phase = use_signal(Phase::default);
+    let resolving = failed && phase() == Phase::Ai;
+    let settled =
+        failed && phase() == Phase::Resolved && run.remedies.iter().any(|r| r.once_resolved);
     // Bumped by "Check again", for a file settled outside the app.
     let rechecks = use_signal(|| 0u32);
     // Anything a fix or a retry changes, so the conflict list is read again.
@@ -139,6 +146,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                     repo: props.repo.clone(),
                     stamp,
                     on_left: move |left: Vec<String>| unresolved.set(left),
+                    on_phase: move |now: Phase| phase.set(now),
                 }
             }
 
@@ -148,7 +156,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
 
             // Above any diff: a failed step that also wrote one must still say
             // what went wrong and what to do about it.
-            if run.status == NodeStatus::Failed && !run.log.is_empty() {
+            if run.status == NodeStatus::Failed && !run.log.is_empty() && !resolving && !settled {
                 div { class: "log-head", "Error" }
                 LogBox { log: run.log.clone(), failed: true }
             }
@@ -238,6 +246,13 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                         onclick: move |_| props.on_skip.call(skip_id.clone()),
                         "Skip"
                     }
+                }
+            } else if resolving {
+                // The model is resolving: nothing to decide here until it has.
+            } else if settled {
+                // Every file resolved: the one way on, and nothing else.
+                div { class: "detail-foot",
+                    {parts::next_step(&run, remedy_id.clone(), props.on_remedy)}
                 }
             } else if failed {
                 // The fixes on offer, then the step's own choices — all of it

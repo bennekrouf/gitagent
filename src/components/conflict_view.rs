@@ -27,6 +27,41 @@ pub struct ConflictViewProps {
     pub stamp: String,
     /// The files git is still waiting on, each time the list is read.
     pub on_left: EventHandler<Vec<String>>,
+    /// Where the resolving stands, each time it changes: what the step's
+    /// panel around it shows and hides.
+    #[props(default)]
+    pub on_phase: Option<EventHandler<Phase>>,
+}
+
+/// Where resolving a stuck merge stands. The panel is one of these at a
+/// time, and shows only what belongs to it: the error and the manual fixes
+/// while picking sides by hand, the AI's proposals once it is asked, and
+/// only the way on once nothing is left.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Phase {
+    /// Nothing stuck, or the merge already finished or abandoned.
+    #[default]
+    Idle,
+    /// Files left, sides picked by hand.
+    Manual,
+    /// Files left, the model asked to resolve them.
+    Ai,
+    /// Every file resolved, git still in the merge: only finishing is left.
+    Resolved,
+}
+
+impl Phase {
+    /// `left` files still conflicted, `resolved` settled since the stop,
+    /// `ai` whether Resolve with AI was chosen, `stuck` whether git is still
+    /// in the middle of the merge.
+    pub fn of(left: usize, resolved: usize, ai: bool, stuck: bool) -> Phase {
+        match (left, ai) {
+            (0, _) if stuck && resolved > 0 => Phase::Resolved,
+            (0, _) => Phase::Idle,
+            (_, true) => Phase::Ai,
+            (_, false) => Phase::Manual,
+        }
+    }
 }
 
 #[component]
@@ -107,6 +142,32 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
 
     let list = files.read().clone();
     let done = resolved.read().clone();
+    let phase = Phase::of(list.len(), done.len(), (ai.on)(), state().is_some());
+    let on_phase = props.on_phase;
+    use_effect(use_reactive!(|phase| {
+        if let Some(report) = on_phase {
+            report.call(phase);
+        }
+    }));
+    if phase == Phase::Resolved {
+        // Nothing left to pick: no files, no start-over, just where it stands.
+        // The way on is the step's one button below.
+        let finish = state()
+            .map(|s| format!(" Finish the {} below.", s.label()))
+            .unwrap_or_default();
+        let n = done.len();
+        return rsx! {
+            div { class: "conflicts conflicts-settled", id: "conflicts",
+                div { class: "conflicts-head",
+                    span { class: "conflicts-title", "✓ Conflicts resolved" }
+                    span { class: "conflicts-count",
+                        if n == 1 { "1 file" } else { "{n} files" }
+                    }
+                }
+                div { class: "conflicts-done-line", "Every conflict is resolved.{finish}" }
+            }
+        };
+    }
     if list.is_empty() && done.is_empty() {
         if !seen() {
             return rsx! {};
@@ -169,7 +230,21 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                     else { "{list.len()} files left" }
                 }
             }
-            if !list.is_empty() {
+            if phase == Phase::Ai {
+                div { class: "conflicts-lead",
+                    "The model merges each file in turn. Check what it proposes, then Save \
+                     to accept it and move to the next file."
+                    button {
+                        class: "clash-btn",
+                        title: "Stop asking the model, and pick a side for each conflict yourself",
+                        onclick: move |_| {
+                            let mut on = ai.on;
+                            on.set(false);
+                        },
+                        "Pick sides myself instead"
+                    }
+                }
+            } else if !list.is_empty() {
                 div { class: "conflicts-lead",
                     "Both sides changed the same lines, so git stopped and is waiting on \
                      you. Settle each file here — the model can do it for you — then \
@@ -317,15 +392,17 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                     }
                 }
                 div { class: "conflicts-actions",
-                    button {
-                        class: "btn btn-ghost",
-                        onclick: move |_| picks.set(vec![Some(Pick::Current); clashes]),
-                        "All current"
-                    }
-                    button {
-                        class: "btn btn-ghost",
-                        onclick: move |_| picks.set(vec![Some(Pick::Incoming); clashes]),
-                        "All incoming"
+                    if phase != Phase::Ai {
+                        button {
+                            class: "btn btn-ghost",
+                            onclick: move |_| picks.set(vec![Some(Pick::Current); clashes]),
+                            "All current"
+                        }
+                        button {
+                            class: "btn btn-ghost",
+                            onclick: move |_| picks.set(vec![Some(Pick::Incoming); clashes]),
+                            "All incoming"
+                        }
                     }
                     button {
                         class: "btn btn-primary",
@@ -346,7 +423,9 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
                                 }))
                             }
                         },
-                        if left == 0 { "Save and mark resolved" } else { "Save — {left} still open" }
+                        if left == 0 && phase == Phase::Ai { "Accept and save" }
+                        else if left == 0 { "Save and mark resolved" }
+                        else { "Save — {left} still open" }
                     }
                     StartOver { repo: props.repo.clone(), paths: vec![path.clone()], busy: busy(), open, act: act_handle }
                 }
@@ -646,6 +725,26 @@ fn fold(text: &str) -> String {
         lines.len() - CONTEXT * 2,
         lines[lines.len() - CONTEXT..].join("\n"),
     )
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::Phase;
+
+    #[test]
+    fn the_panel_is_in_one_state_at_a_time() {
+        assert_eq!(Phase::of(2, 0, false, true), Phase::Manual);
+        assert_eq!(Phase::of(2, 1, true, true), Phase::Ai);
+        assert_eq!(Phase::of(0, 3, true, true), Phase::Resolved);
+        assert_eq!(Phase::of(0, 3, false, true), Phase::Resolved);
+    }
+
+    #[test]
+    fn a_finished_or_abandoned_merge_has_nothing_left_to_show() {
+        assert_eq!(Phase::of(0, 0, false, false), Phase::Idle);
+        assert_eq!(Phase::of(0, 2, true, false), Phase::Idle);
+        assert_eq!(Phase::of(0, 0, true, true), Phase::Idle);
+    }
 }
 
 #[cfg(test)]
