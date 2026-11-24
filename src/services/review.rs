@@ -524,11 +524,27 @@ echo "Pushed. $forge has not finished rechecking #$1; merging anyway.""#;
 
 /// The part of the Finish script that refuses a resolution which dropped the
 /// pull request's change to a file. `$2` is the base branch, `$1` the pull
-/// request. A file counts when the branch changed it since the merge base,
-/// still differed from the base before this merge, and is now staged exactly
-/// as the base has it — every one of its conflicts settled on the base's side.
+/// request. A file counts when it conflicted in this merge, the branch changed
+/// it since the merge base, it still differed from the base before this merge,
+/// and it is now staged exactly as the base has it: every one of its
+/// conflicts settled on the base's side.
+///
+/// Only the files that conflicted, as git lists them under "Conflicts" in the
+/// merge message. A file git merged by itself and left as the base has it
+/// lost nothing: the base already had the branch's change, which is what a
+/// branch merged once and then updated on the base looks like. Counting
+/// those stopped a correct merge naming four such files besides the one that
+/// conflicted. Lock files are left out too: they are regenerated, not merged,
+/// and the base's is as good a start as the branch's.
 const KEEPS_THE_CHANGE: &str = r#"mb=$(git merge-base HEAD "origin/$2")
-lost=$(git diff --name-only "$mb" HEAD | while IFS= read -r f; do
+tab=$(printf '\t')
+conflicted=$(sed -n "/Conflicts:\$/,\$s/^.$tab//p" "$(git rev-parse --git-path MERGE_MSG)" 2>/dev/null)
+lost=$(printf '%s\n' "$conflicted" | while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "${f##*/}" in
+    (*.lock|package-lock.json|pnpm-lock.yaml|go.sum|npm-shrinkwrap.json) continue ;;
+  esac
+  git diff --quiet "$mb" HEAD -- "$f" && continue
   if ! git diff --quiet HEAD "origin/$2" -- "$f" && git diff --cached --quiet "origin/$2" -- "$f"; then printf '  %s\n' "$f"; fi
 done)
 if [ -n "$lost" ]; then

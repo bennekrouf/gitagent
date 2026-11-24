@@ -518,6 +518,13 @@ fn a_branch_reused_after_a_squash_merge_is_moved_rather_than_merged_into() {
 /// branch, `--theirs` main). Returns whether it let the commit through.
 #[cfg(unix)]
 fn finish_guard_after(side: &str) -> (bool, String) {
+    finish_guard_in(side, "")
+}
+
+/// The same, with `extra` run on the branch and main before the merge:
+/// whatever else the two sides did to other files.
+#[cfg(unix)]
+fn finish_guard_in(side: &str, extra: &str) -> (bool, String) {
     let root = std::env::temp_dir().join(format!(
         "gitagent-finish-{side}-{}-{}",
         std::process::id(),
@@ -539,7 +546,8 @@ fn finish_guard_after(side: &str) -> (bool, String) {
          git config user.name t && git config user.email t@t && \
          echo base > f && echo base > g && git add . && git commit -q -m init && git push -q origin main && \
          git checkout -q -b feat && echo pr > f && git commit -qam pr && \
-         git checkout -q main && echo main > f && echo main > g && git commit -qam main && git push -q origin main && \
+         git checkout -q main && echo main > f && echo main > g && git commit -qam main && \
+         {extra} git push -q origin main && \
          git checkout -q feat && (git merge -q origin/main >/dev/null 2>&1; true) && \
          git checkout {side} -- f && git add f"
     );
@@ -571,6 +579,29 @@ fn finishing_a_merge_refuses_when_the_pull_requests_change_was_dropped() {
 
     let (ok, said) = finish_guard_after("--ours");
     assert!(ok, "keeping the branch's side is fine: {said}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_git_merged_to_the_bases_version_is_not_counted_as_lost() {
+    // The branch changed h, and main already has that change and more: git
+    // merges h to main's version by itself, with no conflict, and nothing of
+    // the branch's is lost. Only f conflicted, kept on the branch's side.
+    let extra = "git checkout -q feat && echo pr > h && git add h && git commit -qm h && \
+                 git checkout -q main && echo pr > h && echo more >> h && git add h && \
+                 git commit -qm 'h, updated' &&";
+    let (ok, said) = finish_guard_in("--ours", extra);
+    assert!(ok, "h was merged by git, not dropped: {said}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_lock_file_settled_on_the_bases_side_is_not_counted_as_lost() {
+    let extra = "git checkout -q feat && echo pr > uv.lock && git add uv.lock && \
+                 git commit -qm lock && git checkout -q main && echo main > uv.lock && \
+                 git add uv.lock && git commit -qm lock &&";
+    let (ok, said) = finish_guard_in("--ours", extra);
+    assert!(ok, "{said}");
 }
 
 #[test]

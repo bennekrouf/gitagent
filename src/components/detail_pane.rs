@@ -108,6 +108,8 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
     let resolving = failed && phase() == Phase::Ai;
     let settled =
         failed && phase() == Phase::Resolved && run.remedies.iter().any(|r| r.once_resolved);
+    // Finishing refused over how the files were resolved: they open again.
+    let reopen = run.remedies.iter().any(|r| r.once_resolved && r.failed);
     // Bumped by "Check again", for a file settled outside the app.
     let rechecks = use_signal(|| 0u32);
     // Anything a fix or a retry changes, so the conflict list is read again.
@@ -147,6 +149,7 @@ pub fn DetailPane(props: DetailPaneProps) -> Element {
                     stamp,
                     on_left: move |left: Vec<String>| unresolved.set(left),
                     on_phase: move |now: Phase| phase.set(now),
+                    reopen,
                 }
             }
 

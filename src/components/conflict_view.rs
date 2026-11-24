@@ -31,6 +31,11 @@ pub struct ConflictViewProps {
     /// panel around it shows and hides.
     #[props(default)]
     pub on_phase: Option<EventHandler<Phase>>,
+    /// Set when finishing was refused over the resolution itself: the
+    /// resolved files come back with Start over, so a side can be picked
+    /// again, instead of the settled summary with nothing to change.
+    #[props(default)]
+    pub reopen: bool,
 }
 
 /// Where resolving a stuck merge stands. The panel is one of these at a
@@ -149,7 +154,7 @@ pub fn ConflictView(props: ConflictViewProps) -> Element {
             report.call(phase);
         }
     }));
-    if phase == Phase::Resolved {
+    if phase == Phase::Resolved && !props.reopen {
         // Nothing left to pick: no files, no start-over, just where it stands.
         // The way on is the step's one button below.
         let finish = state()
