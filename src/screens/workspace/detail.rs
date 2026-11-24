@@ -192,7 +192,14 @@ pub(super) fn step_detail(
                         // Bringing the base in that stopped on conflicts is not a
                         // dead end but the next step: the step says so, and
                         // offers to finish or abandon the merge it started.
-                        let merging = retry_graph.get(&node).is_some_and(|n| n.step == Step::Merge);
+                        // Check status offers the same "Bring the base in" as
+                        // Merge does, so it must hand over to Finish the same
+                        // way: left out, a merge resolved here kept the old
+                        // "conflicts with main" under "Nothing is left to
+                        // resolve", with no Finish to click.
+                        let merging = retry_graph
+                            .get(&node)
+                            .is_some_and(|n| matches!(n.step, Step::Merge | Step::PrStatus));
                         // Git mid-merge is the truth here, not the output: run
                         // again during the merge, it prints no conflict lines.
                         // Changelogs first: both sides adding notes is the

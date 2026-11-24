@@ -17,6 +17,16 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Resolving a pull request's conflicts from the Check status step no longer
+  leaves the old "conflicts with main" message under "Nothing is left to
+  resolve". Once Bring main in stops on conflicts, the step now offers
+  Finish the merge, as Merge does, which commits, pushes and checks the pull
+  request again.
+
 ## [0.1.196] - 2026-11-24
 
 ### Changed
