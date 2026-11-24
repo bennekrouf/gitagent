@@ -999,3 +999,138 @@ fn closing_from_the_card_runs_each_forges_own_command() {
     assert_eq!(args[args.len() - 2..], scope[..]);
     assert!(close_command(&Forge::None, &[], "243", false).is_none());
 }
+
+#[test]
+fn a_completed_azure_pull_request_has_nothing_to_review() {
+    let pr = serde_json::json!({
+        "pullRequestId": 42,
+        "status": "completed",
+        "targetRefName": "refs/heads/develop",
+        "sourceRefName": "refs/heads/feature",
+    });
+    let reason = azure_not_active(&pr, "feature").expect("a merged PR is not reviewed");
+    assert!(reason.contains("already merged"), "{reason}");
+    assert!(reason.contains("develop"), "{reason}");
+
+    let abandoned = serde_json::json!({ "pullRequestId": 7, "status": "abandoned" });
+    assert!(azure_not_active(&abandoned, "x")
+        .unwrap()
+        .contains("abandoned"));
+
+    let active = serde_json::json!({ "pullRequestId": 1, "status": "active" });
+    assert!(azure_not_active(&active, "x").is_none());
+}
+
+#[test]
+fn the_azure_base_is_the_pull_requests_target_never_a_guess() {
+    let pr = serde_json::json!({ "targetRefName": "refs/heads/develop" });
+    assert_eq!(azure_ref(&pr, "targetRefName").as_deref(), Some("develop"));
+    assert_eq!(azure_ref(&serde_json::json!({}), "targetRefName"), None);
+}
+
+#[test]
+fn a_deleted_head_branch_is_recognised_in_the_fetch_error() {
+    let e = "could not fetch develop and feature from origin: fatal: couldn't find remote ref \
+             feature\nwhile running: `git fetch origin develop feature`";
+    assert!(head_gone(e, "feature"));
+    assert!(!head_gone(e, "other"));
+    assert!(!head_gone("fatal: unable to access", "feature"));
+}
+
+#[test]
+fn merge_tree_conflicts_are_read_once_each() {
+    let out = "4b825dc\nuv.lock\ntests/test_server.py\n\nAuto-merging uv.lock\n\
+               CONFLICT (content): Merge conflict in uv.lock\n\
+               CONFLICT (add/add): Merge conflict in version.py\n\
+               CONFLICT (add/add): Merge conflict in version.py\n";
+    assert_eq!(merge_tree_conflicts(out), vec!["uv.lock", "version.py"]);
+    assert!(merge_tree_conflicts("4b825dc\n").is_empty());
+}
+
+#[test]
+fn an_azure_pull_request_left_active_is_not_taken_as_merged() {
+    let pr = |v: serde_json::Value| v;
+    assert_eq!(
+        azure_completion(&pr(serde_json::json!({ "status": "completed" }))),
+        AzureCompletion::Done
+    );
+    // What Azure answers to `--status completed` on a conflicting pull
+    // request: no error, still active.
+    assert_eq!(
+        azure_completion(&pr(serde_json::json!({
+            "status": "active", "mergeStatus": "conflicts"
+        }))),
+        AzureCompletion::Conflicts
+    );
+    assert_eq!(
+        azure_completion(&pr(serde_json::json!({
+            "status": "active", "mergeStatus": "queued"
+        }))),
+        AzureCompletion::Waiting
+    );
+    assert_eq!(
+        azure_completion(&pr(serde_json::json!({
+            "status": "active", "mergeStatus": "rejectedByPolicy"
+        }))),
+        AzureCompletion::Refused
+    );
+    assert_eq!(
+        azure_completion(&pr(serde_json::json!({
+            "status": "active", "mergeStatus": "succeeded",
+            "mergeFailureMessage": "Policy: required reviewers"
+        }))),
+        AzureCompletion::Refused
+    );
+}
+
+#[test]
+fn an_azure_merge_azure_declined_says_so_rather_than_merged() {
+    let pr = serde_json::json!({
+        "status": "active", "mergeStatus": "succeeded",
+        "mergeFailureMessage": "Policy: required reviewers"
+    });
+    let failure = azure_not_completed("292", &pr);
+    assert!(failure.message.contains("did not complete #292"));
+    assert!(failure.message.contains("still active"));
+    assert!(failure.message.contains("Policy: required reviewers"));
+}
+
+#[test]
+fn an_azure_conflict_brings_the_base_in_without_gh() {
+    let scope: Vec<String> = [
+        "--organization",
+        "https://dev.azure.com/o",
+        "--detect",
+        "false",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let failure = azure_conflict_guide(
+        "292",
+        "develop",
+        "feat/x",
+        &scope,
+        "merge status: conflicts",
+    );
+    assert!(failure.message.contains("Azure DevOps cannot merge it"));
+    assert!(!failure.message.contains("GitHub"));
+    let bring_in = &failure.remedies[0];
+    assert_eq!(bring_in.program, "sh");
+    let script = &bring_in.args[1];
+    assert!(!script.contains("gh pr checkout"));
+    assert!(script.contains(r#"git checkout "$3""#));
+    assert!(script.contains("--ff-only"));
+    assert_eq!(&bring_in.args[3..], ["292", "develop", "feat/x"]);
+    let abandon = &failure.remedies[1];
+    assert_eq!(abandon.program, "az");
+    assert!(abandon.args.iter().any(|a| a == "abandoned"));
+    assert!(abandon.args.iter().any(|a| a == "https://dev.azure.com/o"));
+}
+
+#[test]
+fn the_wait_after_a_push_asks_azure_on_an_azure_remote() {
+    assert!(WAIT_FOR_FORGE.contains("dev.azure.com"));
+    assert!(WAIT_FOR_FORGE.contains("az repos pr show"));
+    assert!(WAIT_FOR_FORGE.contains("gh pr view"));
+}

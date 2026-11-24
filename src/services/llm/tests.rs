@@ -371,14 +371,17 @@ fn a_commit_message_is_written_from_a_third_of_the_diff_a_review_gets() {
 
 #[test]
 fn only_api0_is_told_what_a_call_does() {
-    let api0 = client_app(remote("api0"), Some("chat"));
+    let api0 = client_app(remote("api0"), Some("chat"), Some("draft_commit"));
+    assert_eq!(api0["X-Feature"], "draft_commit");
     assert_eq!(api0["X-Task"], "chat");
     assert_eq!(api0["X-Client-App"], crate::services::licence::PRODUCT);
     assert!(
-        client_app(remote("api0"), None).get("X-Task").is_none(),
+        client_app(remote("api0"), None, None)
+            .get("X-Task")
+            .is_none(),
         "no task: api0 picks GitAgent's default"
     );
-    assert!(client_app(remote("openai"), Some("chat")).is_empty());
+    assert!(client_app(remote("openai"), Some("chat"), Some("draft_commit")).is_empty());
 }
 
 #[test]

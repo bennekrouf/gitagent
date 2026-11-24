@@ -116,15 +116,23 @@ pub(super) async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
                 (pr, branch.clone())
             };
 
+            // `pr show` answers for a pull request in any state. A completed
+            // or abandoned one has nothing to review, and its source branch
+            // is usually deleted, which used to fail at "Fetch the diff".
+            if let Some(reason) = azure_not_active(&pr, &head) {
+                return Ok(StepOutcome::nothing(reason));
+            }
+
             let number = pr["pullRequestId"].as_i64().unwrap_or_default().to_string();
             let title = pr["title"].as_str().unwrap_or_default().to_string();
-            let base = pr["targetRefName"]
-                .as_str()
-                .unwrap_or("refs/heads/main")
-                .trim_start_matches("refs/heads/")
-                .to_string();
-            let web = pr["repository"]["webUrl"].as_str().unwrap_or_default();
-            let url = format!("{web}/pullrequest/{number}");
+            // Never guess the base: diffing against the default branch when
+            // the pull request targets another one reviews the wrong change.
+            let base = azure_ref(&pr, "targetRefName").ok_or_else(|| {
+                StepFailure::from(format!(
+                    "Azure DevOps did not say which branch pull request !{number} targets."
+                ))
+            })?;
+            let url = forge::azure_pr_page(repo, &pr).await;
 
             Ok(StepOutcome {
                 summary: format!("!{number} {title}"),
@@ -146,6 +154,42 @@ pub(super) async fn find_pr(repo: &str, state: &RunState) -> Result<StepOutcome,
             other.label()
         ))),
     }
+}
+
+/// A branch name out of an Azure DevOps ref field (`refs/heads/x` → `x`).
+pub(super) fn azure_ref(pr: &serde_json::Value, field: &str) -> Option<String> {
+    pr[field]
+        .as_str()
+        .map(|r| r.trim_start_matches("refs/heads/").to_string())
+        .filter(|r| !r.is_empty())
+}
+
+/// Why there is nothing to review on an Azure DevOps pull request that is no
+/// longer active (`completed` or `abandoned`), or `None` while it is open.
+pub(super) fn azure_not_active(pr: &serde_json::Value, head: &str) -> Option<String> {
+    let status = pr["status"].as_str()?;
+    if status.eq_ignore_ascii_case("active") {
+        return None;
+    }
+    let number = pr["pullRequestId"].as_i64().unwrap_or_default();
+    let word = if status.eq_ignore_ascii_case("completed") {
+        "already merged"
+    } else {
+        status
+    };
+    let base = azure_ref(pr, "targetRefName").unwrap_or_else(|| "the base branch".into());
+    Some(format!(
+        "Pull request !{number} for `{head}` is {word}. Nothing to review — switch to \
+         {base} and pull."
+    ))
+}
+
+/// A fetch that failed because the pull request's branch is gone from the
+/// remote: the usual sign it was merged and its branch deleted after this run
+/// looked it up.
+pub(super) fn head_gone(error: &str, head: &str) -> bool {
+    error.contains(&format!("couldn't find remote ref {head}"))
+        || error.contains(&format!("couldn't find remote ref refs/heads/{head}"))
 }
 
 /// Boils a GitHub Actions job log down to the failure.
@@ -223,6 +267,9 @@ pub(super) fn distil_log(raw: &str, context: usize) -> String {
 
 pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let forge = Forge::from_key(state.artifact("forge"));
+    if forge == Forge::AzureDevOps {
+        return azure_pr_status(repo, state).await;
+    }
     if forge != Forge::GitHub {
         // Azure policy evaluation is a different shape entirely; saying so beats
         // reporting a green build that was never checked.
@@ -352,6 +399,128 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         items: vec![],
         remedies: vec![],
     })
+}
+
+/// Pull request `number` on Azure DevOps as it is now.
+pub(super) async fn azure_pr_now(repo: &str, number: &str) -> Result<serde_json::Value, String> {
+    let scope = forge::azure_scope(repo, Scope::Organization).await;
+    let mut args = vec!["repos", "pr", "show", "--id", number, "--output", "json"];
+    args.extend(scope.iter().map(String::as_str));
+    let out = git::run(repo, "az", &args).await?;
+    serde_json::from_str(&out).map_err(|e| format!("could not read az output: {e}"))
+}
+
+/// Azure's `mergeStatus`: `succeeded`, `conflicts`, `queued`, `failure`,
+/// `rejectedByPolicy`, `notSet`. Empty when the reply has none.
+pub(super) fn azure_merge_status(pr: &serde_json::Value) -> String {
+    pr["mergeStatus"].as_str().unwrap_or_default().to_string()
+}
+
+/// The files `base` and `head` both changed in ways git cannot merge, from
+/// a merge done in memory: nothing in the checkout is touched. Empty when it
+/// merges cleanly or cannot be worked out here.
+pub(super) async fn conflicting_files(repo: &str, base: &str, head: &str) -> Vec<String> {
+    let _ = git::fetch(repo, &["origin", base, head]).await;
+    let (theirs, ours) = (format!("origin/{base}"), format!("origin/{head}"));
+    // A clash exits 1 with the report on stdout, which `git::run` hands back
+    // as the error; either way the CONFLICT lines are what matter.
+    let out = match git::run(
+        repo,
+        "git",
+        &["merge-tree", "--write-tree", "--name-only", &theirs, &ours],
+    )
+    .await
+    {
+        Ok(out) | Err(out) => out,
+    };
+    merge_tree_conflicts(&out)
+}
+
+/// The paths out of `git merge-tree`'s `CONFLICT (…): Merge conflict in <path>`
+/// lines, each once.
+pub(super) fn merge_tree_conflicts(output: &str) -> Vec<String> {
+    let mut files: Vec<String> = output
+        .lines()
+        .filter(|l| l.starts_with("CONFLICT"))
+        .filter_map(|l| {
+            l.split_once("Merge conflict in ")
+                .map(|(_, f)| f.trim().to_string())
+        })
+        .collect();
+    files.dedup();
+    files
+}
+
+/// Azure DevOps' answer to "can this be merged": its policies are not read
+/// yet, but its merge status is, and a pull request that conflicts with its
+/// base stops here — as on GitHub — rather than at a merge Azure quietly
+/// declines, which reported "merged" and sent the run back to the start.
+async fn azure_pr_status(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
+    let number = state.artifact("pr_number");
+    let not_read = |why: &str| StepOutcome {
+        summary: "policies not read".into(),
+        log: format!(
+            "{why}Branch policies are not read from Azure DevOps yet. Review them in the \
+             browser before merging."
+        ),
+        artifacts: vec![
+            (
+                "checks_summary".into(),
+                "unknown — not read on this forge".into(),
+            ),
+            ("checks_state".into(), "unknown".into()),
+            ("merge_state".into(), "unknown".into()),
+        ],
+        nothing_to_do: false,
+        items: vec![],
+        remedies: vec![],
+    };
+    let pr = match azure_pr_now(repo, number).await {
+        Ok(pr) => pr,
+        // Not being able to ask is no reason to stop the review; the merge
+        // asks again and checks what Azure did.
+        Err(e) => return Ok(not_read(&format!("Could not read !{number}: {e}\n\n"))),
+    };
+    let status = azure_merge_status(&pr);
+    if status.eq_ignore_ascii_case("conflicts") {
+        let (base, head) = (state.artifact("pr_base"), state.artifact("pr_head"));
+        return Err(azure_conflicts(repo, number, base, head).await);
+    }
+    let mut outcome = not_read(&format!("merge status: {}\n\n", or_unknown(&status)));
+    outcome.summary = format!("policies not read · merge {}", or_unknown(&status));
+    outcome.artifacts.retain(|(k, _)| k != "merge_state");
+    outcome
+        .artifacts
+        .push(("merge_state".into(), or_unknown(&status).to_string()));
+    Ok(outcome)
+}
+
+fn or_unknown(status: &str) -> &str {
+    if status.is_empty() {
+        "unknown"
+    } else {
+        status
+    }
+}
+
+/// The stop for an Azure pull request that conflicts with its base, naming
+/// the files when git can tell which.
+pub(super) async fn azure_conflicts(
+    repo: &str,
+    number: &str,
+    base: &str,
+    head: &str,
+) -> StepFailure {
+    let files = conflicting_files(repo, base, head).await;
+    let mut detail = "merge status: conflicts".to_string();
+    if !files.is_empty() {
+        detail.push_str("\n\nConflicting files:\n");
+        for f in &files {
+            detail.push_str(&format!("  {f}\n"));
+        }
+    }
+    let scope = forge::azure_scope(repo, Scope::Organization).await;
+    azure_conflict_guide(number, base, head, &scope, detail.trim_end())
 }
 
 /// Each check on the pull request as a line, the failing ones with their
@@ -521,7 +690,19 @@ pub async fn pull_request_diff(
 pub(super) async fn pr_diff(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let base = state.artifact("pr_base");
     let head = state.artifact("pr_head");
-    let (stat, diff) = pull_request_diff(repo, base, head).await?;
+    let (stat, diff) = match pull_request_diff(repo, base, head).await {
+        Ok(found) => found,
+        Err(e) if head_gone(&e, head) => {
+            let number = state.artifact("pr_number");
+            return Err(StepFailure::from(format!(
+                "The branch `{head}` of pull request {number} no longer exists on origin, so \
+                 there is no diff to review. It was most likely merged and its branch \
+                 deleted: check the pull request in the browser. If it is merged, there is \
+                 nothing left to do — switch to {base} and pull.\n\n{e}"
+            )));
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     if diff.trim().is_empty() {
         let ahead = git::run(

@@ -495,18 +495,32 @@ async fn analyse(
     })
 }
 
-/// After a push, GitHub works out mergeability a few seconds later and can
+/// After a push, the forge works out mergeability a few seconds later and can
 /// still report the old conflict meanwhile — merging again straight away would
-/// fail on stale news. `$1` is the pull request number.
-const WAIT_FOR_GITHUB: &str = r#"for i in 1 2 3 4 5 6 7 8 9 10; do
+/// fail on stale news. `$1` is the pull request number. GitHub is asked with
+/// `gh`, Azure DevOps (told apart by `origin`) with `az`, whose
+/// `succeeded` / `conflicts` are mapped onto GitHub's words.
+const WAIT_FOR_FORGE: &str = r#"case "$(git remote get-url origin 2>/dev/null)" in
+  *dev.azure.com*|*visualstudio.com*) forge="Azure DevOps" ;;
+  *) forge=GitHub ;;
+esac
+for i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 3
-  state=$(gh pr view "$1" --json mergeable -q .mergeable)
+  if [ "$forge" = GitHub ]; then
+    state=$(gh pr view "$1" --json mergeable -q .mergeable)
+  else
+    case "$(az repos pr show --id "$1" --query mergeStatus -o tsv 2>/dev/null)" in
+      succeeded) state=MERGEABLE ;;
+      conflicts) state=CONFLICTING ;;
+      *) state= ;;
+    esac
+  fi
   [ "$state" = MERGEABLE ] && exit 0
   if [ "$state" = CONFLICTING ] && [ "$i" -gt 3 ]; then
-    echo "Pushed, but GitHub still reports #$1 as conflicting."; exit 1
+    echo "Pushed, but $forge still reports #$1 as conflicting."; exit 1
   fi
 done
-echo "Pushed. GitHub has not finished rechecking #$1; merging anyway.""#;
+echo "Pushed. $forge has not finished rechecking #$1; merging anyway.""#;
 
 /// The part of the Finish script that refuses a resolution which dropped the
 /// pull request's change to a file. `$2` is the base branch, `$1` the pull

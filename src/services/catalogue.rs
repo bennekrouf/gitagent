@@ -499,6 +499,12 @@ pub const CATALOGUE: &[StepInfo] = &[
     },
 ];
 
+/// The flow-file key of a step, `None` only for a variant the catalogue
+/// forgot (which the exhaustiveness test rules out).
+pub fn key_of(step: Step) -> Option<&'static str> {
+    CATALOGUE.iter().find(|i| i.step == step).map(|i| i.key)
+}
+
 /// Used by the exhaustiveness test to prove every variant is described.
 #[cfg(test)]
 pub fn info(step: Step) -> &'static StepInfo {

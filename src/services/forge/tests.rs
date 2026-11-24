@@ -485,3 +485,18 @@ fn azures_already_exists_error_is_recognised() {
         "TF401179: An active pull request for the source and target branch already exists."
     ));
 }
+
+#[test]
+fn an_azure_pull_request_link_is_built_from_an_ssh_remote_when_az_gives_none() {
+    let remote = "git@ssh.dev.azure.com:v3/Org/My%20Project/my-repo";
+    assert_eq!(
+        azure_pr_link(remote, "", "292"),
+        "https://dev.azure.com/Org/My%20Project/_git/my-repo/pullrequest/292"
+    );
+    // az's own address wins when it gives one.
+    assert_eq!(
+        azure_pr_link(remote, "https://dev.azure.com/o/p/_git/r/", "7"),
+        "https://dev.azure.com/o/p/_git/r/pullrequest/7"
+    );
+    assert_eq!(azure_pr_link("git@github.com:o/r.git", "", "7"), "");
+}

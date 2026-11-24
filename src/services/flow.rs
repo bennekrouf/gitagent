@@ -463,6 +463,7 @@ pub async fn execute(
             Step::DraftCommit | Step::DraftPr => Some("chat"),
             _ => None,
         },
+        feature: super::catalogue::key_of(node.step),
         on_line,
     };
     let asker = &mut asker;

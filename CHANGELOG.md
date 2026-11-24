@@ -17,6 +17,26 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Review → Merge on an Azure DevOps pull request that was already merged or
+  abandoned now stops at "Find the pull request" with "nothing to review",
+  instead of failing at "Fetch the diff" with a raw git error. The diff is also
+  always taken against the branch the pull request targets, never the default
+  branch, and a pull request whose branch was deleted on the remote says so in
+  plain words.
+- Review → Merge on an Azure DevOps pull request that conflicts with its base
+  no longer goes round in circles. Azure leaves such a pull request open
+  without an error, and GitAgent reported it merged, went back to the base
+  branch, and offered the same merge again. The CI step now reads Azure's
+  merge status and stops on a conflict, naming the files, with Bring the base
+  in and Finish the merge as on GitHub. The merge step also checks that Azure
+  really completed the pull request, and says when a policy kept it open.
+- Azure DevOps pull requests in the sidebar show their size instead of
+  "0 files +0 −0", and link to their page instead of a bare `/pullrequest/N`.
+
 ## [0.1.195] - 2026-11-22
 
 ### Added

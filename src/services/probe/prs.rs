@@ -26,6 +26,85 @@ pub(super) fn github_pr_from_json(value: &serde_json::Value) -> Option<PrBrief> 
     })
 }
 
+/// One `az repos pr list` object into a `PrBrief`. Azure's list gives no
+/// size and no web address, which left every Azure card at "0 files +0 −0"
+/// with a link to `/pullrequest/N`: the size is read from git, against the
+/// refs already fetched (nothing is fetched for it, so it is as fresh as the
+/// last fetch, and 0 when the refs are not here), the link from `origin`.
+pub(super) async fn azure_brief(
+    repo: &str,
+    remote: &str,
+    pr: &serde_json::Value,
+) -> Option<PrBrief> {
+    let number = pr["pullRequestId"].as_i64()?.to_string();
+    let web = pr["repository"]["webUrl"].as_str().unwrap_or_default();
+    let base = azure_branch(&pr["targetRefName"]);
+    let head = azure_branch(&pr["sourceRefName"]);
+    let (files, additions, deletions) = if base.is_empty() || head.is_empty() {
+        (0, 0, 0)
+    } else {
+        let range = format!("origin/{base}...origin/{head}");
+        git::run(repo, "git", &["diff", "--shortstat", &range])
+            .await
+            .map(|out| shortstat(&out))
+            .unwrap_or_default()
+    };
+    let commits = if base.is_empty() || head.is_empty() {
+        0
+    } else {
+        git::run(
+            repo,
+            "git",
+            &[
+                "rev-list",
+                "--count",
+                &format!("origin/{base}..origin/{head}"),
+            ],
+        )
+        .await
+        .ok()
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0)
+    };
+    Some(PrBrief {
+        title: pr["title"].as_str().unwrap_or_default().to_string(),
+        url: forge::azure_pr_link(remote, web, &number),
+        number,
+        // Azure policy evaluation is a different shape; saying we did
+        // not look beats reporting a green build nobody checked.
+        checks: Checks::Unknown,
+        files,
+        additions,
+        deletions,
+        commits,
+        base,
+        head,
+        failed: vec![],
+    })
+}
+
+/// `(files, insertions, deletions)` out of `git diff --shortstat`
+/// (` 3 files changed, 45 insertions(+), 3 deletions(-)`; either count is
+/// left out when it is zero).
+pub(crate) fn shortstat(out: &str) -> (usize, usize, usize) {
+    let (mut files, mut add, mut del) = (0, 0, 0);
+    for part in out.trim().split(',') {
+        let mut words = part.split_whitespace();
+        let (Some(n), Some(what)) = (words.next(), words.next()) else {
+            continue;
+        };
+        let Ok(n) = n.parse::<usize>() else { continue };
+        if what.starts_with("file") {
+            files = n;
+        } else if what.starts_with("insertion") {
+            add = n;
+        } else if what.starts_with("deletion") {
+            del = n;
+        }
+    }
+    (files, add, del)
+}
+
 /// Once GitHub says the hourly GraphQL budget is spent, every further query
 /// fails the same way and keeps the budget at zero — for this app and every
 /// other `gh` use on the account. So the first such answer stops the checks
@@ -104,30 +183,16 @@ pub(super) async fn list_open_prs(repo: &str, forge: &Forge) -> Result<Vec<PrBri
             let out = git::run(repo, "az", &args).await?;
             let list: serde_json::Value =
                 serde_json::from_str(&out).map_err(|e| format!("could not read az output: {e}"))?;
-            Ok(list
-                .as_array()
-                .map(|prs| {
-                    prs.iter()
-                        .filter_map(|pr| {
-                            let number = pr["pullRequestId"].as_i64()?.to_string();
-                            let web = pr["repository"]["webUrl"].as_str().unwrap_or_default();
-                            Some(PrBrief {
-                                number: number.clone(),
-                                title: pr["title"].as_str().unwrap_or_default().to_string(),
-                                url: format!("{web}/pullrequest/{number}"),
-                                checks: Checks::Unknown,
-                                files: 0,
-                                additions: 0,
-                                deletions: 0,
-                                commits: 0,
-                                base: azure_branch(&pr["targetRefName"]),
-                                head: azure_branch(&pr["sourceRefName"]),
-                                failed: vec![],
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default())
+            let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
+                .await
+                .unwrap_or_default();
+            let mut briefs = vec![];
+            for pr in list.as_array().into_iter().flatten() {
+                if let Some(brief) = azure_brief(repo, &remote, pr).await {
+                    briefs.push(brief);
+                }
+            }
+            Ok(briefs)
         }
         _ => Ok(vec![]),
     }
@@ -220,23 +285,10 @@ pub(super) async fn open_pr(repo: &str, forge: &Forge) -> Option<PrBrief> {
             let out = git::run(repo, "az", &args).await.ok()?;
             let list: serde_json::Value = serde_json::from_str(&out).ok()?;
             let pr = list.as_array()?.first()?;
-            let number = pr["pullRequestId"].as_i64()?.to_string();
-            let web = pr["repository"]["webUrl"].as_str().unwrap_or_default();
-            Some(PrBrief {
-                number: number.clone(),
-                title: pr["title"].as_str().unwrap_or_default().to_string(),
-                url: format!("{web}/pullrequest/{number}"),
-                // Azure policy evaluation is a different shape; saying we did
-                // not look beats reporting a green build nobody checked.
-                checks: Checks::Unknown,
-                files: 0,
-                additions: 0,
-                deletions: 0,
-                commits: 0,
-                base: azure_branch(&pr["targetRefName"]),
-                head: azure_branch(&pr["sourceRefName"]),
-                failed: vec![],
-            })
+            let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
+                .await
+                .unwrap_or_default();
+            azure_brief(repo, &remote, pr).await
         }
         _ => None,
     }

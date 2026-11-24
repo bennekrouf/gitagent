@@ -87,7 +87,7 @@ git diff --name-only --diff-filter=U | while IFS= read -r f; do git add -- "$f";
 {KEEPS_THE_CHANGE}
 {STILL_BUILDS}
 git commit --no-edit && git push || exit 1
-{WAIT_FOR_GITHUB}"#
+{WAIT_FOR_FORGE}"#
     );
     let finish = Remedy::new(
         &format!("Finish the merge, push, and merge #{number} again"),
@@ -519,7 +519,7 @@ pub(super) fn conflict_guide(number: &str, base: &str, message: &str) -> StepFai
     // would fail on stale news. So the script waits for a fresh answer.
     let script = format!(
         r#"gh pr checkout "$1" && git fetch origin "$2" && git merge --no-edit "origin/$2" && git push || exit 1
-{WAIT_FOR_GITHUB}"#
+{WAIT_FOR_FORGE}"#
     );
     let bring_in = Remedy::new(
         &format!("Bring {base} in — merge it into #{number}'s branch, push, and merge again"),
@@ -552,6 +552,153 @@ pub(super) fn conflict_guide(number: &str, base: &str, message: &str) -> StepFai
     }
 }
 
+/// The same for Azure DevOps: there is no `gh pr checkout`, so the branch is
+/// checked out by name, brought up to date with origin first (never reset:
+/// local commits not pushed yet stop it instead of being lost), and Abandon
+/// abandons the pull request, as Azure calls closing one. `az_scope` is what
+/// `forge::azure_scope` gave for `update`.
+pub(super) fn azure_conflict_guide(
+    number: &str,
+    base: &str,
+    head: &str,
+    az_scope: &[String],
+    message: &str,
+) -> StepFailure {
+    let guide = format!(
+        "#{number} conflicts with {base}: Azure DevOps cannot merge it as it stands. \
+         Nothing has been merged or changed.\n\n\
+         To keep the change, Bring {base} in (below). It switches to {head} and merges \
+         the latest {base} into it.\n\
+         - If that merges cleanly, it pushes the branch, waits for Azure DevOps to \
+           recheck #{number}, and tries the merge again.\n\
+         - If both sides changed the same lines, git stops and marks them in the files \
+           with <<<<<<< and >>>>>>>, and nothing is pushed. They open here to resolve: \
+           Resolve with AI proposes a merge of each for you to check, or pick sides \
+           yourself. Then Finish the merge: it commits, pushes, and merges again.\n\n\
+         Otherwise, abandon #{number} without merging.\n\n{message}"
+    );
+    let script = format!(
+        r#"git fetch origin "$2" "$3" && git checkout "$3" && git merge --ff-only "origin/$3" && git merge --no-edit "origin/$2" && git push origin "HEAD:refs/heads/$3" || exit 1
+{WAIT_FOR_FORGE}"#
+    );
+    let bring_in = Remedy::new(
+        &format!("Bring {base} in — merge it into {head}, push, and merge again"),
+        "sh",
+        &["-c", &script, "sh", number, base, head],
+    );
+    let bring_in = Remedy {
+        display: format!(
+            "git fetch origin {base} {head} && git checkout {head} && git merge --ff-only \
+             origin/{head} && git merge origin/{base} && git push   (then waits for Azure \
+             DevOps to recheck #{number})"
+        ),
+        ..bring_in
+    };
+    let mut remedies = vec![bring_in];
+    if let Some((program, args)) = close_command(&Forge::AzureDevOps, az_scope, number, false) {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        remedies.push(Remedy::terminal(
+            &format!("Abandon — close #{number} without merging"),
+            program,
+            &args,
+        ));
+    }
+    StepFailure {
+        message: guide,
+        remedies,
+    }
+}
+
+/// What Azure DevOps made of `az repos pr update --status completed`. The
+/// command succeeds whether or not the pull request was completed: with
+/// conflicts, or a policy in the way, Azure leaves it active and says
+/// nothing, which used to be reported as "merged #N" and sent the run back
+/// to the base with the pull request still open. A merge Azure is still
+/// working on is given a few seconds before it counts as not done.
+async fn azure_completed(
+    repo: &str,
+    number: &str,
+    base: &str,
+    head: &str,
+) -> Result<(), StepFailure> {
+    let mut last = serde_json::Value::Null;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let Ok(pr) = azure_pr_now(repo, number).await else {
+            continue;
+        };
+        match azure_completion(&pr) {
+            AzureCompletion::Done => return Ok(()),
+            AzureCompletion::Conflicts => {
+                return Err(azure_conflicts(repo, number, base, head).await)
+            }
+            AzureCompletion::Waiting => last = pr,
+            AzureCompletion::Refused => {
+                last = pr;
+                break;
+            }
+        }
+    }
+    Err(azure_not_completed(number, &last))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum AzureCompletion {
+    Done,
+    Conflicts,
+    /// Still active, and Azure is still merging or about to.
+    Waiting,
+    /// Still active, and Azure has said why not.
+    Refused,
+}
+
+pub(super) fn azure_completion(pr: &serde_json::Value) -> AzureCompletion {
+    let status = pr["status"].as_str().unwrap_or_default();
+    if status.eq_ignore_ascii_case("completed") {
+        return AzureCompletion::Done;
+    }
+    let merge = azure_merge_status(pr);
+    if merge.eq_ignore_ascii_case("conflicts") {
+        return AzureCompletion::Conflicts;
+    }
+    let failed = !pr["mergeFailureMessage"]
+        .as_str()
+        .unwrap_or_default()
+        .is_empty()
+        || matches!(
+            merge.to_ascii_lowercase().as_str(),
+            "failure" | "rejectedbypolicy"
+        )
+        || status.eq_ignore_ascii_case("abandoned");
+    if failed {
+        AzureCompletion::Refused
+    } else {
+        AzureCompletion::Waiting
+    }
+}
+
+/// The failure for a pull request Azure left open after being asked to
+/// complete it, with what it said, if anything.
+pub(super) fn azure_not_completed(number: &str, pr: &serde_json::Value) -> StepFailure {
+    let status = pr["status"].as_str().unwrap_or("unknown");
+    let merge = azure_merge_status(pr);
+    let why = pr["mergeFailureMessage"].as_str().unwrap_or_default();
+    let mut message = format!(
+        "Azure DevOps did not complete #{number}: it is still {status}, so nothing was merged.\n\n\
+         Usually a branch policy is in the way (required reviewers, a build that has not \
+         passed, linked work items, comments to resolve). Open #{number} in the browser to \
+         see which, then run Review → Merge again.\n\n\
+         status:       {status}\nmerge status: {}",
+        if merge.is_empty() { "unknown" } else { &merge }
+    );
+    if !why.is_empty() {
+        message.push_str(&format!("\nAzure says:   {why}"));
+    }
+    StepFailure::from(message)
+}
+
 pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, StepFailure> {
     let forge = Forge::from_key(state.artifact("forge"));
     let number = state.artifact("pr_number").to_string();
@@ -559,7 +706,7 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
     // conflicts — is what the step is waiting on, not edits to commit: run
     // again during it, or after a restart, it must offer to finish it, not
     // report its staged files as uncommitted with no way forward.
-    if forge == Forge::GitHub {
+    if matches!(forge, Forge::GitHub | Forge::AzureDevOps) {
         if let Some(open) = merge_in_progress(repo, &number, state.artifact("pr_base")).await {
             return Err(open);
         }
@@ -599,6 +746,14 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
             },
         },
         Forge::AzureDevOps => {
+            let (base, head) = (state.artifact("pr_base"), state.artifact("pr_head"));
+            // Asked again rather than taken from the checks step: "Bring the
+            // base in" retries this step alone, after a push that changed it.
+            if let Ok(pr) = azure_pr_now(repo, &number).await {
+                if azure_merge_status(&pr).eq_ignore_ascii_case("conflicts") {
+                    return Err(azure_conflicts(repo, &number, base, head).await);
+                }
+            }
             let scope = forge::azure_scope(repo, Scope::Organization).await;
             let mut args = vec![
                 "repos",
@@ -614,7 +769,10 @@ pub(super) async fn merge(repo: &str, state: &RunState) -> Result<StepOutcome, S
                 "none",
             ];
             args.extend(scope.iter().map(String::as_str));
-            git::run(repo, "az", &args).await?
+            let out = git::run(repo, "az", &args).await?;
+            git::forget_prs(repo);
+            azure_completed(repo, &number, base, head).await?;
+            out
         }
         other => {
             return Err(StepFailure::from(format!(
@@ -761,7 +919,7 @@ git fetch origin "$2" || exit 1
 if [ "$(git rev-parse "origin/$2")" != "$5" ]; then echo "$2 moved since this was checked. Run Review → Merge again."; exit 1; fi
 git merge --no-edit "origin/$2" || exit 1
 cp "$3" "$4" && git add -- "$4" && git commit --amend --no-edit && git push || exit 1
-{WAIT_FOR_GITHUB}"#
+{WAIT_FOR_FORGE}"#
     );
     let fix = Remedy::new(
         &format!("Move the notes back under [Unreleased], push, and merge #{number} again"),

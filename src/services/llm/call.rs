@@ -226,7 +226,7 @@ pub(super) async fn call_openai_compatible(
         let resp = client(REMOTE_TIMEOUT)?
             .post(&url)
             .bearer_auth(key)
-            .headers(client_app(preset, asker.task))
+            .headers(client_app(preset, asker.task, asker.feature))
             .json(&body)
             .send()
             .await
@@ -290,7 +290,7 @@ pub(super) async fn probe_api0(cfg: &LlmConfig, key: &str) -> Result<String, Str
     let resp = client(PROBE_TIMEOUT)?
         .get(&url)
         .bearer_auth(key)
-        .headers(client_app(cfg.preset(), None))
+        .headers(client_app(cfg.preset(), None, None))
         .send()
         .await
         .map_err(|e| network_error("unreachable", &e))?;
