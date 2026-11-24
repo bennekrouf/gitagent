@@ -17,6 +17,18 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- Resolving a merge's conflicts is now one thing at a time. Once you choose
+  Resolve with AI, the step shows only the model's proposals: the error, the
+  fixes to run by hand and the All current / All incoming buttons are put
+  away, and "Pick sides myself instead" brings them back. Once every file is
+  resolved, the step shows a single Continue, which commits, pushes and
+  merges the pull request again, instead of the error, the git commands and
+  Abandon.
+
 ## [0.1.199] - 2026-11-24
 
 ### Changed
@@ -24,7 +36,8 @@ were never released.
 - Every pull request card now says where it goes, as `branch → base`. A pull
   request into another branch than the repository's base is shown in yellow
   and marked "not the base", so one opened against `main` in a repository
-  that works on `develop` stands out before you review or merge it.
+  that works on `develop` stands out before you review or merge it. The run
+  map says the same under "PR ready", even before the pull request is opened.
 - The Base button names the branch in use when none is set, as
   "Base: develop (default)" instead of "Base: auto", and the Base dialog says
   which branch that default is.

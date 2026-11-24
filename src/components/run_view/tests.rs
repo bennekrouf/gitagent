@@ -258,7 +258,9 @@ fn before_a_pull_request_exists_neither_gate_is_ticked() {
         g,
         Gates {
             pr: None,
-            checks: Checks::Unknown
+            checks: Checks::Unknown,
+            route: None,
+            off_base: false
         }
     );
 }
@@ -278,7 +280,9 @@ fn the_pull_request_the_run_opened_is_the_one_whose_checks_count() {
         g,
         Gates {
             pr: Some("#7".into()),
-            checks: Checks::Passing
+            checks: Checks::Passing,
+            route: None,
+            off_base: false
         }
     );
 }
@@ -294,7 +298,9 @@ fn a_pull_request_just_opened_is_ready_before_its_checks_are_known() {
         g,
         Gates {
             pr: Some("#12".into()),
-            checks: Checks::Unknown
+            checks: Checks::Unknown,
+            route: None,
+            off_base: false
         }
     );
 }
@@ -307,7 +313,9 @@ fn a_picked_review_names_its_pull_request() {
         g,
         Gates {
             pr: Some("#3".into()),
-            checks: Checks::Pending
+            checks: Checks::Pending,
+            route: None,
+            off_base: false
         }
     );
 }
@@ -683,4 +691,40 @@ fn the_head_names_the_merge_a_fix_goes_on_to() {
     // and a rejection still means no merge.
     let (_, text, _) = head::then_note(&state, &graph, false).unwrap();
     assert_eq!(text, "Review → Merge #145 will not follow");
+}
+
+#[test]
+fn the_gate_box_says_where_the_pull_request_goes() {
+    let mut state = RunState::default();
+    state.artifacts.insert("base".into(), "develop".into());
+    let mut pr = brief("292", "u", Checks::Passing);
+    pr.head = "feat/version".into();
+    pr.base = "develop".into();
+    let g = Gates::for_run(&commit(), &state, "292", &[pr.clone()], None).unwrap();
+    assert_eq!(g.route.as_deref(), Some("feat/version \u{2192} develop"));
+    assert!(!g.off_base);
+
+    pr.base = "main".into();
+    let g = Gates::for_run(&commit(), &state, "292", &[pr], None).unwrap();
+    assert!(g.off_base, "main is not the base");
+}
+
+#[test]
+fn before_the_pull_request_exists_the_route_is_the_one_it_will_take() {
+    let mut state = RunState::default();
+    state.artifacts.insert("base".into(), "develop".into());
+    state
+        .artifacts
+        .insert("work_branch".into(), "feat/x".into());
+    let g = Gates::for_run(&commit(), &state, "", &[], None).unwrap();
+    assert_eq!(g.route.as_deref(), Some("feat/x \u{2192} develop"));
+}
+
+#[test]
+fn a_long_route_is_cut_on_the_side_it_comes_from() {
+    use super::map_view::short_route;
+    assert_eq!(short_route("a \u{2192} main", 26), "a \u{2192} main");
+    let cut = short_route("feature/a-very-long-branch-name \u{2192} develop", 26);
+    assert!(cut.ends_with("\u{2192} develop"), "{cut}");
+    assert!(cut.chars().count() <= 26, "{cut}");
 }

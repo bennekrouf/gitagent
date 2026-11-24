@@ -195,5 +195,64 @@ pub(super) fn remedies(
     }
 }
 
+/// The way on once every conflict is resolved: the fix that finishes the
+/// merge, as one plain button, and why it stopped if it did. No command line
+/// and no other fixes: there is nothing else left to choose.
+pub(super) fn next_step(
+    run: &NodeRun,
+    remedy_id: String,
+    on_remedy: EventHandler<(String, usize)>,
+) -> Element {
+    let Some((index, remedy)) = run
+        .remedies
+        .iter()
+        .enumerate()
+        .find(|(_, r)| r.once_resolved)
+    else {
+        return rsx! {};
+    };
+    let label = finish_label(&remedy.label);
+    rsx! {
+        div { class: "remedies remedies-next",
+            div { class: "remedy",
+                div { class: "remedy-main",
+                    div { class: "remedy-label", "{label}" }
+                }
+                button {
+                    class: if remedy.done { "btn" } else { "btn btn-primary" },
+                    disabled: remedy.running || remedy.done,
+                    onclick: {
+                        let node = remedy_id.clone();
+                        move |_| on_remedy.call((node.clone(), index))
+                    },
+                    if remedy.running { "Finishing…" }
+                    else if remedy.done { "Done" }
+                    else if remedy.failed { "Try again" }
+                    else { "Continue" }
+                }
+            }
+            if remedy.failed && !remedy.output.is_empty() {
+                details { class: "remedy-fold",
+                    open: remedy.output.lines().count() <= 12,
+                    summary { class: "remedy-stopped", "That stopped before finishing — what it printed" }
+                    pre { class: "remedy-out remedy-out-failed", "{remedy.output}" }
+                }
+            }
+        }
+    }
+}
+
+/// What finishing does, said plainly: "Finish the merge, push, and merge #86
+/// again" reads as one step to take, not three.
+pub(super) fn finish_label(label: &str) -> String {
+    match label.split_once('#') {
+        Some((_, rest)) if label.starts_with("Finish the merge") => {
+            let number: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            format!("All conflicts resolved. Commit, push and merge #{number}.")
+        }
+        _ => label.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests;

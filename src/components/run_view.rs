@@ -205,6 +205,10 @@ pub struct Gates {
     /// How to name the pull request — `#42` — once there is one.
     pub pr: Option<String>,
     pub checks: Checks,
+    /// Where the pull request goes, `from → into`, once both are known.
+    pub route: Option<String>,
+    /// True when `into` is not the run's base branch.
+    pub off_base: bool,
 }
 
 impl Gates {
@@ -259,7 +263,34 @@ impl Gates {
             }),
             _ => None,
         };
+        // The pull request's own branches when it has been read, else what
+        // the run found (Review) or is about to open (Commit → PR).
+        let pick = |of_pr: Option<&str>, keys: [&str; 2]| {
+            of_pr
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+                .or_else(|| {
+                    keys.into_iter()
+                        .map(|k| state.artifact(k).trim())
+                        .find(|b| !b.is_empty())
+                })
+                .unwrap_or("")
+                .to_string()
+        };
+        let head = pick(brief.map(|b| b.head.as_str()), ["pr_head", "work_branch"]);
+        let into = pick(brief.map(|b| b.base.as_str()), ["pr_base", "base"]);
+        let base = state.artifact("base").trim();
+        let (route, off_base) = if head.is_empty() || into.is_empty() {
+            (None, false)
+        } else {
+            (
+                Some(format!("{head} \u{2192} {into}")),
+                !base.is_empty() && into != base,
+            )
+        };
         Some(Gates {
+            route,
+            off_base,
             checks: if pr.is_some() {
                 brief.map(|b| b.checks).unwrap_or(Checks::Unknown)
             } else {

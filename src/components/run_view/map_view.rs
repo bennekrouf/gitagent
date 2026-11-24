@@ -124,11 +124,25 @@ pub(super) fn run_map(
                         (ci_class, ci_text, ci_on, g.checks == Checks::Failing),
                     ];
                     let box_x = end_x - 160.0;
+                    // From → into under "PR ready", room made for it by
+                    // starting the rows higher.
+                    let route = g.route.clone();
+                    let top = if route.is_some() { bar_y - 118.0 } else { bar_y - 108.0 };
+                    let gap = if route.is_some() { 40.0 } else { 26.0 };
                     rsx! {
                         g { class: "run-gates",
+                            if let Some(full) = route {
+                                text {
+                                    class: if g.off_base { "run-gate-route run-gate-route-off" } else { "run-gate-route" },
+                                    x: "{box_x + 24.0}", y: "{top + 20.0}",
+                                    title { if g.off_base { "{full} — not this repository's base branch" } else { "{full}" } }
+                                    "\u{2442} {short_route(&full, 26)}"
+                                    if g.off_base { " · not the base" }
+                                }
+                            }
                             for (i, (class, text, on, bad)) in rows.into_iter().enumerate() {
                                 {
-                                    let y = bar_y - 108.0 + i as f64 * 26.0;
+                                    let y = top + i as f64 * gap;
                                     rsx! {
                                         g { key: "{i}", class: "{class}",
                                             rect { class: "run-gate-box", x: "{box_x}", y: "{y - 8.0}", width: "16", height: "16", rx: "4" }
@@ -321,4 +335,18 @@ pub(super) fn run_map(
             }
         }
     }
+}
+
+/// A route short enough for the gate box: the branch it comes from is cut
+/// first, since the one it goes into is what matters most here.
+pub(super) fn short_route(route: &str, max: usize) -> String {
+    if route.chars().count() <= max {
+        return route.to_string();
+    }
+    let Some((from, into)) = route.split_once(" \u{2192} ") else {
+        return route.chars().take(max).collect();
+    };
+    let keep = max.saturating_sub(into.chars().count() + 4).max(3);
+    let from: String = from.chars().take(keep).collect();
+    format!("{from}\u{2026} \u{2192} {into}")
 }
