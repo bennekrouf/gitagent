@@ -330,6 +330,12 @@ pub(super) async fn pr_status(repo: &str, state: &RunState) -> Result<StepOutcom
         let base = state.artifact("pr_base");
         let head = state.artifact("pr_head");
         let checks = format!("{summary}\n\nmergeable:   {mergeable}\nmerge state: {merge_state}");
+        // GitHub still says "conflicting" until the resolved merge is pushed.
+        // With that merge open here, the next move is to finish it, not to
+        // start the same merge again.
+        if let Some(open) = merge_in_progress(repo, number, base).await {
+            return Err(open);
+        }
         return Err(match squashed_before(repo, number, head).await {
             Some(earlier) => {
                 let new = flow::free_branch_name(repo, head).await;
