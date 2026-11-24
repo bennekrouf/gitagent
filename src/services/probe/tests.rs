@@ -705,3 +705,14 @@ fn open_issues_are_read_from_gh() {
     );
     assert!(prs::issues_from_json("not json").is_empty());
 }
+
+#[test]
+fn a_shortstat_gives_files_insertions_and_deletions() {
+    assert_eq!(
+        shortstat(" 26 files changed, 1562 insertions(+), 52 deletions(-)\n"),
+        (26, 1562, 52)
+    );
+    assert_eq!(shortstat(" 1 file changed, 3 insertions(+)"), (1, 3, 0));
+    assert_eq!(shortstat(" 2 files changed, 4 deletions(-)"), (2, 0, 4));
+    assert_eq!(shortstat(""), (0, 0, 0));
+}

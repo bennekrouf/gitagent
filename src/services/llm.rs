@@ -226,6 +226,9 @@ pub struct Asker<'a> {
     /// model. `None` leaves it to api0's default for GitAgent, `code`, the
     /// stronger model reviews need. Other providers never see it.
     pub task: Option<&'static str>,
+    /// The step's catalogue key (`draft_commit`, `analyse`), sent to api0 as
+    /// `X-Feature` so its usage log says what each call was for.
+    pub feature: Option<&'static str>,
     pub on_line: &'a mut dyn FnMut(&str),
 }
 
@@ -371,7 +374,7 @@ pub async fn api0_regions() -> Result<Vec<RegionOffer>, String> {
     let resp = client(PROBE_TIMEOUT)?
         .get(&url)
         .bearer_auth(key)
-        .headers(client_app(api0, None))
+        .headers(client_app(api0, None, None))
         .send()
         .await
         .map_err(|e| network_error("api0 is unreachable", &e))?;
@@ -602,8 +605,13 @@ pub async fn local_models(url: &str) -> Result<Vec<LocalModel>, String> {
     Ok(parse_tags(&value))
 }
 
-/// api0 is told which app is calling, so its use is put down to GitAgent.
-fn client_app(remote: &Remote, task: Option<&'static str>) -> reqwest::header::HeaderMap {
+/// api0 is told which app is calling, so its use is put down to GitAgent,
+/// and which step the call is for (`X-Feature`).
+fn client_app(
+    remote: &Remote,
+    task: Option<&'static str>,
+    feature: Option<&'static str>,
+) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     if is_api0(remote) {
         headers.insert(
@@ -612,6 +620,12 @@ fn client_app(remote: &Remote, task: Option<&'static str>) -> reqwest::header::H
         );
         if let Some(task) = task {
             headers.insert("X-Task", reqwest::header::HeaderValue::from_static(task));
+        }
+        if let Some(feature) = feature {
+            headers.insert(
+                "X-Feature",
+                reqwest::header::HeaderValue::from_static(feature),
+            );
         }
     }
     headers

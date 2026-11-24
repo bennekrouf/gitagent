@@ -473,6 +473,32 @@ fn azure_coordinates(remote: &str) -> Option<(String, String, String)> {
     }
 }
 
+/// The web page of pull request `number`. `az repos pr list` and `show` leave
+/// `repository.webUrl` empty, which made every Azure link a bare
+/// `/pullrequest/N`; `web` is used when it is there, and the page is
+/// otherwise built from the `origin` remote. Empty when neither says.
+pub fn azure_pr_link(remote: &str, web: &str, number: &str) -> String {
+    let web = web.trim().trim_end_matches('/');
+    if !web.is_empty() {
+        return format!("{web}/pullrequest/{number}");
+    }
+    let pr = serde_json::json!({ "pullRequestId": number.parse::<i64>().unwrap_or_default() });
+    azure_pr_url_from_remote(&pr, remote).unwrap_or_default()
+}
+
+/// The same, for a pull request JSON object from `az repos pr …`.
+pub async fn azure_pr_page(repo: &str, pr: &serde_json::Value) -> String {
+    let number = pr["pullRequestId"].as_i64().unwrap_or_default().to_string();
+    let web = pr["repository"]["webUrl"].as_str().unwrap_or_default();
+    if !web.trim().is_empty() {
+        return azure_pr_link("", web, &number);
+    }
+    let remote = git::run(repo, "git", &["remote", "get-url", "origin"])
+        .await
+        .unwrap_or_default();
+    azure_pr_link(&remote, "", &number)
+}
+
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
