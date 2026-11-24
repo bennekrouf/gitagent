@@ -17,6 +17,14 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Added
+
+- Users can now reopen conflict resolution if they choose to start over after
+  resolving conflicts. This allows for more flexibility in handling complex
+  merge conflicts.
+
 ## [0.1.200] - 2026-11-24
 
 ### Changed
