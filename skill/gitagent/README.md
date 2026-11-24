@@ -9,8 +9,10 @@ needs your yes, sensible defaults, and how to report back.
 - **GitAgent**, installed from <https://mayorana.ch/en/apps/gitagent> (macOS,
   Windows or Linux). This skill does not include the app.
 - A desktop agent connected to GitAgent's MCP server: Claude Desktop, Claude
-  Code, Codex CLI or Cursor. `references/connect.md` has the steps. Web-only
-  agents such as ChatGPT can't reach an app on your computer.
+  Code, Codex, VS Code or Cursor. The **MCP** button in GitAgent's window
+  installs it in all but Cursor; `references/connect.md` has the steps by
+  hand. ChatGPT and Claude in the browser can't reach an app on your computer:
+  with ChatGPT, use Codex.
 
 ## What you can ask for
 
