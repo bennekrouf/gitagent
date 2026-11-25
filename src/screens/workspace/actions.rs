@@ -362,7 +362,18 @@ pub(super) fn repo_actions(
                 branches_action_error.set(None);
                 spawn(async move {
                     let base = resolved_base(&repo, override_base).await;
-                    let result = crate::services::branches::list(&repo, &forge, &base, false).await;
+                    // The full check, straight away: what Run check does,
+                    // without waiting for the click. The list of local
+                    // branches alone said "not checked" on every row.
+                    let result = match crate::services::branches::list(&repo, &forge, &base, true).await {
+                        // The local list is still worth showing when Azure
+                        // DevOps cannot be asked.
+                        Err(e) if forge == crate::services::forge::Forge::AzureDevOps => {
+                            branches_action_error.set(Some(format!("Couldn't check pull requests on Azure DevOps: {e}")));
+                            crate::services::branches::list(&repo, &forge, &base, false).await
+                        }
+                        result => result,
+                    };
                     branches_data.set(Some(result));
                 });
             }

@@ -51,7 +51,7 @@ impl Wants {
 
     pub fn note(self) -> &'static str {
         match self {
-            Wants::Resolve => "unfinished rebase",
+            Wants::Resolve => "unfinished merge or rebase",
             Wants::Push => "not pushed",
             Wants::Merge => "ready to merge",
             Wants::Attention => "checks failing",

@@ -17,6 +17,22 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Changed
+
+- The Branches window checks each branch's pull request as soon as it opens,
+  instead of listing every branch as "not checked" until you click Run check.
+
+### Fixed
+
+- A repository with a merge left open says "unfinished merge or rebase" in
+  the list. It said "unfinished rebase" for a merge too.
+- A branch whose commits change no file against the base, such as one at
+  `main` when `develop` already has everything `main` has, no longer offers
+  "Push N commits & open PR". That pull request would have had no changes
+  and could only be abandoned.
+
 ## [0.1.201] - 2026-11-24
 
 ### Added

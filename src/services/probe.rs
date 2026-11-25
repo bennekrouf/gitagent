@@ -371,16 +371,35 @@ async fn fetch_base(repo: &str, base: &str) {
 /// Prefers the remote-tracking base, since that is what a pull request would
 /// actually target; falls back to the local one for a repository that has not
 /// been fetched.
+///
+/// Commits that change nothing count as none: merges carrying history the
+/// base has the same content of, such as a branch at `main` when `develop`
+/// already holds everything `main` has. Counted, they offered "Push 4
+/// commits & open PR" for a pull request with no changes, one that could
+/// only be abandoned.
 async fn unmerged_commits(repo: &str, base: &str) -> usize {
     for reference in [format!("origin/{base}"), base.to_string()] {
         let range = format!("{reference}..HEAD");
         if let Ok(out) = git::run(repo, "git", &["rev-list", "--count", &range]).await {
             if let Ok(n) = out.trim().parse::<usize>() {
+                if n > 0 && changes_nothing(repo, &reference).await {
+                    return 0;
+                }
                 return n;
             }
         }
     }
     0
+}
+
+/// Whether a pull request from HEAD into `reference` would change no file:
+/// what the branch did since the two parted (the diff a pull request shows)
+/// is empty. False when git cannot say, so the commits are counted as before.
+async fn changes_nothing(repo: &str, reference: &str) -> bool {
+    let range = format!("{reference}...HEAD");
+    git::run(repo, "git", &["diff", "--quiet", &range, "--"])
+        .await
+        .is_ok()
 }
 
 /// How far the checked-out branch and its upstream have diverged. `(0, 0)`

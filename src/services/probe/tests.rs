@@ -717,3 +717,56 @@ fn a_shortstat_gives_files_insertions_and_deletions() {
     assert_eq!(shortstat(" 2 files changed, 4 deletions(-)"), (2, 0, 4));
     assert_eq!(shortstat(""), (0, 0, 0));
 }
+
+/// A repository where `develop` already has everything on `main`, and HEAD
+/// is `main` with merge commits `develop` does not have. Returns its path.
+#[cfg(unix)]
+fn history_only_repo(extra_on_main: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "gitagent-unmerged-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let script = format!(
+        "git init -q -b main && git config user.name t && git config user.email t@t && \
+         echo a > f && git add f && git commit -qm init && \
+         git checkout -qb develop && echo b > f && git commit -qam dev && \
+         git checkout -q main && git merge -q --no-ff -m 'merge develop' develop && \
+         git checkout -q develop && git merge -q --ff-only main 2>/dev/null; \
+         git checkout -q develop && git reset -q --hard HEAD~0 && \
+         git checkout -q main && git commit -q --allow-empty -m 'empty' {extra_on_main}"
+    );
+    let out = std::process::Command::new("sh")
+        .args(["-c", &script])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    root
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn commits_that_change_nothing_are_not_offered_as_a_pull_request() {
+    let repo = history_only_repo("");
+    let n = unmerged_commits(repo.to_str().unwrap(), "develop").await;
+    let _ = std::fs::remove_dir_all(&repo);
+    assert_eq!(n, 0, "the branch's commits change no file against develop");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn commits_that_change_something_are_still_counted() {
+    let repo = history_only_repo("&& echo c > g && git add g && git commit -qm real");
+    let n = unmerged_commits(repo.to_str().unwrap(), "develop").await;
+    let _ = std::fs::remove_dir_all(&repo);
+    assert!(n > 0, "g is new on the branch");
+}
