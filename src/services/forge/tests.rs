@@ -456,6 +456,39 @@ fn an_empty_description_sends_no_flag() {
     assert!(!args.contains(&"--description"));
 }
 
+/// The line that ended the description of a pull request on Azure DevOps.
+const WINDOWS_INSTALL: &str = "  - **Windows**: `.\\sbm-mcp-rust.exe install-script ps1 > \
+    $env:TEMP\\sbm-install.ps1; & $env:TEMP\\sbm-install.ps1`";
+
+#[test]
+fn backslashes_dollars_semicolons_and_ampersands_reach_az_as_written() {
+    let body = format!("## How to test\n{WINDOWS_INSTALL}\n- done");
+    let values = azure_description_values(&body);
+    let args = azure_create_args("topic", "main", "Title", &values, &[]);
+    let at = args.iter().position(|a| *a == "--description").unwrap();
+    assert_eq!(
+        args[at + 1..at + 4],
+        ["## How to test", WINDOWS_INSTALL, "- done"]
+    );
+    assert_eq!(args[at + 4], "--output");
+    // az joins its values with line breaks: what it sends is the body.
+    assert_eq!(args[at + 1..at + 4].join("\n"), body);
+}
+
+#[test]
+fn the_approval_names_the_command_for_the_forge_it_runs_on() {
+    assert_eq!(
+        create_pr_command(&Forge::AzureDevOps, "develop", "docs/x"),
+        "az repos pr create --source-branch docs/x --target-branch develop"
+    );
+    assert_eq!(
+        create_pr_command(&Forge::GitHub, "main", "fix/y"),
+        "gh pr create --base main --head fix/y"
+    );
+    let elsewhere = create_pr_command(&Forge::Unsupported("git.example".into()), "a", "b");
+    assert!(elsewhere.contains("git.example") && !elsewhere.contains("gh pr"));
+}
+
 #[test]
 fn a_title_is_kept_on_one_line() {
     assert_eq!(azure_title("Fix it\r\n\r\n  properly"), "Fix it properly");

@@ -536,6 +536,16 @@ echo "Pushed. $forge has not finished rechecking #$1; merging anyway.""#;
 /// those stopped a correct merge naming four such files besides the one that
 /// conflicted. Lock files are left out too: they are regenerated, not merged,
 /// and the base's is as good a start as the branch's.
+///
+/// Before that, the pull request as a whole: what the merge would still add
+/// to the base, leaving out files the base's `.gitignore` ignores (build
+/// output committed by mistake is the usual one). Nothing left means the
+/// pull request is superseded, the base already has all of it, or the
+/// resolution threw its change away. Which of the two git cannot tell when
+/// the base made the same change in other words, so the message names the
+/// dropped files and leaves the choice: close it as superseded, or start
+/// over and pick Current. Its first words are `NOTHING_LEFT`, which is how
+/// the step knows to offer closing the pull request.
 const KEEPS_THE_CHANGE: &str = r#"mb=$(git merge-base HEAD "origin/$2")
 tab=$(printf '\t')
 conflicted=$(sed -n "/Conflicts:\$/,\$s/^.$tab//p" "$(git rev-parse --git-path MERGE_MSG)" 2>/dev/null)
@@ -547,10 +557,30 @@ lost=$(printf '%s\n' "$conflicted" | while IFS= read -r f; do
   git diff --quiet "$mb" HEAD -- "$f" && continue
   if ! git diff --quiet HEAD "origin/$2" -- "$f" && git diff --cached --quiet "origin/$2" -- "$f"; then printf '  %s\n' "$f"; fi
 done)
+all=$(git -c core.quotePath=false diff --cached --name-only "origin/$2")
+ignored=$(printf '%s\n' "$all" | git check-ignore --no-index --stdin 2>/dev/null)
+if [ -z "$ignored" ]; then left=$all; else left=$(printf '%s\n' "$all" | grep -vxF -e "$ignored"); fi
+if [ -z "$left" ]; then
+  printf 'Nothing left to merge: after this resolution #%s adds nothing to %s. Not committed.\n' "$1" "$2"
+  if [ -n "$ignored" ]; then
+    n=$(printf '%s\n' "$ignored" | wc -l | tr -d ' ')
+    rules=$(printf '%s\n' "$ignored" | git check-ignore --no-index -v --stdin 2>/dev/null | cut -f1 | sed 's/^[^:]*:[^:]*://' | sort -u | head -3 | paste -sd, - | sed 's/,/, /g')
+    printf 'The %s file(s) it still adds are ones %s ignores (%s in .gitignore), so they stay out.\n' "$n" "$2" "$rules"
+  fi
+  if [ -n "$lost" ]; then
+    printf '\nIts side of these conflicts was dropped:\n%s\nIf %s already has that change in another form, close #%s as superseded below. If not, start over on those files, pick Current, and Finish again.\n' "$lost" "$2" "$1"
+  else
+    printf '\n%s already has everything #%s changes: close it as superseded below.\n' "$2" "$1"
+  fi
+  exit 1
+fi
 if [ -n "$lost" ]; then
   printf 'Not committed. These files now match %s exactly, so #%s would lose its changes to them:\n%s\nPick Current for its side of those conflicts and Finish again, or commit by hand if dropping them is what you mean.\n' "$2" "$1" "$lost"
   exit 1
 fi"#;
+
+/// How a Finish that found nothing left to merge starts what it prints.
+pub const NOTHING_LEFT: &str = "Nothing left to merge:";
 
 /// The part of the Finish script that refuses a merge which no longer
 /// builds: a conflict settled on the wrong side, or by a model, compiles or

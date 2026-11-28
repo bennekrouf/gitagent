@@ -17,6 +17,24 @@ build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for. 0.1.5 and 0.1.6
 were never released.
 
+## [Unreleased]
+
+### Fixed
+
+- Finishing a merge on a pull request whose base branch already has its
+  change no longer ends at a refusal with no way on. When the pull request
+  would add nothing to the base, apart from files the base ignores such as
+  build output committed by mistake, the merge step says so, names any file
+  whose side you dropped, and offers to close the pull request as superseded.
+  That closes it, abandons the merge and goes back to the base branch, and
+  keeps its branch.
+- A pull request description drafted by a local model no longer stops at the
+  first backslash, such as in a Windows command like `.\tool.exe` or a path
+  like `C:\Users`. The model is asked again without the JSON constraint that
+  cut it short, and the whole description reaches GitHub or Azure DevOps.
+- On Azure DevOps, the Open pull request approval shows the
+  `az repos pr create` command it will run, not GitHub's `gh pr create`.
+
 ## [0.1.202] - 2026-11-26
 
 ### Changed

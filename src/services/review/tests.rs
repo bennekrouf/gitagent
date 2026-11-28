@@ -1165,3 +1165,129 @@ fn the_wait_after_a_push_asks_azure_on_an_azure_remote() {
     assert!(WAIT_FOR_FORGE.contains("az repos pr show"));
     assert!(WAIT_FOR_FORGE.contains("gh pr view"));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_pull_request_that_adds_only_what_the_base_ignores_is_offered_as_superseded() {
+    // #327's shape: the branch's real change is settled on the base's side,
+    // and all it still adds is build output the base now ignores.
+    let extra =
+        "git checkout -q feat && mkdir -p target && echo o > target/x.o && git add target && \
+                 git commit -qm build && git checkout -q main && echo target/ > .gitignore && \
+                 git add .gitignore && git commit -qm ignore &&";
+    let (ok, said) = finish_guard_in("--theirs", extra);
+    assert!(!ok, "{said}");
+    assert!(said.starts_with(NOTHING_LEFT), "{said}");
+    assert!(
+        said.contains("The 1 file(s) it still adds are ones main ignores (target/ in .gitignore)"),
+        "{said}"
+    );
+    assert!(
+        said.contains("  f\n"),
+        "the dropped side is still named: {said}"
+    );
+    assert!(said.contains("close #38 as superseded"), "{said}");
+
+    // Its own side kept, the branch still adds f: no question of superseded.
+    let (ok, said) = finish_guard_in("--ours", extra);
+    assert!(ok, "{said}");
+}
+
+#[cfg(unix)]
+#[test]
+fn dropping_the_only_change_is_still_named_when_nothing_is_left() {
+    let (ok, said) = finish_guard_after("--theirs");
+    assert!(!ok);
+    assert!(said.starts_with(NOTHING_LEFT), "{said}");
+    assert!(!said.contains("ignores"), "nothing ignored here: {said}");
+    assert!(said.contains("pick Current"), "{said}");
+}
+
+#[test]
+fn closing_as_superseded_reads_as_the_forge_calls_it() {
+    let gh = superseded_remedy(
+        "327",
+        "develop",
+        "gh",
+        &["pr".into(), "close".into(), "327".into()],
+    );
+    assert!(
+        gh.label.starts_with("Close #327 as superseded"),
+        "{}",
+        gh.label
+    );
+    assert!(!gh.retry_after && gh.abandons);
+    assert_eq!(gh.program, "sh");
+    assert_eq!(&gh.args[3..], ["develop", "gh", "pr", "close", "327"]);
+    let az = superseded_remedy("327", "develop", "az", &["repos".into()]);
+    assert!(
+        az.label.starts_with("Abandon #327 as superseded"),
+        "{}",
+        az.label
+    );
+    assert!(
+        az.display.contains("git checkout develop"),
+        "{}",
+        az.display
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn closing_as_superseded_abandons_the_merge_only_once_the_close_went_through() {
+    let run = |close: &str| {
+        let root = std::env::temp_dir().join(format!(
+            "gitagent-superseded-{close}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |cmd: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", cmd])
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        let setup = sh("git init -q --bare -b main origin.git && git clone -q origin.git here && cd here && \
+             git config user.name t && git config user.email t@t && \
+             echo base > f && git add . && git commit -q -m init && git push -q origin main && \
+             git checkout -q -b feat && echo pr > f && git commit -qam pr && \
+             git checkout -q main && echo main > f && git commit -qam main && git push -q origin main && \
+             git checkout -q feat && (git merge -q origin/main >/dev/null 2>&1; true)");
+        assert!(
+            setup.status.success(),
+            "{}",
+            String::from_utf8_lossy(&setup.stderr)
+        );
+        let remedy = superseded_remedy("38", "main", close, &[]);
+        let ok = std::process::Command::new(&remedy.program)
+            .args(&remedy.args)
+            .current_dir(root.join("here"))
+            .status()
+            .unwrap()
+            .success();
+        let branch = sh("cd here && git branch --show-current");
+        let merging = root.join("here/.git/MERGE_HEAD").exists();
+        let _ = std::fs::remove_dir_all(&root);
+        (
+            ok,
+            String::from_utf8_lossy(&branch.stdout).trim().to_string(),
+            merging,
+        )
+    };
+    assert_eq!(run("true"), (true, "main".into(), false));
+    assert_eq!(
+        run("false"),
+        (false, "feat".into(), true),
+        "a failed close leaves the merge alone"
+    );
+}
+
+#[test]
+fn the_finish_guard_starts_its_superseded_message_with_the_marker() {
+    assert!(KEEPS_THE_CHANGE.contains(&format!("printf '{NOTHING_LEFT}")));
+}

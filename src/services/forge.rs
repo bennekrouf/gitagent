@@ -859,6 +859,21 @@ impl OpenedPr {
     }
 }
 
+/// The command `create_pr` runs on `forge`, as the approval shows it: the
+/// title and the description follow it in the preview, so they are left out.
+pub fn create_pr_command(forge: &Forge, base: &str, head: &str) -> String {
+    match forge {
+        Forge::GitHub => format!("gh pr create --base {base} --head {head}"),
+        Forge::AzureDevOps => {
+            format!("az repos pr create --source-branch {head} --target-branch {base}")
+        }
+        Forge::Unsupported(host) => format!(
+            "no pull request command for {host}: the branch is pushed, open it there by hand"
+        ),
+        Forge::None => "no `origin` remote to open a pull request against".into(),
+    }
+}
+
 /// A description as `az repos pr create --description` takes it, one value a
 /// line. On Windows `az` is a batch file, and Rust refuses to pass a line
 /// break to one, so a multi-line description cannot be a single argument.
