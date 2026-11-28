@@ -32,7 +32,7 @@ pub async fn complete_json(
             (asker.on_line)("The answer came back empty. Asking once more…");
         }
         raw = match cfg.kind {
-            ProviderKind::Ollama => call_ollama(cfg, &system, user, schema, asker).await?,
+            ProviderKind::Ollama => call_ollama(cfg, &system, user, Some(schema), asker).await?,
             ProviderKind::Remote => call_openai_compatible(cfg, &system, user, asker).await?,
             // Reaching here means a model step ran with no model configured, which
             // the executor is supposed to have headed off. Say which of the two is
@@ -53,7 +53,40 @@ pub async fn complete_json(
         return Err(empty_answer(cfg));
     }
 
-    parse_object(&raw)
+    let value = parse_object(&raw)?;
+    if cfg.kind != ProviderKind::Ollama || !stops_at_backslash(&value) {
+        return Ok(value);
+    }
+    // ollama holds the model to a grammar built from the schema, and that
+    // grammar has no `\s` or `\.`: a model copying `.\sbm.exe` or
+    // `C:\Users` out of a diff is steered into closing the string instead,
+    // and the reply comes back valid, and cut off at that backslash. Asked
+    // without the grammar, it writes the text as it meant to, stray
+    // backslashes and all, which `parse_object` takes as they are.
+    (asker.on_line)(
+        "The answer stopped at a backslash, which ollama's JSON grammar cuts short. \
+         Asking again without it…",
+    );
+    let free = call_ollama(cfg, &system, user, None, asker).await?;
+    parse_object(&free).map_err(|e| {
+        format!(
+            "{} stopped writing at a backslash, and asked again it did not answer in JSON. \
+             Run the step again, or choose another model for this folder in Settings.\n\n{e}",
+            cfg.ollama_model
+        )
+    })
+}
+
+/// A string in the answer that ends in a backslash: the mark ollama's
+/// grammar leaves when it cuts text short (see `complete_json`). Text a
+/// person means rarely ends that way.
+pub(super) fn stops_at_backslash(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.trim_end().ends_with('\\'),
+        Value::Array(items) => items.iter().any(stops_at_backslash),
+        Value::Object(map) => map.values().any(stops_at_backslash),
+        _ => false,
+    }
 }
 
 /// Two empty answers in a row: what it is, and what to do about it.
@@ -85,6 +118,7 @@ pub(super) fn parse_object(raw: &str) -> Result<Value, String> {
         .unwrap_or(trimmed);
 
     let value: Value = serde_json::from_str(body)
+        .or_else(|e| serde_json::from_str(&double_stray_backslashes(body)).map_err(|_| e))
         .map_err(|e| format!("model did not return JSON ({e}). Raw reply:\n{raw}"))?;
 
     if !value.is_object() {
@@ -93,15 +127,63 @@ pub(super) fn parse_object(raw: &str) -> Result<Value, String> {
     Ok(value)
 }
 
+/// JSON with each backslash that starts no JSON escape doubled, so it reads
+/// as the backslash it is. Models copy `.\sbm.exe` or `C:\Users` out of a diff
+/// into a string as they found it, which JSON has no meaning for; the
+/// backslashes they did escape, and every `\n`, are left alone.
+pub(super) fn double_stray_backslashes(json: &str) -> String {
+    let chars: Vec<char> = json.chars().collect();
+    let mut out = String::with_capacity(json.len() + 8);
+    let mut in_string = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        i += 1;
+        if !in_string {
+            in_string = c == '"';
+            out.push(c);
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = false;
+                out.push(c);
+            }
+            '\\' => {
+                let escapes = match chars.get(i) {
+                    Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') => true,
+                    Some('u') => {
+                        chars.len() >= i + 5
+                            && chars[i + 1..i + 5].iter().all(char::is_ascii_hexdigit)
+                    }
+                    _ => false,
+                };
+                if escapes {
+                    out.push(c);
+                    out.push(chars[i]);
+                    i += 1;
+                } else {
+                    out.push_str("\\\\");
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// One answer from ollama. `schema`, when given, is enforced as a grammar
+/// while the model writes; without it, the model is held to the system
+/// prompt only.
 pub(super) async fn call_ollama(
     cfg: &LlmConfig,
     system: &str,
     user: &str,
-    schema: &Value,
+    schema: Option<&Value>,
     asker: &mut Asker<'_>,
 ) -> Result<String, String> {
     let url = format!("{}/api/chat", cfg.ollama_url.trim_end_matches('/'));
-    let body = json!({
+    let mut body = json!({
         "model": cfg.ollama_model,
         "stream": false,
         // Every call here wants the answer, never the reasoning. A model that
@@ -109,7 +191,6 @@ pub(super) async fn call_ollama(
         // thinking about a 5 KB diff and returned nothing at all. Models that
         // cannot think accept the flag and ignore it.
         "think": false,
-        "format": schema,
         "options": {
             // Deterministic on purpose: the same diff should produce the same
             // commit message twice, or the approval step is meaningless.
@@ -123,6 +204,9 @@ pub(super) async fn call_ollama(
             { "role": "user",   "content": user },
         ],
     });
+    if let Some(schema) = schema {
+        body["format"] = schema.clone();
+    }
 
     // Wait for our turn at the (serialized) local model before spending any
     // of the generation timeout, so queued steps wait here rather than racing

@@ -191,6 +191,46 @@ fn prose_is_an_error_not_a_silent_empty_object() {
     assert!(parse_object("Sure! Here is your commit message.").is_err());
 }
 
+/// What qwen2.5-coder wrote for the Windows line of a README, held to the
+/// schema's grammar by ollama: valid JSON, ended at the first backslash.
+const CUT_BY_THE_GRAMMAR: &str =
+    r###"{"title":"Add Rust details","body":"## How to test\n- On Windows, run `.\\"}"###;
+
+/// The same model, asked without the grammar: the text it meant, with the
+/// backslashes it copied from the diff left as they were, and one it escaped.
+const WRITTEN_FREELY: &str = r#"{"title":"Add Rust details","body":"- On Windows, run `.\sbm-mcp-rust.exe install-script ps1 > $env:TEMP\\sbm-install.ps1; & $env:TEMP\\sbm-install.ps1`\n- done"}"#;
+
+#[test]
+fn an_answer_the_grammar_cut_at_a_backslash_is_recognised() {
+    let cut = parse_object(CUT_BY_THE_GRAMMAR).unwrap();
+    assert_eq!(cut["body"], "## How to test\n- On Windows, run `.\\");
+    assert!(stops_at_backslash(&cut));
+    assert!(!stops_at_backslash(&parse_object(WRITTEN_FREELY).unwrap()));
+    assert!(!stops_at_backslash(
+        &parse_object(r#"{"body":"C:\\Users\\me is fine"}"#).unwrap()
+    ));
+}
+
+#[test]
+fn backslashes_a_model_left_unescaped_are_read_as_backslashes() {
+    let v = parse_object(WRITTEN_FREELY).unwrap();
+    assert_eq!(
+        v["body"],
+        "- On Windows, run `.\\sbm-mcp-rust.exe install-script ps1 > $env:TEMP\\sbm-install.ps1; \
+         & $env:TEMP\\sbm-install.ps1`\n- done"
+    );
+}
+
+#[test]
+fn only_backslashes_that_start_no_escape_are_doubled() {
+    assert_eq!(
+        double_stray_backslashes(r#"{"a":"\s \n \\ \" \u00e9 \u12 \."}"#),
+        r#"{"a":"\\s \n \\ \" \u00e9 \\u12 \\."}"#
+    );
+    // Outside a string there is nothing to repair, and nothing is touched.
+    assert_eq!(double_stray_backslashes(r#"{"a":1}"#), r#"{"a":1}"#);
+}
+
 #[test]
 fn a_bare_array_is_rejected() {
     assert!(parse_object("[1, 2, 3]").is_err());

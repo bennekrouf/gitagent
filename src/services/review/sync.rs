@@ -114,6 +114,69 @@ git commit --no-edit && git push || exit 1
     })
 }
 
+/// The fix a Finish that found nothing left to merge offers (`NOTHING_LEFT`):
+/// close the pull request as superseded, then abandon the merge and go back
+/// to `base`. The pull request is closed first, so a close that fails (signed
+/// out, no rights) leaves the merge as it was, to Finish or abandon instead.
+/// Its branch is kept. `None` on a forge GitAgent cannot close pull requests
+/// on.
+pub async fn close_superseded(
+    repo: &str,
+    forge: &Forge,
+    number: &str,
+    base: &str,
+) -> Option<Remedy> {
+    let (program, args) = match forge {
+        Forge::GitHub => {
+            let comment = format!("Closing as superseded: {base} already has this change.");
+            (
+                "gh",
+                vec![
+                    "pr".into(),
+                    "close".into(),
+                    number.into(),
+                    "--comment".into(),
+                    comment,
+                ],
+            )
+        }
+        Forge::AzureDevOps => {
+            let scope = forge::azure_scope(repo, Scope::Organization).await;
+            close_command(forge, &scope, number, false)?
+        }
+        _ => return None,
+    };
+    Some(superseded_remedy(number, base, program, &args))
+}
+
+/// `close_superseded` once the close command is known: `sh` takes the base
+/// and then the close command as its arguments, so nothing is quoted by hand.
+pub(super) fn superseded_remedy(
+    number: &str,
+    base: &str,
+    program: &str,
+    args: &[String],
+) -> Remedy {
+    const SCRIPT: &str = r#"base=$1; shift
+"$@" || exit 1
+git merge --abort && git checkout "$base" || exit 1
+git merge --ff-only "origin/$base" >/dev/null 2>&1 || true"#;
+    let mut sh_args: Vec<&str> = vec!["-c", SCRIPT, "sh", base, program];
+    sh_args.extend(args.iter().map(String::as_str));
+    let verb = if program == "az" { "Abandon" } else { "Close" };
+    Remedy {
+        display: format!(
+            "{program} {}   then git merge --abort && git checkout {base}",
+            args.join(" ")
+        ),
+        ..Remedy::terminal(
+            &format!("{verb} #{number} as superseded, abandon this merge and go back to {base}"),
+            "sh",
+            &sh_args,
+        )
+    }
+}
+
 /// "not mergeable: the merge commit cannot be cleanly created" means a real
 /// conflict against the base branch. Nothing here can resolve a content
 /// conflict for a person, but it can take them to the point where only that

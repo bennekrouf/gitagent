@@ -221,6 +221,19 @@ pub(super) fn step_detail(
                         } else {
                             vec![]
                         };
+                        // A Finish that found the pull request adds nothing
+                        // the base lacks: closing it is the way out, offered
+                        // first, rather than a refusal with nowhere to go.
+                        let superseded = if !ok && merging && output.contains(crate::services::review::NOTHING_LEFT) {
+                            let (forge, number, base) = states.read().get(&key).map(|s| (
+                                crate::services::forge::Forge::from_key(s.artifact("forge")),
+                                s.artifact("pr_number").to_string(),
+                                s.artifact("pr_base").to_string(),
+                            )).unwrap_or((crate::services::forge::Forge::None, String::new(), String::new()));
+                            crate::services::review::close_superseded(&key.0, &forge, &number, &base).await
+                        } else {
+                            None
+                        };
                         if !ok && merging {
                             let mut w = states.write();
                             if let Some(entry) = w.get_mut(&key) {
@@ -240,6 +253,9 @@ pub(super) fn step_detail(
                                         if let Some(same) = fresh.iter_mut().find(|r| r.label == remedy.label) {
                                             same.failed = true;
                                             same.output = output.clone();
+                                        }
+                                        if let Some(close) = superseded {
+                                            fresh.insert(0, close);
                                         }
                                         run.remedies = fresh;
                                     }

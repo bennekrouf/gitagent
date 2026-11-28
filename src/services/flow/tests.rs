@@ -29,6 +29,34 @@ fn a_first_commit_stays_on_its_branch_and_opens_no_pull_request() {
 }
 
 #[test]
+fn opening_a_pull_request_on_azure_shows_az_and_the_whole_body() {
+    let body =
+        "## How to test\n- `.\\sbm.exe install-script ps1 > $env:TEMP\\i.ps1; & $env:TEMP\\i.ps1`";
+    let mut s = RunState::default();
+    for (k, v) in [
+        ("forge", "azure"),
+        ("base", "develop"),
+        ("work_branch", "docs/rust"),
+        ("pr_title", "Add Rust details"),
+        ("pr_body", body),
+    ] {
+        s.artifacts.insert(k.into(), v.into());
+    }
+    let shown = proposal(&spec(Step::OpenPr), &s);
+    assert!(
+        shown.contains("az repos pr create --source-branch docs/rust --target-branch develop"),
+        "{shown}"
+    );
+    assert!(!shown.contains("gh pr create"), "{shown}");
+    assert!(shown.ends_with(body), "{shown}");
+
+    s.artifacts.insert("forge".into(), "github".into());
+    assert!(
+        proposal(&spec(Step::OpenPr), &s).contains("gh pr create --base develop --head docs/rust")
+    );
+}
+
+#[test]
 fn writing_notes_asks_only_when_there_is_a_draft_to_read() {
     let mut s = RunState::default();
     let write = spec(Step::WriteNotes);

@@ -357,13 +357,15 @@ pub fn proposal(node: &NodeSpec, state: &RunState) -> String {
             "git push -u origin {}\n\nThis publishes the branch to origin.",
             state.artifact("work_branch")
         ),
-        Step::OpenPr => format!(
-            "From {head} into {base}\n\ngh pr create --base {base} --head {head}\n\nTitle:\n  {}\n\nBody:\n{}",
-            state.artifact("pr_title"),
-            state.artifact("pr_body"),
-            head = state.artifact("work_branch"),
-            base = state.artifact("base"),
-        ),
+        Step::OpenPr => {
+            let (base, head) = (state.artifact("base"), state.artifact("work_branch"));
+            format!(
+                "From {head} into {base}\n\n{}\n\nTitle:\n  {}\n\nBody:\n{}",
+                forge::create_pr_command(&Forge::from_key(state.artifact("forge")), base, head),
+                state.artifact("pr_title"),
+                state.artifact("pr_body"),
+            )
+        }
         _ => String::new(),
     }
 }
